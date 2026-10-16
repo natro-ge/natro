@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Light or dark with the phone; Compose draws everything else (Theme.kt). -->
+    <style name="Natro" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/background</item>
+    </style>
+
+    <!-- The share screen: a card over the app that shared (ShareActivity). -->
+    <style name="Natro.Share">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowAnimationStyle">@android:style/Animation.Translucent</item>
+    </style>
+</resources>

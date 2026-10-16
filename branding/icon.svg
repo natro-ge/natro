@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" role="img" aria-label="Natro">
+  <defs>
+    <linearGradient id="ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1c2026"/><stop offset="1" stop-color="#0c0e10"/></linearGradient>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#10820c"/><stop offset="1" stop-color="#0fb912"/></linearGradient>
+    <radialGradient id="glow"><stop offset="0.45" stop-color="#0fb912" stop-opacity=".5"/><stop offset="1" stop-color="#0fb912" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="108" height="108" rx="24" fill="url(#ink)"/>
+  <path d="M36.9,76.0 L36.9,36.9 L71.1,76.0 L71.1,43.0" fill="none" stroke="#fff" stroke-width="9.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="71.1" cy="30.8" r="19.0" fill="url(#glow)"/>
+  <circle cx="71.1" cy="30.8" r="7.9" fill="url(#green)"/>
+</svg>

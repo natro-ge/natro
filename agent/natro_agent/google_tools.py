@@ -18,7 +18,7 @@ import html
 import io
 import json
 import re
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from email.message import EmailMessage
 
 from natro_agent.config import ROOT, timezone
@@ -134,7 +134,26 @@ def describe_event(event):
         last = end - timedelta(days=1)
         when = f"{start:%a %d %b}, all day" + (f" until {last:%a %d %b}" if last > start else "")
     where = f" (at {event['location']})" if event.get("location") else ""
-    return f"{when}: {event.get('summary', '(no title)')}{where} [id {event['id']}]"
+    # One day of a repeating event: its series id changes or deletes every day of it.
+    series = f"; repeats, series {event['recurringEventId']}" if event.get("recurringEventId") else ""
+    return f"{when}: {event.get('summary', '(no title)')}{where} [id {event['id']}{series}]"
+
+
+def repeat_rule(rule, start):
+    """Google's recurrence for an RRULE ("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;UNTIL=20261231").
+
+    A timed event's UNTIL must be a moment in UTC: a plain date becomes the end of that day where the owner is.
+    """
+    parts = [part.strip() for part in rule.strip().upper().removeprefix("RRULE:").split(";") if part.strip()]
+    if not any(part.startswith("FREQ=") for part in parts) or not all("=" in part for part in parts):
+        raise ToolError(f"Can't read the repeat rule {rule!r}: use an RRULE like FREQ=WEEKLY;BYDAY=MO,WE;UNTIL=20261231.")
+    for i, part in enumerate(parts):
+        until = re.fullmatch(r"UNTIL=(\d{8})", part)
+        if until and isinstance(start, datetime):
+            day = datetime.strptime(until.group(1), "%Y%m%d").date()
+            last = datetime.combine(day, time(23, 59, 59), tzinfo=timezone()).astimezone(UTC)
+            parts[i] = f"UNTIL={last:%Y%m%dT%H%M%SZ}"
+    return ["RRULE:" + ";".join(parts)]
 
 
 def event_times(start, end):
@@ -167,15 +186,19 @@ class Google:
         items = (await self.api.call("GET", f"{CALENDAR}/events", params)).get("items", [])
         return "\n".join(describe_event(event) for event in items) or "No events then."
 
-    async def create_event(self, title, start, end=None, location=None, description=None):
-        start_field, end_field = event_times(parse_when(start), parse_when(end) if end else None)
+    async def create_event(self, title, start, end=None, location=None, description=None, repeat=None):
+        first = parse_when(start)
+        start_field, end_field = event_times(first, parse_when(end) if end else None)
         body = {"summary": title, "start": start_field, "end": end_field}
         if location:
             body["location"] = location
         if description:
             body["description"] = description
+        if repeat:
+            body["recurrence"] = repeat_rule(repeat, first)
         event = await self.api.call("POST", f"{CALENDAR}/events", body=body)
-        return f"Created: {describe_event(event)}"
+        repeats = f", repeating ({body['recurrence'][0].removeprefix('RRULE:')})" if repeat else ""
+        return f"Created: {describe_event(event)}{repeats}"
 
     async def update_event(self, event_id, title=None, start=None, end=None, location=None, description=None):
         body = {key: value for key, value in (("summary", title), ("location", location),
@@ -344,34 +367,39 @@ class Google:
         return f"Replaced {changed} place{'s' if changed != 1 else ''}." if changed else "That text isn't in the document."
 
     def tools(self):
-        def tool(name, description, properties, run, required=(), confirm=False):
+        def tool(name, description, properties, run, required=(), confirm=False, changes=False):
             async def call(args):
                 return await run(**args)
             return Tool(name=name, description=description, run=call, source="google", personal=True,
-                        confirm=confirm, input_schema={"type": "object", "properties": properties,
-                                                       "required": list(required)})
+                        confirm=confirm, changes=changes, input_schema={"type": "object", "properties": properties,
+                                                                        "required": list(required)})
 
         when = {"type": "string", "description": "2026-10-06 for a day, or 2026-10-06T15:00 for a time (his local time)."}
         text = {"type": "string"}
+        repeat = {"type": "string", "description": "To repeat it, an RRULE: FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;"
+                  "UNTIL=20261231 (weekdays until Dec 31), FREQ=MONTHLY;COUNT=6, FREQ=YEARLY."}
+        series = " For a repeating event, its own id is that one day; its series id is every day of it."
         tools = [
             tool("calendar_events", "List events in your owner's Google Calendar, from start to end (default: today "
                  "and the next 6 days; just start: that day). query searches titles and details.",
                  {"start": when, "end": when, "query": text}, self.events),
             tool("calendar_create_event", "Add an event. A day without a time makes an all-day event; a timed "
-                 "event lasts an hour unless end is given.",
-                 {"title": text, "start": when, "end": when, "location": text, "description": text},
-                 self.create_event, ["title", "start"]),
+                 "event lasts an hour unless end is given. Something that recurs is one event with repeat, "
+                 "never many separate events.",
+                 {"title": text, "start": when, "end": when, "location": text, "description": text, "repeat": repeat},
+                 self.create_event, ["title", "start"], changes=True),
             tool("calendar_update_event", "Change an event (by id from calendar_events): only the fields given. "
-                 "Moving the start keeps its length unless end is given.",
+                 "Moving the start keeps its length unless end is given." + series,
                  {"event_id": text, "title": text, "start": when, "end": when, "location": text,
-                  "description": text}, self.update_event, ["event_id"]),
-            tool("calendar_delete_event", "Delete an event.", {"event_id": text}, self.delete_event, ["event_id"],
-                 confirm=True),
+                  "description": text}, self.update_event, ["event_id"], changes=True),
+            tool("calendar_delete_event", "Delete an event." + series, {"event_id": text}, self.delete_event,
+                 ["event_id"], confirm=True),
             tool("tasks_list", "List your owner's Google Tasks (his to-dos).",
                  {"show_completed": {"type": "boolean"}}, self.tasks),
             tool("tasks_add", "Add a to-do to Google Tasks, optionally due on a day.",
-                 {"title": text, "due": when, "notes": text}, self.add_task, ["title"]),
-            tool("tasks_complete", "Mark a task as done.", {"task_id": text}, self.complete_task, ["task_id"]),
+                 {"title": text, "due": when, "notes": text}, self.add_task, ["title"], changes=True),
+            tool("tasks_complete", "Mark a task as done.", {"task_id": text}, self.complete_task, ["task_id"],
+                 changes=True),
             tool("tasks_delete", "Delete a task.", {"task_id": text}, self.delete_task, ["task_id"], confirm=True),
             tool("gmail_search", "Find emails with Gmail search syntax (default \"in:inbox\"; e.g. \"is:unread\", "
                  "\"from:nino newer_than:7d\"). Shows sender, subject, date and a snippet.",
@@ -398,9 +426,9 @@ class Google:
         if DOCS_SCOPE in self.api.scopes:
             tools += [
                 tool("docs_create", "Create a Google Doc in his Drive, optionally with text in it.",
-                     {"title": text, "text": text}, self.docs_create, ["title"]),
+                     {"title": text, "text": text}, self.docs_create, ["title"], changes=True),
                 tool("docs_append", "Add text at the end of a Google Doc (by id from drive_search).",
-                     {"document_id": text, "text": text}, self.docs_append, ["document_id", "text"]),
+                     {"document_id": text, "text": text}, self.docs_append, ["document_id", "text"], changes=True),
                 tool("docs_replace", "Replace every occurrence of some text in a Google Doc (exact, case "
                      "sensitive); an empty replacement deletes it.",
                      {"document_id": text, "find": text, "replace_with": text}, self.docs_replace,

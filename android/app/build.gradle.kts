@@ -58,8 +58,8 @@ android {
         applicationId = "dev.natro"
         minSdk = 34
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 2
+        versionName = "0.2"
         buildConfigField("String", "NATRO_SERVER", "\"${local.getProperty("natro.server", "ws://100.101.107.5:8700")}\"")
         buildConfigField("String", "NATRO_TOKEN", "\"${local.getProperty("natro.token", "")}\"")
         // The Nothing Phone (2) is arm64; the other CPU types would only make the app bigger.

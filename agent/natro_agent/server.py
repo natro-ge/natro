@@ -7,26 +7,57 @@ GET /health answers "ok", so a device can show "Natro is online".
 
 Usage: python -m natro_agent.server
 
-Protocol: JSON text messages, plus one binary message (the recording, 16 kHz mono
-16-bit PCM) right after each "audio" message.
+Protocol: JSON text messages, plus one binary message right after each "audio" message (the
+recording, 16 kHz mono 16-bit PCM) and each "file_part" message (the next piece of a file).
 
 Device to Natro:
-  {"type": "hello", "device": "pc", "label": "PC", "token": "...", "tools": [...]}  first; tools as in tools.device_tools
+  {"type": "hello", "device": "pc", "label": "PC", "token": "...", "tools": [...], "files": true}
+                                                                    first; tools as in tools.device_tools;
+                                                                    files: it can send and receive files
   {"type": "text", "id": "r1", "text": "open Chrome"}               a typed request, in English
   {"type": "audio", "id": "r2"} + recording                         a spoken request, in Georgian
   {"type": "audio", "id": "r3", "answer_to": "q1"} + recording      a spoken yes or no to a question
   {"type": "answer", "id": "q1", "yes": true}                       a yes or no by key or tap
   {"type": "tool_result", "id": "c1", "ok": true, "result": "..."}  the result of a tool_call
+  {"type": "cancel", "id": "r2"}                                    stop a request: no more tool calls, no reply
 Natro to device:
   {"type": "welcome", "spent": 0.42, "budget": 15}                  hello accepted; this month's spending (USD)
   {"type": "english", "id": "r2", "text": "..."}                    the translation, in pieces as it's written
   {"type": "heard", "id": "r2", "georgian": "...", "english": "..."}  what the voice pipeline heard
   {"type": "reply_text", "id": "r1", "text": "..."}                 the reply, in pieces as it's written
+  {"type": "step", "id": "r1", "text": "Opening Spotify", "icon": "app", "app": "Spotify"}
+                                                                    what she's doing (steps.py; "app" optional)
   {"type": "reply", "id": "r1", "text": "...", "model": "...", "cost": 0.004, "seconds": 2.1,
-   "spent": 0.43, "budget": 15}                                    show and speak it
+   "spent": 0.43, "budget": 15, "tools": [...]}                    show and speak it; tools: what ran, for
+                                                                    the PC app's verbose records
   {"type": "confirm", "id": "q1", "question": "...", "details": "..."}  ask the owner yes or no
   {"type": "tool_call", "id": "c1", "name": "open_app", "args": {...}}  run one of the device's tools
   {"type": "error", "id": "r2", "message": "..."}
+  {"type": "cancelled", "id": "r2"}                                 the request is stopped: any tool_call
+                                                                    before this was still for it
+
+Files, between devices that said "files" in their hello (files.py). Either way, a file goes as
+file_offer (up) or file_incoming (down), then file_part + its bytes (at most 512 KB) again and again,
+then file_end; whoever gets it answers each part with file_got, and the sender sends on only while
+less than 2 MB is unanswered. Ids are made by whoever starts the file and are unique across devices
+and restarts ("pc-...", "phone-...", "natro-...").
+Device to Natro:
+  {"type": "file_offer", "id": "pc-1", "to": "phone", "name": "report.pdf", "size": 120000}
+                                                                    a file for the other device: its parts follow
+  {"type": "file_part", "id": "pc-1"} + bytes                       (either way) the next piece
+  {"type": "file_end", "id": "pc-1"}                                (either way) that was all of it
+  {"type": "file_got", "id": "pc-1", "bytes": 1048576}             (either way) this much has arrived
+  {"type": "file_saved", "id": "pc-1", "name": "report (1).pdf"}    the file that came down is saved, as name
+  {"type": "file_failed", "id": "pc-1", "message": "..."}           (either way) giving up on it: sending it,
+                                                                    saving it, or a file_request
+Natro to device:
+  {"type": "file_request", "id": "natro-1", "path": "C:\\...", "to": "phone"}  send this file (the owner asked
+                                                                    Natro): file_offer with this id, or file_failed
+  {"type": "file_sent", "id": "pc-1", "waiting": false}             all of it is on the server; waiting: the
+                                                                    other device is offline and gets it when it's back
+  {"type": "file_delivered", "id": "pc-1", "to": "phone", "name": "report (1).pdf"}  the other device saved it
+  {"type": "file_incoming", "id": "pc-1", "from": "pc", "name": "report.pdf", "size": 120000}
+                                                                    a file from the other device: its parts follow
 """
 import asyncio
 import hmac
@@ -42,7 +73,8 @@ from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
 from natro_agent import log
-from natro_agent.config import load_env
+from natro_agent.config import ROOT, load_env
+from natro_agent.files import Transfers
 from natro_agent.mcp_client import MCPServers
 from natro_agent.setup import build_agent
 from natro_agent.tools import Device, ToolError, device_tools
@@ -98,6 +130,7 @@ class RemoteDevice(Device):
         self.name = hello["device"]
         self.label = hello.get("label") or self.name
         self.specs = hello.get("tools", [])
+        self.files = bool(hello.get("files"))
         self.outbox = asyncio.Queue()
         self._waiting = {}  # message id -> future for the device's answer
         self._ids = itertools.count(1)
@@ -108,6 +141,10 @@ class RemoteDevice(Device):
     def post(self, **message):
         """Queue a message for the device (safe to call from synchronous code)."""
         self.outbox.put_nowait(json.dumps(message, ensure_ascii=False))
+
+    def post_bytes(self, data):
+        """Queue a binary message (a piece of a file, after its file_part)."""
+        self.outbox.put_nowait(bytes(data))
 
     async def send_all(self):
         while True:
@@ -148,16 +185,25 @@ class RemoteDevice(Device):
 
 
 class Server:
-    def __init__(self, agent, voice=None, token=None):
+    """transfers: a files.Transfers, for files between devices (None: no files)."""
+
+    def __init__(self, agent, voice=None, token=None, transfers=None):
         self.agent = agent
         self.voice = voice
         self.token = token
+        self.transfers = transfers
+        if transfers:
+            agent.own_tools += transfers.tools()
         self._tasks = set()
 
-    def _start(self, coroutine):
+    def _start(self, coroutine, running, id):
+        """Run a request; running (request id -> task) lets the device cancel it."""
         task = asyncio.create_task(coroutine)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        if id:
+            running[id] = task
+            task.add_done_callback(lambda done: running.pop(id) if running.get(id) is done else None)
 
     async def handle(self, connection):
         try:
@@ -174,24 +220,43 @@ class Server:
         self.agent.connect(device)
         log.write("device", device=device.name, event="connected", tools=[spec["name"] for spec in device.specs])
         device.post(type="welcome", **self._month())
+        if self.transfers:
+            self.transfers.connected(device)
+        running = {}  # this device's requests in progress, by id
         try:
             async for message in connection:
                 if isinstance(message, bytes):
-                    continue  # a recording without its "audio" message
+                    continue  # a recording or a piece of a file without its message
                 data = json.loads(message)
-                kind = data.get("type")
-                if kind in ("answer", "tool_result"):
+                kind = data.get("type") or ""
+                if kind == "file_part":
+                    piece = await connection.recv()
+                    if self.transfers:
+                        self.transfers.part(device, str(data.get("id", "")), piece)
+                elif kind.startswith("file_"):
+                    if self.transfers:
+                        self.transfers.received(device, data)
+                    elif kind == "file_offer":
+                        device.post(type="file_failed", id=data.get("id"), message="Natro can't pass files on.")
+                elif kind in ("answer", "tool_result"):
                     device.answered(data.get("id"), data)
                 elif kind == "text":
-                    self._start(self.text_request(device, data))
+                    self._start(self.text_request(device, data), running, data.get("id"))
                 elif kind == "audio":
                     pcm = await connection.recv()
-                    self._start(self.audio_request(device, data, pcm))
+                    self._start(self.audio_request(device, data, pcm), running, data.get("id"))
+                elif kind == "cancel":
+                    if task := running.pop(data.get("id"), None):
+                        task.cancel()
+                    # Posted before the cancelled task can run again, so nothing of it follows this.
+                    device.post(type="cancelled", id=data.get("id"))
         except ConnectionClosed:
             pass
         finally:
             self.agent.disconnect(device)
             device.disconnected()
+            if self.transfers:
+                self.transfers.disconnected(device)
             sender.cancel()
             log.write("device", device=device.name, event="disconnected")
 
@@ -232,13 +297,20 @@ class Server:
 
     async def _respond(self, device, id, english, voice_cost):
         reply = await self.agent.respond(english, device, voice_cost=voice_cost,
-                                         on_text=lambda piece: device.post(type="reply_text", id=id, text=piece))
+                                         on_text=lambda piece: device.post(type="reply_text", id=id, text=piece),
+                                         on_step=lambda step: device.post(type="step", id=id, **step))
         device.post(type="reply", id=id, text=reply.text, model=reply.model, cost=round(reply.cost + voice_cost, 5),
-                    seconds=round(reply.seconds, 2), **self._month())
+                    seconds=round(reply.seconds, 2), tools=tools_used(reply), **self._month())
 
     def _month(self):
         """This month's spending, for devices to show."""
         return {"spent": round(self.agent.ledger.spent, 4), "budget": self.agent.ledger.budget}
+
+
+def tools_used(reply):
+    """The tools a request ran: name, arguments, whether it worked, whether the owner declined, the result's start."""
+    return [{"tool": call["tool"], "args": call["args"], "ok": call["ok"], "declined": call.get("declined", False),
+             "result": call["result"][:300]} for call in reply.tool_calls]
 
 
 def health(connection, request):
@@ -262,7 +334,7 @@ async def run():
     token = os.environ.get("NATRO_DEVICE_TOKEN")
     if not token:
         print("NATRO_DEVICE_TOKEN is not set: any device that can reach this address may connect.")
-    server = Server(agent, make_voice(), token)
+    server = Server(agent, make_voice(), token, Transfers(ROOT / "transfers", agent.devices))
     host, port = os.environ.get("NATRO_LISTEN", DEFAULT_LISTEN).rsplit(":", 1)
     try:
         async with serve(server.handle, host, int(port), process_request=health,

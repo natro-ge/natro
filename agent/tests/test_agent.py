@@ -5,7 +5,7 @@ from conftest import FakeClient, Owner, fallback, message, run, text, thinking, 
 from natro_agent import agent as agent_module
 from natro_agent.agent import Agent, echo_content
 from natro_agent.dryrun import PC_TOOLS, DryRunDevice
-from natro_agent.tools import ASKS_FIRST
+from natro_agent.tools import ASKS_FIRST, Tool
 
 
 def make_agent(client, budget=15.0):
@@ -68,6 +68,54 @@ def test_risky_tool_runs_after_yes():
     agent, pc = make_agent(client)
     run(agent.respond("force close Spotify", Owner(answer=True)))
     assert pc.calls == [("force_close_app", {"app": "Spotify"})]
+
+
+def test_each_tool_that_runs_is_shown_as_a_step():
+    client = FakeClient(
+        message(tool_use("t1", "pc_open_app", app="Spotify"), tool_use("t2", "pc_force_close_app", app="Chrome"),
+                stop="tool_use"),
+        message(text("Spotify is open; I left Chrome.")),
+    )
+    agent, _ = make_agent(client)
+    shown = []
+    run(agent.respond("open Spotify and force close Chrome", Owner(answer=False), on_step=shown.append))
+    # Chrome's force-close was declined, so it never ran and isn't shown.
+    assert shown == [{"text": "Opening Spotify", "icon": "app", "app": "Spotify"}]
+
+
+def task_tool(added):
+    async def add(args):
+        added.append(args["title"])
+        return "Added."
+    return Tool(name="tasks_add", description="Add a task.", run=add, source="google", personal=True, changes=True,
+                input_schema={"type": "object", "properties": {"title": {"type": "string"}}})
+
+
+def test_many_changes_ask_once_with_natros_sentence():
+    calls = [tool_use(f"t{i}", "tasks_add", title=f"Task {i}") for i in range(6)]
+    client = FakeClient(message(text("I'll add 6 tasks."), *calls, stop="tool_use"), message(text("Added them.")))
+    added = []
+    owner = Owner(answer=False)
+    run(Agent(tools=[task_tool(added)], client=client).respond("add these six tasks", owner))
+    assert owner.questions == [("I'll add 6 tasks.", "6 changes: tasks_add x6")]
+    assert added == []
+    results = client.requests[1]["messages"][-1]["content"]
+    assert {result["content"] for result in results} == {"Your owner said no, so this was not done."}
+
+
+def test_many_changes_counted_over_the_whole_request():
+    client = FakeClient(
+        message(*(tool_use(f"a{i}", "tasks_add", title=f"A{i}") for i in range(5)), stop="tool_use"),
+        message(text("Two more."), *(tool_use(f"b{i}", "tasks_add", title=f"B{i}") for i in range(2)), stop="tool_use"),
+        message(tool_use("c0", "tasks_add", title="C0"), stop="tool_use"),
+        message(text("Done.")),
+    )
+    added = []
+    owner = Owner(answer=True)
+    run(Agent(tools=[task_tool(added)], client=client).respond("add these tasks", owner))
+    # Five run without asking; the sixth asks once, and after a yes the rest of the request doesn't ask again.
+    assert owner.questions == [("Two more.", "2 changes: tasks_add x2")]
+    assert len(added) == 8
 
 
 def test_device_that_went_offline_mid_conversation():

@@ -117,11 +117,11 @@ class Notes:
         os.replace(temporary, path)
 
     def tools(self):
-        def tool(name, description, properties, run, required=(), confirm=False):
+        def tool(name, description, properties, run, required=(), confirm=False, changes=False):
             async def call(args):
                 return run(**args)
             return Tool(name=name, description=description, run=call, source="natro", personal=True, confirm=confirm,
-                        input_schema={"type": "object", "properties": properties, "required": list(required)})
+                        changes=changes, input_schema={"type": "object", "properties": properties, "required": list(required)})
 
         title = {"type": "string", "description": "The note's title."}
         return [
@@ -134,11 +134,11 @@ class Notes:
                  "missing). Markdown is fine.",
                  {"title": title, "text": {"type": "string"},
                   "mode": {"type": "string", "enum": ["create", "append"]}},
-                 self.write, ["title", "text", "mode"]),
+                 self.write, ["title", "text", "mode"], changes=True),
             tool("notes_edit",
                  "Change part of a note: old_text (quoted exactly, appearing once) becomes new_text. An empty "
                  "new_text removes it.",
                  {"title": title, "old_text": {"type": "string"}, "new_text": {"type": "string"}},
-                 self.edit, ["title", "old_text", "new_text"]),
+                 self.edit, ["title", "old_text", "new_text"], changes=True),
             tool("notes_delete", "Delete a whole note.", {"title": title}, self.delete, ["title"], confirm=True),
         ]

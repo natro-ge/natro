@@ -1,0 +1,82 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Natro",
+  "version": "0.1.0",
+  "identifier": "dev.natro.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "dock",
+        "title": "Natro",
+        "width": 360,
+        "height": 104,
+        "visible": false,
+        "focus": false,
+        "focusable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false
+      },
+      {
+        "label": "reply",
+        "title": "Natro's reply",
+        "url": "reply.html",
+        "width": 440,
+        "height": 120,
+        "visible": false,
+        "focus": false,
+        "focusable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false
+      },
+      {
+        "label": "chat",
+        "title": "Natro chat",
+        "url": "chat.html",
+        "width": 784,
+        "height": 600,
+        "visible": false,
+        "focus": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

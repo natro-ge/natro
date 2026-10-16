@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="natro">#FF5B3FD6</color>
+    <!-- The launcher icon's background: the dark of branding/icon.svg. -->
+    <color name="natro">#FF14171B</color>
+    <!-- The app's background before Compose draws (Theme.kt's Palette). -->
+    <color name="background">#FFF4F6F4</color>
 </resources>

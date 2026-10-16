@@ -1,0 +1,26 @@
+// Small line pictures for the dock's steps, by kind (agent/natro_agent/steps.py).
+// Drawn on a 16 × 16 grid with the text's color; an app's own icon is used instead when the PC has the app.
+export const GLYPHS: Record<string, string> = {
+  app: '<rect x="2" y="2" width="5" height="5" rx="1.3"/><rect x="9" y="2" width="5" height="5" rx="1.3"/><rect x="2" y="9" width="5" height="5" rx="1.3"/><rect x="9" y="9" width="5" height="5" rx="1.3"/>',
+  music: '<path d="M6 12.5V3.6l7-1.6v8.8"/><circle cx="4.3" cy="12.5" r="1.8"/><circle cx="11.3" cy="10.8" r="1.8"/>',
+  calendar: '<rect x="2.5" y="3.5" width="11" height="10" rx="2"/><path d="M2.5 7h11M5.5 2v3M10.5 2v3"/>',
+  tasks: '<rect x="2.5" y="2.5" width="11" height="11" rx="2.5"/><path d="M5.5 8.2l1.8 1.8 3.4-3.6"/>',
+  mail: '<rect x="2" y="3.5" width="12" height="9" rx="2"/><path d="M2.6 4.6L8 8.8l5.4-4.2"/>',
+  drive: '<path d="M4.5 12.5h7a3 3 0 0 0 .3-6 4 4 0 0 0-7.6-.9A3.5 3.5 0 0 0 4.5 12.5z"/>',
+  docs: '<path d="M4 2h5.5L12 4.5V14H4z"/><path d="M9.5 2v2.5H12M6 8h4M6 10.5h4"/>',
+  web: '<circle cx="7" cy="7" r="4.5"/><path d="M10.4 10.4L14 14"/>',
+  memory: '<path d="M4.5 2.5h7v11L8 11l-3.5 2.5z"/>',
+  notes: '<path d="M3 13l.8-3.2 6.9-6.9 2.4 2.4-6.9 6.9z"/><path d="M9.3 4.3l2.4 2.4"/>',
+  files: '<path d="M2 5a1.5 1.5 0 0 1 1.5-1.5h3l1.5 1.5h4.5A1.5 1.5 0 0 1 14 6.5v5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z"/>',
+  link: '<path d="M7 9a2.5 2.5 0 0 0 3.5 0l2-2a2.5 2.5 0 0 0-3.5-3.5l-.8.8"/><path d="M9 7a2.5 2.5 0 0 0-3.5 0l-2 2A2.5 2.5 0 0 0 7 12.5l.8-.8"/>',
+  alarm: '<circle cx="8" cy="9" r="5"/><path d="M8 6.5V9l1.8 1.2M2.5 3.6l2-1.6M13.5 3.6l-2-1.6"/>',
+  timer: '<circle cx="8" cy="9" r="5"/><path d="M8 9V6.5M6.3 1.8h3.4"/>',
+  phone: '<path d="M5.3 2.5l1.4 3.2-1.6 1.2a7.5 7.5 0 0 0 4 4l1.2-1.6 3.2 1.4-.4 2a1.6 1.6 0 0 1-1.7 1.3C6.8 13.6 2.4 9.2 2 4.6a1.6 1.6 0 0 1 1.3-1.7z"/>',
+  message: '<path d="M2.5 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7.2L4.5 13.6V11.5a2 2 0 0 1-2-2z"/>',
+  contacts: '<circle cx="8" cy="5.5" r="2.8"/><path d="M2.8 14a5.2 5.2 0 0 1 10.4 0"/>',
+  notifications: '<path d="M4 11V7.5a4 4 0 0 1 8 0V11l1 1.5H3z"/><path d="M6.6 14a1.5 1.5 0 0 0 2.8 0"/>',
+  flashlight: '<path d="M9 1.5L3.5 9H8l-1 5.5L12.5 7H8z"/>',
+  volume: '<path d="M2.5 6H5l3.5-3v10L5 10H2.5z"/><path d="M11 5.5a3.5 3.5 0 0 1 0 5M12.8 3.6a6 6 0 0 1 0 8.8"/>',
+  screen: '<rect x="4.5" y="1.5" width="7" height="13" rx="1.8"/><path d="M7 12.4h2"/>',
+  work: '<path d="M8 2l1.4 4.6L14 8l-4.6 1.4L8 14l-1.4-4.6L2 8l4.6-1.4z"/>',
+}

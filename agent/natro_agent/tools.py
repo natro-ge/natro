@@ -37,6 +37,8 @@ class Tool:
     personal: bool = False
     # Ask the owner before running it (deleting, sending, calling, force-closing...).
     confirm: bool = False
+    # It adds or changes one of the owner's items (an event, a task, a note): many in one request ask first.
+    changes: bool = False
     # Its result's first line is a fine spoken reply ("Paused.", "Opened Spotify."): when a simple request
     # needed only this tool, that is the reply, without another model call.
     final: bool = False
@@ -66,6 +68,7 @@ class Device:
 
     name = "device"  # short id used in tool names: "pc", "phone"
     label = "device"  # how Natro calls it: "PC", "phone"
+    files = False  # it can send and receive files (files.py)
 
     def tools(self):
         return []
@@ -78,7 +81,7 @@ class Device:
 def device_tools(device, specs, call):
     """Tools from a device's own descriptions of them.
 
-    specs: [{"name", "description", "input_schema", "personal", "confirm", "final"}, ...] as
+    specs: [{"name", "description", "input_schema", "personal", "confirm", "changes", "final"}, ...] as
     the device sends them. call(name, args) runs one on the device.
     """
     return [Tool(name=tool_name(device.name, spec["name"]),
@@ -88,5 +91,6 @@ def device_tools(device, specs, call):
                  source=device.name,
                  personal=spec.get("personal", False),
                  confirm=spec.get("confirm", False),
+                 changes=spec.get("changes", False),
                  final=spec.get("final", False))
             for spec in specs]

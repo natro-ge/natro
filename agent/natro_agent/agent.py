@@ -14,6 +14,8 @@ Claude's prompt cache and its thinking blocks are tied to the exact
 conversation, so within a Claude conversation the instructions and the tool list
 never change and messages are only ever appended. A device that disconnects
 mid-conversation keeps its tools in the list; calling them returns "offline".
+A cancelled request is taken back off the end, so the conversation is as it was
+before it (and its cached start still applies).
 """
 import asyncio
 import json
@@ -25,7 +27,7 @@ from datetime import datetime
 
 import anthropic
 
-from natro_agent import costs, identity, log, quick
+from natro_agent import costs, identity, log, quick, steps
 from natro_agent.config import monthly_budget, timezone
 from natro_agent.gemini import HAND_OVER_RULES
 from natro_agent.models import DEFAULT_MODEL, FALLBACK_MODEL, cost, options
@@ -40,6 +42,8 @@ MAX_STEPS = 20
 MAX_TOKENS = 16000
 TOOL_SECONDS = 60
 CONFIRM_SECONDS = 60
+# More changes than this in one request (events, tasks, notes added or changed) ask the owner once first.
+MANY_CHANGES = 5
 # Longer tool results are cut, to keep requests small.
 RESULT_CHARS = 20000
 # NATRO_CHECK_HISTORY=1 makes Claude reject any edit to a past conversation (see models.options).
@@ -49,7 +53,7 @@ TOKEN_KINDS = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_
 # Words that mark a request as personal or risky: it goes straight to Claude.
 # Broad on purpose: a wrong guess here only costs a little money.
 PERSONAL_HINTS = re.compile(
-    r"\b(remember|forget|remind|reminder|memory|note|notes|to-?do|tasks?|e-?mails?|gmail|inbox|mail|calendar|"
+    r"\b(remember|forget|remind|reminder|memory|note|notes|to-?do|tasks?|shopping|groceries|grocery|my lists?|e-?mails?|gmail|inbox|mail|calendar|"
     r"schedule|meeting|appointment|events?|files?|documents?|docs?|drive|sheets?|spreadsheets?|folders?|photos?|"
     r"messages?|sms|texts?|whatsapp|"
     r"notifications?|contacts?|call|delete|remove|send|share|pay|password|bank|address|about me|my name)\b",
@@ -70,6 +74,13 @@ class Reply:
     tool_calls: list = field(default_factory=list)
     # Tokens over all Claude calls, to see what caching saves.
     tokens: dict = field(default_factory=lambda: dict.fromkeys(TOKEN_KINDS, 0))
+
+
+@dataclass
+class Changes:
+    """The owner's items one request has added or changed so far, and whether he allowed many."""
+    made: int = 0
+    allowed: bool = False
 
 
 class Conversation:
@@ -151,6 +162,7 @@ class Agent:
         self.memory = memory
         self.gemini = gemini
         self.devices = {}  # name -> Device, while connected
+        self._on_step = lambda step: None  # the request being handled's (one at a time: _busy)
         self.session = None
         self.ledger = costs.Ledger(monthly_budget() if budget is None else budget)
         self._busy = asyncio.Lock()  # one request at a time
@@ -184,17 +196,29 @@ class Agent:
             return await same.run(args)
         return run_on_device
 
-    async def respond(self, text, device, on_text=None, voice_cost=0.0):
+    async def respond(self, text, device, on_text=None, voice_cost=0.0, on_step=None):
         """Handle one request (English text) from a device and return Natro's reply.
 
-        on_text receives the reply in pieces as it is written. voice_cost is what
+        on_text receives the reply in pieces as it is written. on_step receives what she's
+        doing as each tool starts (steps.describe: {"text": "Opening Spotify", ...}). voice_cost is what
         recognizing and translating the request cost, for the monthly total.
+
+        Cancelling the task that runs this (the owner cancelled on the device) stops the request where
+        it is and leaves the conversation as it was before it.
         """
         on_text = on_text or (lambda piece: None)
         async with self._busy:
+            self._on_step = on_step or (lambda step: None)
             started = time.monotonic()
+            before = self._mark()
             try:
                 reply = await self._respond(text, device, on_text)
+            except asyncio.CancelledError:
+                self._rewind(before)
+                self.ledger.add(voice_cost)
+                log.write("request", device=device.name, text=text, cancelled=True, voice_cost=round(voice_cost, 6),
+                          seconds=round(time.monotonic() - started, 2))
+                raise
             except anthropic.APIError as e:
                 log.write("error", device=device.name, text=text, error=repr(e))
                 reply = Reply("Sorry, I can't reach Claude right now, so I can't do that. Please try again in a bit.",
@@ -254,6 +278,25 @@ class Agent:
             self.session.last_used = time.monotonic()
         return reply
 
+    def _mark(self):
+        """Where the conversation stands now, to go back to if a request is cancelled."""
+        session = self.session
+        if isinstance(session, GeminiSession):
+            return session, (len(session.contents), len(session.turns))
+        if isinstance(session, Session):
+            return session, (len(session.messages),)
+        return session, ()
+
+    def _rewind(self, mark):
+        """The conversation as it was at mark: a cancelled request's turns taken off its end."""
+        session, lengths = mark
+        self.session = session
+        if isinstance(session, GeminiSession):
+            del session.contents[lengths[0]:]
+            del session.turns[lengths[1]:]
+        elif isinstance(session, Session):
+            del session.messages[lengths[0]:]
+
     def _claude_session(self, earlier=()):
         memory = self.memory.prompt_section() if self.memory else None
         return Session(self.model, self.offered_tools(), list(self.devices.values()), memory, earlier)
@@ -289,6 +332,7 @@ class Agent:
         session.messages.append({"role": "user", "content": request})
         reply = Reply("", session.model)
         said = []
+        changes = Changes()
         for step in range(MAX_STEPS):
             response, model = await self._call(session, self._spaced(on_text, bool(said)))
             reply.cost += cost(model, response.usage)
@@ -311,8 +355,10 @@ class Agent:
             tool_uses = [block for block in content if block.type == "tool_use"]
             if not tool_uses:
                 break
-            # Natro's sentence before a risky tool is the confirmation question.
-            results = await asyncio.gather(*(self._use_tool(session, block, device, text_of(content), reply)
+            # Natro's sentence before a risky tool (or before many changes) is the confirmation question.
+            declined = await self._many_changes(changes, session.tools, tool_uses, device, text_of(content))
+            results = await asyncio.gather(*(self._use_tool(session, block, device, text_of(content), reply,
+                                                            declined=block.id in declined)
                                              for block in tool_uses))
             session.messages.append({"role": "user", "content": list(results)})
             if simple and step == 0 and not said and len(results) == 1 and not results[0]["is_error"] \
@@ -371,14 +417,34 @@ class Agent:
                 on_text(piece)
             return await stream.get_final_message()
 
-    async def _use_tool(self, session, block, device, question, reply):
+    async def _many_changes(self, changes, tools, tool_uses, device, question):
+        """Ask once before a request's changes go past MANY_CHANGES. Returns the ids of the calls he declined."""
+        changing = [block for block in tool_uses if getattr(tools.get(block.name), "changes", False)]
+        if not changing:
+            return set()
+        if not changes.allowed and changes.made + len(changing) > MANY_CHANGES:
+            counts = {}
+            for block in changing:
+                counts[block.name] = counts.get(block.name, 0) + 1
+            details = ", ".join(f"{name} x{count}" for name, count in counts.items())
+            changes.allowed = await self._ask(device, question or f"Should I make {len(changing)} changes?",
+                                              f"{len(changing)} changes: {details}")
+            if not changes.allowed:
+                return {block.id for block in changing}
+        changes.made += len(changing)
+        return set()
+
+    async def _use_tool(self, session, block, device, question, reply, declined=False):
         """Run one of Claude's tool calls and return its tool_result."""
         args = block.input if isinstance(block.input, dict) else {}
-        content, is_error = await self._call_tool(session.tools, block.name, args, device, question, reply)
+        content, is_error = await self._call_tool(session.tools, block.name, args, device, question, reply, declined)
         return {"type": "tool_result", "tool_use_id": block.id, "content": content, "is_error": is_error}
 
-    async def _call_tool(self, tools, name, args, device, question, reply):
-        """Run one tool call, asking first if it needs a yes. Returns (text for the model, whether it failed)."""
+    async def _call_tool(self, tools, name, args, device, question, reply, declined=False):
+        """Run one tool call, asking first if it needs a yes. Returns (text for the model, whether it failed).
+
+        declined: the owner already said no to it (as one of many changes).
+        """
         tool = tools.get(name)
         if tool is None:
             # Models sometimes get the letter case of a name wrong.
@@ -386,11 +452,12 @@ class Agent:
         call = {"tool": name, "args": args}
         if tool is None:
             content, is_error = f"There is no tool named {name!r}.", True
-        elif tool.confirm and not await self._ask(device, question or f"Should I run {tool.name}?",
-                                                  f"{tool.name} {json.dumps(args, ensure_ascii=False)}"):
+        elif declined or tool.confirm and not await self._ask(device, question or f"Should I run {tool.name}?",
+                                                              f"{tool.name} {json.dumps(args, ensure_ascii=False)}"):
             content, is_error = "Your owner said no, so this was not done.", False
             call["declined"] = True
         else:
+            self._show_step(tool.name, args)
             content, is_error = await self._run(tool, args)
         call.update(ok=not is_error, result=content[:500])
         log.write("tool", device=device.name, **call)
@@ -398,6 +465,12 @@ class Agent:
         if len(content) > RESULT_CHARS:
             content = f"{content[:RESULT_CHARS]}\n[cut here: the whole result was {len(content)} characters]"
         return content, is_error
+
+    def _show_step(self, name, args):
+        try:
+            self._on_step(steps.describe(name, args))
+        except Exception as e:  # a step is only for show: never in the way of the tool
+            log.write("error", step="describe", tool=name, error=repr(e))
 
     async def _run(self, tool, args):
         """Returns (text for the model, whether it failed)."""

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The quick settings tile's icon: Natro's N ending in her dot (as on the launcher icon), at 24 dp. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M7,18.5 L7,8 L16,18.5 L16,10.4"
+        android:strokeWidth="2.2"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M16,6.2m-2,0a2,2 0,1 1,4 0a2,2 0,1 1,-4 0" />
+</vector>

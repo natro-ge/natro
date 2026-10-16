@@ -29,12 +29,13 @@ class Recorder {
         synchronized(pcm) { pcm.reset() }
         recording.startRecording()
         record = recording
+        val loudness = Loudness()
         reader = Thread {
             while (record === recording && pcm.size() < MAX_BYTES) {
                 val read = recording.read(block, 0, block.size)
                 if (read < 0) break
-                synchronized(pcm) { pcm.write(ListenService.bytes(block.copyOf(read))) }
-                onBlock?.invoke(SpeechEnd.loudness(block, read))
+                synchronized(pcm) { pcm.write(bytes(block.copyOf(read))) }
+                onBlock?.invoke(loudness.of(block, read))
             }
         }.also { it.start() }
     }
@@ -59,6 +60,14 @@ class Recorder {
         const val TARGET_LOUDNESS = 4_000
         const val MAX_GAIN = 30.0
         private const val FRAME = RATE / 50  // 20 ms
+
+        /** 16-bit samples as little-endian bytes, the format the voice pipeline takes. */
+        fun bytes(samples: ShortArray): ByteArray = ByteArray(samples.size * 2).also { out ->
+            samples.forEachIndexed { i, sample ->
+                out[2 * i] = sample.toInt().toByte()
+                out[2 * i + 1] = (sample.toInt() shr 8).toByte()
+            }
+        }
 
         /**
          * A quiet recording made louder, so its loudest 20 ms reach TARGET_LOUDNESS (at most MAX_GAIN

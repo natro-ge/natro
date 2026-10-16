@@ -9,13 +9,19 @@ and your online accounts, and answers on screen and out loud, in English.
 - **On the PC:** open and close apps; find, read and open files anywhere on
   the PC.
 - **On the phone:** be the phone's assistant (long-press the power button) and
-  listen for "OK Natro"; open apps, set alarms and timers, control media,
-  the flashlight and volume; read notifications and texts, find contacts,
-  call and text; use any app through its screen (read, tap, type, scroll).
+  listen for "OK Natro" or "Hey Natro"; open apps, set alarms and timers,
+  control media, the flashlight and volume; read notifications and texts,
+  find contacts, call and text; use any app through its screen (read, tap,
+  type, scroll).
 - **Google:** Calendar, Tasks, Gmail (read, and send after you say yes),
   Drive (read) and Docs.
 - **Spotify:** play any song, album, artist, playlist or podcast; pause, skip,
   volume, queue, like; on whichever device has Spotify open.
+- **Files between the PC and the phone** (up to 1 GB): ask her ("send the
+  invoice to my phone", "send my last photo to the PC"), share to "Send to
+  PC" on the phone, or right-click > Send to > "Phone (Natro)" on the PC. They
+  land in Downloads. The server only passes them along: a file waits there
+  for a device that's offline (up to 7 days) and is deleted once it arrives.
 - **Memory and notes:** she remembers what you tell her and preferences she
   notices herself; longer notes are Markdown files.
 - **Web search,** and any other tools you plug in as MCP servers.
@@ -81,12 +87,51 @@ $0.005 for the voice and $0.001 to $0.03 for the agent). The cap is set in
 | `voice/` | Speech recognition and translation (`natro_voice`) | Server |
 | `agent/` | The brain: agent loop, identity, routing, tools, device server (`natro_agent`) | Server |
 | `pc/` | The PC app: wake word, recording, PC tools, spoken replies, tray app (`natro_pc`) | Windows PC |
+| `desktop/` | A new PC app in progress (Tauri): a glass dock at the top of the screen that shows what Natro is doing (Ctrl+Alt+Space), and a chat to type to her at the bottom (Ctrl+Space); it will replace `pc/` | Windows PC |
 | `android/` | The Android app (Kotlin, Jetpack Compose) | Android 14+ phone (arm64) |
 | `deploy/` | Putting the brain on a Linux server: systemd service, backups | Server |
 | `scripts/` | Setting up a Windows PC | PC |
 
 Git-ignored and created as you go: `.env`, key files, `tokens/` (sign-ins),
 `memory/`, `notes/`, `logs/`, `models/`.
+
+## Progress
+
+Natro is in daily use and grows a piece at a time. Where it stands
+(October 2026):
+
+**Working**
+
+- The brain on a server: speech to English, the agent with Gemini's free tier
+  and Claude (personal data only to Claude), memory and notes, confirmations,
+  the spending cap; Google, Spotify, web search and MCP servers.
+- The PC app (`pc/`): "OK Natro", the talk key, apps and files, spoken
+  replies, the tray.
+- The Android app: the phone's assistant, "OK Natro" and "Hey Natro", a
+  bubble over other apps (drag it to an edge to park it, down to the ✕ to
+  cancel), the phone's tools and any app through its screen, settings with an
+  off switch for all of Natro.
+- Files between the PC and the phone, up to 1 GB, through the server.
+- Speed: the commonest music commands skip the model (0.2 to 0.4 s), and a
+  simple one-tool request answers with the tool's own result.
+- Tests: the golden list (privacy, confirmations, offline devices) over the
+  real tools, and per-request records (recording and log) to measure how
+  often she gets it right.
+
+**In progress: the new desktop app** (`desktop/`, Tauri 2: Rust and Svelte)
+
+- Done: the glass dock at the top (Ctrl+Alt+Space) that shows each step with
+  the app's own icon ("Opening Spotify", "Playing Yellow") and takes a click
+  to answer her questions; the chat (Ctrl+Space), a glass box rising from the
+  bottom with the conversation above it as bubbles, typed or spoken, answered
+  as text; files to and from the phone (Explorer's Send to, the tray); a
+  Verbose switch that keeps each request for testing.
+- Next: the PC tools and Kokoro in Rust (no Python helper), the wake word, a
+  better end-of-speech detector (Silero VAD) and starting at login. Then it
+  replaces `pc/`.
+
+**Later:** a Georgian voice for her replies, a more playful persona, and
+deeper app control (the browser through Playwright, for one).
 
 ## Setup
 
@@ -224,9 +269,12 @@ command-line tools with platform 37 and build-tools 37.0.0).
    ```
 
    The first build downloads sherpa-onnx and the wake word model.
-4. Open Natro on the phone and work through its "To set up" card: microphone
-   and notifications, the assistant role, contacts, calls and texts,
-   notification access, and screen control.
+4. Open Natro on the phone, then Settings (top right) > Set up: microphone
+   and notifications, the assistant role, display over other apps (for the
+   bubble), contacts, calls and texts, notification access, screen control,
+   and all files access (to find and send the phone's files when you ask). Settings > Test the wake word shows which of your tries she
+   catches. Her replies open from the bubble as text (tap to fold them back);
+   Settings > "Show replies as text" turns that off.
 
 ## Make her yours
 
@@ -241,12 +289,15 @@ command-line tools with platform 37 and build-tools 37.0.0).
 
 ## Tests
 
-None of them call a paid API:
+None of them call a paid API. `agent/tests/test_golden.py` is the golden list:
+it checks over Natro's real tools that personal data never reaches the free
+tier, that risky actions always ask, and that offline devices are reported.
 
 ```powershell
 .venv\Scripts\python.exe -m pytest agent
 .venv\Scripts\python.exe -m pytest pc
 android\gradlew.bat -p android testDebugUnitTest
+cd desktop\src-tauri; cargo test
 ```
 
 ## Limits

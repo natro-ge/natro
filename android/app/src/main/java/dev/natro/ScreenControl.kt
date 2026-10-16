@@ -2,12 +2,14 @@ package dev.natro
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.content.Intent
 import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import kotlin.math.abs
 
 /**
  * Controlling apps by their screen (the owner turns it on in Settings > Accessibility > Natro).
@@ -19,6 +21,9 @@ import android.view.accessibility.AccessibilityNodeInfo
  */
 class ScreenControl : AccessibilityService() {
     private var elements: List<AccessibilityNodeInfo> = emptyList()
+    // What each element was when the screen was read, and whose screen it was: to find it again.
+    private var seen: List<Seen> = emptyList()
+    private var screenApp = ""
 
     override fun onServiceConnected() {
         current = this
@@ -56,13 +61,16 @@ class ScreenControl : AccessibilityService() {
         }
         visit(root)
         elements = found
+        seen = found.map { seenOf(it) }
         val app = root.packageName?.toString().orEmpty()
+        screenApp = app
         val cut = if (found.size >= MAX_ELEMENTS) "\n(more on screen than shown)" else ""
         return "Screen of $app:\n" + lines.joinToString("\n") + cut
     }
 
     fun tap(number: Int, risky: Boolean): String {
-        val node = element(number)
+        // A risky tap ran after his yes, which he may have given in Natro's own screen, covering the app.
+        val node = if (risky) elementAfterQuestion(number) else element(number)
         val target = clickableSelfOrParent(node) ?: node
         val words = listOf(label(node), label(target), childText(target)).joinToString(" ")
         if (!risky && Text.RISKY.containsMatchIn(words)) {
@@ -101,9 +109,48 @@ class ScreenControl : AccessibilityService() {
 
     private fun element(number: Int): AccessibilityNodeInfo {
         val node = elements.getOrNull(number - 1) ?: throw ToolFailure("There's no [$number]: read the screen first.")
-        if (!node.refresh()) throw ToolFailure("The screen changed since it was read: read it again.")
+        if (!node.refresh()) throw screenChanged()
         return node
     }
+
+    /**
+     * The element he said yes to. If its app is no longer in front (he answered in Natro's screen), bring the app
+     * back first. Then the very same element, or one that is unmistakably it: the only one of its kind, id and
+     * label at the same place. Anything else means the screen really changed, and he is asked again.
+     */
+    private fun elementAfterQuestion(number: Int): AccessibilityNodeInfo {
+        val node = elements.getOrNull(number - 1) ?: throw ToolFailure("There's no [$number]: read the screen first.")
+        if (node.refresh()) return node
+        val was = seen.getOrNull(number - 1) ?: throw screenChanged()
+        if (!bringToFront(screenApp)) throw screenChanged()
+        if (node.refresh()) return node
+        describe()
+        val again = was.findIn(seen)
+        if (again == null) {
+            // The numbers he and Claude saw no longer mean anything: a tap now needs a new read.
+            elements = emptyList()
+            seen = emptyList()
+            throw screenChanged()
+        }
+        return elements[again]
+    }
+
+    /** Puts the app in front again (as opening it from the launcher does: same task, same screen). */
+    private fun bringToFront(app: String): Boolean {
+        if (frontApp() == app) return true
+        val open = packageManager.getLaunchIntentForPackage(app) ?: return false
+        startActivity(open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        repeat(FRONT_WAIT_MILLIS / 100) {
+            Thread.sleep(100)
+            if (frontApp() == app) {
+                Thread.sleep(SETTLE_MILLIS)
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun frontApp() = rootInActiveWindow?.packageName?.toString()
 
     /** The new screen, once the app has had a moment to react. */
     private fun after(done: String): String {
@@ -113,6 +160,7 @@ class ScreenControl : AccessibilityService() {
 
     private fun tapAt(node: AccessibilityNodeInfo) {
         val bounds = Rect().also(node::getBoundsInScreen)
+        Bubble.stepAside(bounds.exactCenterX(), bounds.exactCenterY())  // so the tap reaches the app, not the bubble
         val path = Path().apply { moveTo(bounds.exactCenterX(), bounds.exactCenterY()) }
         dispatchGesture(GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 60)).build(),
             null, null)
@@ -121,6 +169,15 @@ class ScreenControl : AccessibilityService() {
     companion object {
         private const val MAX_ELEMENTS = 150
         private const val SETTLE_MILLIS = 900L
+        private const val FRONT_WAIT_MILLIS = 3000
+
+        private fun screenChanged() = ToolFailure("The screen changed since it was read: read it again.")
+
+        private fun seenOf(node: AccessibilityNodeInfo): Seen {
+            val bounds = Rect().also(node::getBoundsInScreen)
+            return Seen(kind(node), node.viewIdResourceName.orEmpty(), label(node).ifBlank { childText(node) },
+                bounds.left, bounds.top, bounds.right, bounds.bottom)
+        }
 
         private fun label(node: AccessibilityNodeInfo): String =
             listOfNotNull(node.text, node.contentDescription, node.hintText).joinToString(" · ") { it.toString() }.trim()
@@ -160,5 +217,23 @@ class ScreenControl : AccessibilityService() {
         }
 
         @Volatile var current: ScreenControl? = null
+    }
+}
+
+/** A screen element as it was read: enough to recognize it once the app has rebuilt its screen. */
+data class Seen(val kind: String, val id: String, val label: String,
+                val left: Int, val top: Int, val right: Int, val bottom: Int) {
+    /** Its place on a new screen: the one element with the same kind, id and label at the same place, if any. */
+    fun findIn(screen: List<Seen>): Int? {
+        if (label.isBlank()) return null
+        return screen.indices.singleOrNull { screen[it].kind == kind && screen[it].id == id && screen[it].label == label }
+            ?.takeIf { screen[it].near(this) }
+    }
+
+    private fun near(other: Seen) = abs(left - other.left) <= NEAR && abs(top - other.top) <= NEAR &&
+        abs(right - other.right) <= NEAR && abs(bottom - other.bottom) <= NEAR
+
+    private companion object {
+        const val NEAR = 24  // pixels
     }
 }

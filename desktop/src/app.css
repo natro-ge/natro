@@ -1,0 +1,45 @@
+/* The look of the NatsarkekiaAI dock (github.com/tuxa4life/NatsarkekiaAI, public/style.css). */
+:root {
+  --text: #333;
+  --text-dim: rgba(51, 51, 51, 0.4);
+  --glass: rgba(255, 255, 255, 0.15);
+  --border: rgba(255, 255, 255, 0.3);
+  --highlight: rgba(255, 255, 255, 0.5);
+  --shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.1);
+  --green: linear-gradient(135deg, #10820c 0%, #0fb912 100%);
+  --green-glow: #0fb912;
+  /* The ✕ beside Natro's question. */
+  --decline: rgba(0, 0, 0, 0.08);
+  /* The reply box: the same glass, thicker, as there's more to read over whatever is behind it. */
+  --glass-thick: rgba(255, 255, 255, 0.8);
+  /* The chat's: thicker still, as it sits over whatever is open, text and all. */
+  --glass-dense: rgba(255, 255, 255, 0.92);
+  --link: #0a7a0d;
+
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  color: var(--text);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #fff;
+    --text-dim: rgba(255, 255, 255, 0.4);
+    --glass: rgba(30, 30, 30, 0.4);
+    --border: rgba(255, 255, 255, 0.2);
+    --decline: rgba(255, 255, 255, 0.14);
+    --glass-thick: rgba(30, 30, 30, 0.8);
+    --glass-dense: rgba(34, 34, 36, 0.93);
+    --link: #4cd64f;
+  }
+}
+
+/* The window is see-through: only the dock shows. */
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+  cursor: default;
+}

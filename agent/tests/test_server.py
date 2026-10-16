@@ -127,6 +127,34 @@ def test_spoken_no_to_a_question():
     assert calls == []
 
 
+def test_cancel_stops_a_request_and_forgets_it():
+    client = risky_turn()
+    client.replies[1] = message(text("Hi."))
+    server = Server(Agent(client=client), token="secret")
+
+    async def next_of(ws, kind, seen):
+        while (data := json.loads(await asyncio.wait_for(ws.recv(), 5)))["type"] != kind:
+            seen.append(data)
+        return data
+
+    async def device(ws, port):
+        await ws.send(json.dumps(HELLO))
+        await ws.recv()
+        seen = []
+        await ws.send(json.dumps({"type": "text", "id": "r1", "text": "force close Spotify"}))
+        await next_of(ws, "confirm", seen)  # cancelled instead of answered
+        await ws.send(json.dumps({"type": "cancel", "id": "r1"}))
+        assert (await next_of(ws, "cancelled", seen))["id"] == "r1"
+        await ws.send(json.dumps({"type": "text", "id": "r2", "text": "hello"}))
+        return seen + await until_reply(ws)
+
+    seen = run(session(server, device))
+    assert not any(m["type"] in ("tool_call", "reply") and m.get("id") == "r1" for m in seen)
+    assert seen[-1]["type"] == "reply" and seen[-1]["id"] == "r2" and seen[-1]["text"] == "Hi."
+    # The next request starts clean: the cancelled one's unanswered tool call isn't in the conversation.
+    assert [m["role"] for m in client.requests[1]["messages"]] == ["user"]
+
+
 def test_wrong_token_is_refused():
     server = Server(Agent(client=FakeClient()), token="secret")
 

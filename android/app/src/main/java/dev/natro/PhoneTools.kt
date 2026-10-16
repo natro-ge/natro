@@ -7,7 +7,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Environment
 import android.provider.ContactsContract.CommonDataKinds.Phone
+import android.provider.MediaStore
 import android.provider.Telephony
 import android.telephony.SmsManager
 import android.hardware.camera2.CameraCharacteristics
@@ -26,7 +28,7 @@ import java.util.Locale
  * The phone's tools, as Natro's brain sees them (sent in the hello; see agent/natro_agent/server.py).
  *
  * Apps, alarms, media, flashlight and volume are neither personal nor risky, so the free Gemini
- * tier may use them too. Notifications, contacts, texts and the screen are personal (Claude only);
+ * tier may use them too. Notifications, contacts, texts, files and the screen are personal (Claude only);
  * calling, texting and risky taps need the owner's yes. Android lets an app open other apps (and
  * the clock app, calls...) from the background only while it is the phone's assistant or its
  * accessibility service is on; otherwise only while it is on screen.
@@ -92,6 +94,18 @@ class PhoneTools(private val context: Context) {
             "with" to string("A name or number (optional)."),
             "count" to JSONObject().put("type", "integer").put("description", "Default 10."),
         ), listOf(), personal = true) { readSms(it.optString("with"), it.optInt("count", 10)) },
+
+        Tool("search_files", "Find files on the phone by name and kind, newest first: photos, screenshots, videos, " +
+            "music, documents, downloads (not apps' own files). Each with its full path (for copy_to_device), size and " +
+            "date.", props(
+            "words" to string("Words that must all be in the file's name (optional)."),
+            "kind" to JSONObject().put("type", "string")
+                .put("enum", JSONArray(listOf("image", "video", "audio", "document", "any")))
+                .put("description", "Default any. image includes screenshots (their path has Screenshots)."),
+            "count" to JSONObject().put("type", "integer").put("description", "Default 10, up to 30."),
+        ), listOf(), personal = true) {
+            searchFiles(it.optString("words"), it.optString("kind", "any"), it.optInt("count", 10))
+        },
 
         Tool("screen", "Read what's on the phone's screen now: numbered elements to tap, type into or scroll.",
             props(), listOf(), personal = true) { screen().describe() },
@@ -227,6 +241,31 @@ class PhoneTools(private val context: Context) {
         return lines.joinToString("\n").ifEmpty { "No texts found." }
     }
 
+    @Suppress("DEPRECATION")  // DATA, the file's path: readable with "All files access", which this needs anyway
+    private fun searchFiles(words: String, kind: String, count: Int): String {
+        if (!Environment.isExternalStorageManager()) {
+            throw ToolFailure("Natro can't see the phone's files yet: he can allow \"All files access\" in the Natro app.")
+        }
+        val where = mutableListOf("${MediaStore.Files.FileColumns.SIZE} > 0",
+            "${MediaStore.Files.FileColumns.RELATIVE_PATH} NOT LIKE 'Android/%'")
+        val args = mutableListOf<String>()
+        for (word in words.split(Regex("\\s+")).filter { it.isNotBlank() }) {
+            where += "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ? ESCAPE '\\'"
+            args += "%" + word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        }
+        MEDIA_TYPES[kind]?.let { where += "${MediaStore.Files.FileColumns.MEDIA_TYPE} = $it" }
+        val clock = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
+        val lines = mutableListOf<String>()
+        context.contentResolver.query(MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL),
+            arrayOf(MediaStore.Files.FileColumns.DATA, MediaStore.Files.FileColumns.SIZE, MediaStore.Files.FileColumns.DATE_MODIFIED),
+            where.joinToString(" AND "), args.toTypedArray(), "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC")?.use { rows ->
+            while (rows.moveToNext() && lines.size < count.coerceIn(1, 30)) {
+                lines += "- ${clock.format(Date(rows.getLong(2) * 1000))}  ${FileNames.size(rows.getLong(1))}  ${rows.getString(0)}"
+            }
+        }
+        return lines.joinToString("\n").ifEmpty { "No files match." }
+    }
+
     private fun openApp(app: String): String {
         val pm = context.packageManager
         val launchers = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
@@ -307,6 +346,10 @@ class PhoneTools(private val context: Context) {
         val DAYS = mapOf(
             "mon" to Calendar.MONDAY, "tue" to Calendar.TUESDAY, "wed" to Calendar.WEDNESDAY,
             "thu" to Calendar.THURSDAY, "fri" to Calendar.FRIDAY, "sat" to Calendar.SATURDAY, "sun" to Calendar.SUNDAY,
+        )
+        val MEDIA_TYPES = mapOf(
+            "image" to MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE, "video" to MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO,
+            "audio" to MediaStore.Files.FileColumns.MEDIA_TYPE_AUDIO, "document" to MediaStore.Files.FileColumns.MEDIA_TYPE_DOCUMENT,
         )
         val STREAMS = mapOf(
             "media" to AudioManager.STREAM_MUSIC, "ring" to AudioManager.STREAM_RING,

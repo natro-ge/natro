@@ -74,6 +74,30 @@ def test_create_timed_and_all_day_events():
     assert fake.requests[1][3]["start"] == {"date": "2026-10-10"} and fake.requests[1][3]["end"] == {"date": "2026-10-13"}
 
 
+def test_repeating_events_are_one_series():
+    created = {"id": "w1", "summary": "Work", "start": {"dateTime": "2026-10-07T10:00:00+04:00"},
+               "end": {"dateTime": "2026-10-07T16:00:00+04:00"}}
+    g, fake = google({("POST", f"{CALENDAR}/events"): (200, created)})
+    text = run(g.create_event("Work", "2026-10-07T10:00", "2026-10-07T16:00",
+                              repeat="FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;UNTIL=20261231"))
+    # A timed event's last day ends at midnight where he is (Tbilisi is UTC+4).
+    assert fake.requests[0][3]["recurrence"] == ["RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;UNTIL=20261231T195959Z"]
+    assert text == ("Created: Wed 07 Oct, 10:00-16:00: Work [id w1], "
+                    "repeating (FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;UNTIL=20261231T195959Z)")
+    # An all-day event keeps a plain date; the "RRULE:" prefix and case don't matter.
+    run(g.create_event("Gym", "2026-10-07", repeat="rrule:freq=weekly;until=20261231"))
+    assert fake.requests[1][3]["recurrence"] == ["RRULE:FREQ=WEEKLY;UNTIL=20261231"]
+    with pytest.raises(ToolError, match="repeat rule"):
+        run(g.create_event("Gym", "2026-10-07", repeat="every week"))
+
+
+def test_a_day_of_a_repeating_event_names_its_series():
+    events = {"items": [{"id": "w1_20261007T060000Z", "recurringEventId": "w1", "summary": "Work",
+                         "start": {"dateTime": "2026-10-07T06:00:00Z"}, "end": {"dateTime": "2026-10-07T12:00:00Z"}}]}
+    g, _ = google({("GET", f"{CALENDAR}/events"): (200, events)})
+    assert run(g.events("2026-10-07")) == "Wed 07 Oct, 10:00-16:00: Work [id w1_20261007T060000Z; repeats, series w1]"
+
+
 def test_moving_an_event_keeps_its_length():
     old = {"id": "e1", "start": {"dateTime": "2026-10-06T10:00:00+04:00"}, "end": {"dateTime": "2026-10-06T11:30:00+04:00"}}
     moved = {"id": "e1", "summary": "Dentist", "start": {"dateTime": "2026-10-08T15:00:00+04:00"},

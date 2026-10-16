@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What Natro's own pages may do",
+  "windows": ["dock", "reply", "chat"],
+  "permissions": ["core:default"]
+}
