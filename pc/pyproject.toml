@@ -13,6 +13,8 @@ dependencies = [
     "psutil",
     "pywin32",
     "pypdf",
+    # Screen control: Windows UI Automation's COM interface.
+    "comtypes>=1.4",
     # The tray app: its icon, the talk key.
     "pystray",
     "pillow",

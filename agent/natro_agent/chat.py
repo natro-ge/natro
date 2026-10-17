@@ -9,7 +9,7 @@ Confirmations are asked here. Each reply ends with the model, time and cost.
 Usage:
     python -m natro_agent.chat
     python -m natro_agent.chat --dry-run-pc
-    python -m natro_agent.chat --model claude-haiku-4-5
+    python -m natro_agent.chat --model claude-haiku-5-5
     python -m natro_agent.chat --once "what can you do?"
 """
 import argparse
@@ -19,7 +19,7 @@ import sys
 from natro_agent.config import load_env
 from natro_agent.dryrun import PC_TOOLS, DryRunDevice
 from natro_agent.mcp_client import MCPServers
-from natro_agent.models import DEFAULT_MODEL, MODELS
+from natro_agent.models import MODELS
 from natro_agent.setup import build_agent
 from natro_agent.tools import Device
 
@@ -60,7 +60,8 @@ async def chat(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--model", default=DEFAULT_MODEL, choices=sorted(MODELS))
+    parser.add_argument("--model", choices=sorted(MODELS),
+                        help="answer everything on this model (default: Sonnet, with Haiku for PC and screen tasks)")
     parser.add_argument("--dry-run-pc", action="store_true", help="add a pretend PC with app tools")
     parser.add_argument("--once", help="send this one request and exit")
     args = parser.parse_args()

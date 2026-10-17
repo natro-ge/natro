@@ -31,10 +31,12 @@ def own_tools(folder):
 
 def pc_specs():
     try:
-        from natro_pc import apps, files
+        from natro_pc import apps, commands, files
     except Exception:  # not on Windows, or the PC app isn't installed
         return PC_TOOLS
-    return [tool.spec() for tool in apps.tools(MagicMock()) + files.tools(MagicMock())]
+    from natro_pc import control
+    return [tool.spec() for tool in apps.tools(MagicMock()) + files.tools(MagicMock())
+            + commands.tools(MagicMock()) + control.tools(MagicMock())]
 
 
 def phone_specs():

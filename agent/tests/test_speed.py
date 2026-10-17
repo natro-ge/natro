@@ -43,6 +43,32 @@ def test_quick_commands(said, expected):
     assert quick.command(said, in_conversation=False) == expected
 
 
+LOCK = ("pc_run_command", {"command": "rundll32.exe user32.dll,LockWorkStation"})
+DARK = ("pc_run_command", {"command": quick._theme(light=False)})
+LIGHT = ("pc_run_command", {"command": quick._theme(light=True)})
+
+
+@pytest.mark.parametrize("said, from_pc, expected", [
+    ("Lock the PC.", False, LOCK),
+    ("OK Natro, lock my computer please", False, LOCK),
+    ("Turn on dark mode.", True, DARK),
+    ("Dark mode on my PC.", False, DARK),
+    ("dark mode on", False, None),  # said on the phone, it may mean the phone
+    ("Turn off dark mode.", True, LIGHT),
+    ("Switch to light mode", True, LIGHT),
+    ("Open Downloads.", True, ("pc_run_command", {"command": "Start-Process shell:Downloads"})),
+    ("open my documents folder", True, ("pc_run_command", {"command": "Start-Process shell:Personal"})),
+    ("Open Bluetooth settings.", True, ("pc_run_command", {"command": "Start-Process ms-settings:bluetooth"})),
+    ("Open Wi-Fi settings on my PC.", False, ("pc_run_command", {"command": "Start-Process ms-settings:network-wifi"})),
+    ("open settings", True, ("pc_run_command", {"command": "Start-Process ms-settings:"})),
+    ("open the invoice in downloads", True, None),
+    ("lock", True, None),
+])
+def test_quick_pc_commands(said, from_pc, expected):
+    # The lines themselves are checked against the PC's harmless list in pc/tests/test_commands.py.
+    assert quick.command(said, in_conversation=False, from_pc=from_pc) == expected
+
+
 def test_bare_words_only_outside_a_conversation():
     # "Next" while she reads his emails means the next email.
     assert quick.command("Next.", in_conversation=True) is None

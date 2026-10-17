@@ -174,9 +174,9 @@ def test_api_failure_moves_the_conversation_to_haiku():
     client = FakeClient(error, message(text("Hi.")))
     agent, _ = make_agent(client)
     reply = run(agent.respond("hi", Owner()))
-    assert reply.text == "Hi." and reply.model == "claude-haiku-4-5"
-    assert client.requests[1]["model"] == "claude-haiku-4-5"
-    assert "betas" not in client.requests[1]
+    assert reply.text == "Hi." and reply.model == "claude-haiku-5-5"
+    assert client.requests[1]["model"] == "claude-haiku-5-5"
+    assert "betas" not in client.requests[1] and "fallbacks" not in client.requests[1]
 
 
 def test_refusal_starts_a_fresh_conversation():

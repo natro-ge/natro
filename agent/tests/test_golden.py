@@ -39,7 +39,8 @@ FREE_TIER_TOOLS = {
 # Tools that must ask first.
 ASK_FIRST_TOOLS = {
     "pc_force_close_app", "calendar_delete_event", "tasks_delete", "gmail_send", "docs_replace",
-    "forget", "notes_delete", "phone_call", "phone_send_sms", "phone_tap_risky",
+    "forget", "notes_delete", "phone_call", "phone_send_sms", "phone_tap_risky", "pc_run_command_risky",
+    "pc_act_risky",
 }
 
 # A tool whose name says it deletes, sends, calls, kills or pays must be on the list above.
@@ -117,7 +118,8 @@ def test_screen_and_message_tools_are_personal(tmp):
     assert {"phone_screen", "phone_tap", "phone_type_text", "phone_read_sms", "phone_notifications",
             "phone_contacts", "pc_read_file", "pc_search_files", "pc_search_file_contents", "pc_open_file",
             "spotify_library", "remember", "gmail_read", "gmail_search", "calendar_events", "copy_to_device",
-            "phone_search_files"} <= personal
+            "phone_search_files", "pc_run_command", "pc_run_command_risky", "pc_screen", "pc_find", "pc_act",
+            "pc_act_risky", "pc_switch_window", "pc_wait_for"} <= personal
 
 
 # --- 1. Personal data never reaches the free tier -----------------------------------------------
@@ -295,12 +297,14 @@ SEND_PHOTO = ("copy_to_device", {"from_device": "phone", "path": "/storage/emula
 # (request, scripted Claude replies, the tool calls that must run, the model route)
 JOURNEYS = [
     ("pause the music", [], [("spotify_control", {"action": "pause"})], "quick"),
+    ("lock my PC", [], [("pc_run_command", {"command": "rundll32.exe user32.dll,LockWorkStation"})], "quick"),
     ("open Calculator", [("pc_open_app", {"app": "Calculator"})], [("pc_open_app", {"app": "Calculator"})], "claude"),
     ("set an alarm for 7:30", [("phone_set_alarm", {"time": "07:30"})], [("phone_set_alarm", {"time": "07:30"})],
      "claude"),
     ("what's on my calendar today", [("calendar_events", {})], [("calendar_events", {})], "claude"),
     ("find the newest PDF in Downloads", [("pc_search_files", {"query": "ext:pdf"})],
      [("pc_search_files", {"query": "ext:pdf"})], "claude"),
+    ("what's on my PC's screen", [("pc_screen", {})], [("pc_screen", {})], "claude"),
     ("send my last photo to the PC", [("phone_search_files", {"kind": "image"}), SEND_PHOTO],
      [("phone_search_files", {"kind": "image"}), SEND_PHOTO], "claude"),
 ]

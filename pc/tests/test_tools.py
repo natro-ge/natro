@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from natro_pc import apps, files
+from natro_pc import apps, commands, files, uia
 from natro_pc.apps import Apps, StartApp, StartMenu, Window, find_open_app, match_score
 from natro_pc.files import Files, parse_es, search_terms
 from natro_pc.tools import ToolError, all_tools
@@ -141,12 +141,22 @@ def test_programs_and_odd_links_are_never_opened(tmp_path, monkeypatch):
 
 def test_tool_descriptions_for_the_brain(monkeypatch):
     monkeypatch.setattr(apps.StartMenu, "warm_up", lambda self: None)
+    monkeypatch.setattr(commands.PowerShell, "warm_up", lambda self: None)
+    monkeypatch.setattr(uia.Desktop, "warm_up", lambda self: None)
+    monkeypatch.setattr(uia, "available", lambda: True)
     specs = {tool.name: tool.spec() for tool in all_tools()}
+    screen = {"screen", "find", "act", "act_risky", "switch_window", "wait_for"}
     assert set(specs) == {"open_app", "close_app", "force_close_app", "list_open_apps", "search_files",
-                          "search_file_contents", "read_file", "open_file", "open_link"}
-    # File names, contents and paths only go to Claude; force-closing asks first.
+                          "search_file_contents", "read_file", "open_file", "open_link", "run_command",
+                          "run_command_risky"} | screen
+    # File names, contents, paths, commands' output and the screen only go to Claude; force-closing, risky
+    # commands and risky clicks ask first.
     assert {name for name, spec in specs.items() if spec["personal"]} == {
-        "search_files", "search_file_contents", "read_file", "open_file"}
-    assert {name for name, spec in specs.items() if spec["confirm"]} == {"force_close_app"}
+        "search_files", "search_file_contents", "read_file", "open_file", "run_command", "run_command_risky"} | screen
+    assert {name for name, spec in specs.items() if spec["confirm"]} == {"force_close_app", "run_command_risky",
+                                                                         "act_risky"}
+    # Without UI Automation, no screen tools: Natro doesn't claim what she can't do.
+    monkeypatch.setattr(uia, "available", lambda: False)
+    assert not screen & {tool.name for tool in all_tools()}
     assert specs["open_app"]["input_schema"] == {"type": "object", "properties": specs["open_app"]["input_schema"][
         "properties"], "required": ["app"]}

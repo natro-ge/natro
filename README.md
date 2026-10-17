@@ -7,7 +7,10 @@ mixed in are fine). She works out what you mean, acts on your PC, your phone
 and your online accounts, and answers on screen and out loud, in English.
 
 - **On the PC:** open and close apps; find, read and open files anywhere on
-  the PC.
+  the PC; run PowerShell commands for its settings and questions about it
+  (dark mode, Bluetooth, IP address, disk space): harmless ones right away,
+  the rest after your yes; use any app through its screen (read, click,
+  type, press keys, scroll), as on the phone.
 - **On the phone:** be the phone's assistant (long-press the power button) and
   listen for "OK Natro" or "Hey Natro"; open apps, set alarms and timers,
   control media, the flashlight and volume; read notifications and texts,
@@ -112,8 +115,12 @@ Natro is in daily use and grows a piece at a time. Where it stands
   cancel), the phone's tools and any app through its screen, settings with an
   off switch for all of Natro.
 - Files between the PC and the phone, up to 1 GB, through the server.
-- Speed: the commonest music commands skip the model (0.2 to 0.4 s), and a
-  simple one-tool request answers with the tool's own result.
+- Speed: the commonest music and PC commands skip the model (0.2 to 0.4 s;
+  "lock the PC", "dark mode on", "open Downloads"), and a simple one-tool
+  request answers with the tool's own result. Requests about the PC or a
+  screen, and those that come to use the PC's screen, go to Claude Haiku
+  (about 20 times cheaper), with Sonnet taking over when Haiku gets stuck.
+  The PC's screen is read through Windows UI Automation in about 0.3 s.
 - Tests: the golden list (privacy, confirmations, offline devices) over the
   real tools, and per-request records (recording and log) to measure how
   often she gets it right.

@@ -24,5 +24,6 @@ async def build_agent(servers, model=None):
     tools += await servers.start(MCP_CONFIG)
     # The free Gemini tier only when a key is set; otherwise everything goes to Claude.
     gemini = Gemini() if os.environ.get("GEMINI_API_KEY") else None
-    options = {"model": model} if model else {}
+    # A model given here answers everything (for trying one out); otherwise Sonnet, with Haiku for PC tasks.
+    options = {"model": model, "pc_model": model} if model else {}
     return Agent(tools, memory=memory, gemini=gemini, **options)

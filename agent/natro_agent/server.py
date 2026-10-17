@@ -22,7 +22,8 @@ Device to Natro:
   {"type": "cancel", "id": "r2"}                                    stop a request: no more tool calls, no reply
 Natro to device:
   {"type": "welcome", "spent": 0.42, "budget": 15}                  hello accepted; this month's spending (USD)
-  {"type": "english", "id": "r2", "text": "..."}                    the translation, in pieces as it's written
+  {"type": "english", "id": "r2", "text": "..."}                    the translation, in pieces as it's written;
+                                                                    all of them come before its "heard"
   {"type": "heard", "id": "r2", "georgian": "...", "english": "..."}  what the voice pipeline heard
   {"type": "reply_text", "id": "r1", "text": "..."}                 the reply, in pieces as it's written
   {"type": "step", "id": "r1", "text": "Opening Spotify", "icon": "app", "app": "Spotify"}
@@ -60,6 +61,7 @@ Natro to device:
                                                                     a file from the other device: its parts follow
 """
 import asyncio
+import collections
 import hmac
 import itertools
 import json
@@ -269,9 +271,15 @@ class Server:
             device.post(type="error", id=id, message="Voice isn't set up on the server (see voice/).")
             return
         loop = asyncio.get_running_loop()
+        pieces = collections.deque()  # of the translation, from the voice thread, not yet posted
+
+        def post_english():
+            while pieces:
+                device.post(type="english", id=id, text=pieces.popleft())
 
         def on_english(piece):
-            loop.call_soon_threadsafe(lambda: device.post(type="english", id=id, text=piece))
+            pieces.append(piece)
+            loop.call_soon_threadsafe(post_english)
 
         try:
             georgian, english, voice_cost = await asyncio.to_thread(self.voice.process, pcm, on_english)
@@ -279,6 +287,9 @@ class Server:
             log.write("error", device=device.name, error=repr(e), step="voice")
             device.post(type="error", id=id, message=f"The voice pipeline failed: {e}")
             return
+        # A quick thread can return before the loop gets to its pieces, and the phone adds a piece
+        # that comes after "heard" to the whole translation: post them now.
+        post_english()
         device.post(type="heard", id=id, georgian=georgian, english=english)
         if answer_to := data.get("answer_to"):
             self._count_voice(device, voice_cost, answer=english)

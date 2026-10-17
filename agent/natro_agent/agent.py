@@ -10,6 +10,12 @@ conversation so far; from then on the conversation stays on Claude. Requests
 that plainly involve personal data (see needs_claude) go straight to Claude, so
 they never reach the free tier. Memory only ever goes to Claude.
 
+Claude's model is picked per request: Sonnet, or the much cheaper Haiku for
+requests about the PC or a screen (see pc_task), with Sonnet taking over the rest
+of a request when Haiku gets stuck. A request that turns out to use the PC's
+screen ("join the voice channel in Discord") moves to Haiku once it does, unless
+Sonnet has already taken over. The conversation stays one, whichever answers.
+
 Claude's prompt cache and its thinking blocks are tied to the exact
 conversation, so within a Claude conversation the instructions and the tool list
 never change and messages are only ever appended. A device that disconnects
@@ -30,7 +36,7 @@ import anthropic
 from natro_agent import costs, identity, log, quick, steps
 from natro_agent.config import monthly_budget, timezone
 from natro_agent.gemini import HAND_OVER_RULES
-from natro_agent.models import DEFAULT_MODEL, FALLBACK_MODEL, cost, options
+from natro_agent.models import DEFAULT_MODEL, FALLBACK_MODEL, PC_MODEL, STRONGER, cost, options
 from natro_agent.tools import ToolError, result_text
 
 # A follow-up within this time continues the conversation (it matches how long
@@ -39,6 +45,13 @@ SESSION_MINUTES = 5
 # Model calls per request, so a confused tool loop can't run up costs. Using an app on the phone by its
 # screen takes a step per tap.
 MAX_STEPS = 20
+# When a model with a STRONGER one counts as stuck: its tools failed this many steps in a row, or the request
+# has taken this many steps.
+STUCK_FAILURES = 2
+STUCK_STEPS = 10
+# The PC's screen tools (pc/natro_pc/control.py): clicking through an app takes many steps, each with a whole
+# screen in it, so a request that uses them goes on with the cheaper PC model.
+PC_SCREEN_TOOLS = {"screen", "find", "act", "act_risky", "switch_window", "wait_for"}
 MAX_TOKENS = 16000
 TOOL_SECONDS = 60
 CONFIRM_SECONDS = 60
@@ -56,13 +69,28 @@ PERSONAL_HINTS = re.compile(
     r"\b(remember|forget|remind|reminder|memory|note|notes|to-?do|tasks?|shopping|groceries|grocery|my lists?|e-?mails?|gmail|inbox|mail|calendar|"
     r"schedule|meeting|appointment|events?|files?|documents?|docs?|drive|sheets?|spreadsheets?|folders?|photos?|"
     r"messages?|sms|texts?|whatsapp|"
-    r"notifications?|contacts?|call|delete|remove|send|share|pay|password|bank|address|about me|my name)\b",
+    r"notifications?|contacts?|call|delete|remove|send|share|pay|password|bank|address|about me|my name|"
+    # What's on a screen and what a command says are personal too, and the free tier can't use either.
+    r"screens?|screenshot|click|scroll|commands?|powershell|terminal|ipconfig|dark mode|light mode|brightness|"
+    r"bluetooth|wi-?fi|ip address|disk space|battery)\b",
     re.IGNORECASE)
+
+# Words that mark a request as using the PC or a screen: commands, settings, apps, windows, clicking. On
+# Claude, these start on the cheaper PC_MODEL.
+PC_TASK_HINTS = re.compile(
+    r"\b(pc|computer|laptop|desktop|screens?|screenshot|windows?|apps?|application|programs?|commands?|"
+    r"powershell|terminal|ipconfig|click|scroll|browser|tabs?|settings|dark mode|light mode|brightness|"
+    r"bluetooth|wi-?fi|ip address|disk space|battery)\b", re.IGNORECASE)
 
 
 def needs_claude(text):
     """Whether a request plainly involves personal data or a risky action."""
     return bool(PERSONAL_HINTS.search(text))
+
+
+def pc_task(text):
+    """Whether a request is about the PC or a screen (an app, a window, a command, a setting)."""
+    return bool(PC_TASK_HINTS.search(text))
 
 
 @dataclass
@@ -102,7 +130,8 @@ class Session(Conversation):
 
     def __init__(self, model, tools, devices, memory=None, earlier=()):
         super().__init__()
-        self.model = model
+        self.model = model  # the model answering the request now
+        self.failed = set()  # models whose API failed in this conversation: their fallback answers instead
         self.tools = {tool.name: tool for tool in tools}
         self.tool_definitions = [tool.definition() for tool in sorted(tools, key=lambda tool: tool.name)]
         # The cache marker lets the next conversation reuse the cached instructions and tools.
@@ -153,11 +182,16 @@ def text_of(content):
 
 
 class Agent:
-    """memory: a Memory (its contents go into Claude's instructions). gemini: a Gemini, or None for Claude only."""
+    """memory: a Memory (its contents go into Claude's instructions). gemini: a Gemini, or None for Claude only.
 
-    def __init__(self, tools=(), model=DEFAULT_MODEL, client=None, budget=None, memory=None, gemini=None):
+    model answers on Claude; pc_model answers requests about the PC or a screen (pc_task).
+    """
+
+    def __init__(self, tools=(), model=DEFAULT_MODEL, client=None, budget=None, memory=None, gemini=None,
+                 pc_model=PC_MODEL):
         self.client = client or anthropic.AsyncAnthropic()
         self.model = model
+        self.pc_model = pc_model
         self.own_tools = list(tools)  # Natro's own and the MCP servers'
         self.memory = memory
         self.gemini = gemini
@@ -252,12 +286,13 @@ class Agent:
                     return reply
             # Claude takes over, with the conversation so far, and keeps it.
             self.session = self._claude_session(earlier=self.session.turns)
-        return await self._claude_turn(self.session, request, device, on_text, simple)
+        model = self.pc_model if pc_task(text) else self.model
+        return await self._claude_turn(self.session, request, device, on_text, simple, model)
 
     async def _quick(self, text, request, device, on_text):
         """A common short command run without a model (see quick.py), or None if it isn't one or didn't work."""
         in_conversation = self.session is not None and not self.session.expired
-        found = quick.command(text, in_conversation)
+        found = quick.command(text, in_conversation, from_pc=device.name == "pc")
         tools = {tool.name: tool for tool in self.offered_tools()}
         if found is None or found[0] not in tools:
             return None
@@ -323,23 +358,33 @@ class Agent:
         on_text(outcome.text)
         return reply
 
-    async def _claude_turn(self, session, request, device, on_text, simple=False):
+    async def _claude_turn(self, session, request, device, on_text, simple=False, model=None):
         if self.ledger.over_budget and not await self._ask(
                 device, f"This month's {self.ledger.budget:g} dollar budget is used up. Use Claude anyway?",
                 f"spent this month: ${self.ledger.spent:.2f}"):
             return Reply("OK, I won't use Claude for that.", model="none")
 
         session.messages.append({"role": "user", "content": request})
+        session.model = self._usable(session, model or self.model)
         reply = Reply("", session.model)
         said = []
         changes = Changes()
+        failing = 0  # steps in a row whose tools all failed
+        taken_over = False  # a stronger model took over this request: it keeps it
         for step in range(MAX_STEPS):
+            if session.model in STRONGER and (failing >= STUCK_FAILURES or step >= STUCK_STEPS):
+                self._take_over(session, "its tools kept failing" if failing >= STUCK_FAILURES else "many steps")
+                taken_over = True
             response, model = await self._call(session, self._spaced(on_text, bool(said)))
             reply.cost += cost(model, response.usage)
             for kind in TOKEN_KINDS:
                 reply.tokens[kind] += getattr(response.usage, kind) or 0
             content = echo_content(response.content)
             if response.stop_reason == "refusal":
+                if session.model in STRONGER:
+                    self._take_over(session, "it declined")
+                    taken_over = True
+                    continue  # the stronger model answers the same request (nothing was added to it)
                 said = ["Sorry, I can't help with that one."]
                 self.session = None  # don't carry a declined request into follow-ups
                 break
@@ -361,6 +406,11 @@ class Agent:
                                                             declined=block.id in declined)
                                              for block in tool_uses))
             session.messages.append({"role": "user", "content": list(results)})
+            failing = failing + 1 if all(result["is_error"] for result in results) else 0
+            if not taken_over and session.model == self.model != self.pc_model and                     self._uses_pc_screen(session, tool_uses):
+                cheaper = self._usable(session, self.pc_model)
+                log.write("cheaper_model", model=session.model, switched_to=cheaper, reason="the PC's screen")
+                session.model = cheaper
             if simple and step == 0 and not said and len(results) == 1 and not results[0]["is_error"] \
                     and getattr(session.tools.get(tool_uses[0].name), "final", False):
                 # The tool's result says it all ("Paused."): no second model call to word it.
@@ -374,6 +424,25 @@ class Agent:
         reply.text = " ".join(said)
         reply.model = session.model
         return reply
+
+    @staticmethod
+    def _uses_pc_screen(session, tool_uses):
+        for block in tool_uses:
+            tool = session.tools.get(block.name)
+            if tool is not None and tool.source == "pc" and block.name.removeprefix("pc_") in PC_SCREEN_TOOLS:
+                return True
+        return False
+
+    def _take_over(self, session, why):
+        """The stronger model answers the rest of this request (the conversation is unchanged)."""
+        stronger = self._usable(session, STRONGER[session.model])
+        log.write("stronger_model", model=session.model, switched_to=stronger, reason=why)
+        session.model = stronger
+
+    @staticmethod
+    def _usable(session, model):
+        """model, unless its API already failed in this conversation: then its fallback."""
+        return FALLBACK_MODEL.get(model, model) if model in session.failed else model
 
     def _header(self, device):
         """The first line of each request: when, from where, and which devices are online."""
@@ -403,6 +472,7 @@ class Agent:
             if not (fallback and retryable):
                 raise
             log.write("model_error", model=session.model, error=repr(e), switched_to=fallback)
+            session.failed.add(session.model)
             session.model = fallback
             return await self._stream(session, fallback, on_text), fallback
 

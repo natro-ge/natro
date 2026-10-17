@@ -9,16 +9,22 @@ MODELS = {
         "prices": (2.0, 10.0),
         "options": {"output_config": {"effort": "low"}, "betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"},
     },
-    # Cheaper and faster, no thinking. Its prompt cache needs at least 4,096
-    # tokens of instructions and tools, more than Natro has today, so every
-    # request on Haiku is billed in full.
-    "claude-haiku-4-5": {"prices": (1.0, 5.0), "options": {}},
+    # For PC and screen tasks: about 20 times cheaper than Sonnet, and quick. It
+    # caches from 512 tokens (Haiku 4.5 needed 4,096, more than Natro had). The
+    # prices are for prompts up to 100K tokens, which Natro's stay under. It has
+    # no server-side fallback: when it declines, Sonnet takes over (STRONGER).
+    "claude-haiku-5-5": {"prices": (0.10, 0.50), "options": {"output_config": {"effort": "low"}}},
 }
 DEFAULT_MODEL = "claude-sonnet-5-5"
+# Requests that use the PC or a screen (commands, settings, clicking in apps) start here.
+PC_MODEL = "claude-haiku-5-5"
+# Takes over the rest of a request when the model above gets stuck: it declines, its tools fail twice in a
+# row, or the request takes many steps. Sonnet 5.5 reads Haiku 5.5's thinking, so nothing is lost.
+STRONGER = {"claude-haiku-5-5": "claude-sonnet-5-5"}
 # Models with adaptive thinking, whose thinking blocks are tied to the exact conversation.
-ADAPTIVE_THINKING = {"claude-sonnet-5-5"}
+ADAPTIVE_THINKING = {"claude-sonnet-5-5", "claude-haiku-5-5"}
 # Used for the rest of a conversation when the model's API fails (overloaded, down).
-FALLBACK_MODEL = {"claude-sonnet-5-5": "claude-haiku-4-5"}
+FALLBACK_MODEL = {"claude-sonnet-5-5": "claude-haiku-5-5", "claude-haiku-5-5": "claude-sonnet-5-5"}
 
 # Cache writes (5-minute) and reads, relative to the input price.
 CACHE_WRITE = 1.25

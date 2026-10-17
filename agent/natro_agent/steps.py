@@ -50,6 +50,13 @@ def _device_step(tool, args):
         "read_file": (f"Reading {file}" if file else "Reading a file", "files"),
         "open_file": (f"Opening {file}" if file else "Opening a file", "files"),
         "open_link": ("Opening a link", "link"),
+        "run_command": _command(args.get("command")),
+        "run_command_risky": _command(args.get("command")),
+        "find": ("Looking at the screen", "screen"),
+        "act": (_act(args.get("actions")), "screen"),
+        "act_risky": (_act(args.get("actions")), "screen"),
+        "switch_window": (f"Switching to {short(args.get('name'), 18)}", "app", short(args.get("name"), 18)),
+        "wait_for": ("Waiting", "screen"),
         "set_alarm": (f"Alarm for {args['time']}" if args.get("time") else "Setting an alarm", "alarm"),
         "set_timer": (_timer(args.get("seconds")), "timer"),
         "next_alarm": ("Checking alarms", "alarm"),
@@ -116,6 +123,22 @@ def _natro_step(tool, args):
         "copy_to_device": (f"Sending {short(file_name(args.get('path')))}" if args.get("path") else "Sending a file",
                            "files"),
     }.get(tool)
+
+
+def _command(command):
+    command = str(command or "").lower()
+    if "ms-settings:" in command:
+        return "Opening Settings", "app", "Settings"
+    if "lockworkstation" in command:
+        return "Locking the PC", "work"
+    return "Running a command", "work"
+
+
+def _act(actions):
+    first = (actions or [{}])[0] if isinstance(actions, list) else {}
+    do = first.get("do") if isinstance(first, dict) else None
+    return {"type": "Typing", "key": f"Pressing {first.get('text') or 'a key'}", "scroll": "Scrolling"}.get(
+        do, "Clicking")
 
 
 def _media(action):

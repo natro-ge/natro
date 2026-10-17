@@ -8,7 +8,7 @@ def _spec(name, description, properties, personal=False, confirm=False, final=Fa
                              "required": list(properties)[:1]}}
 
 
-# The PC app's tools (pc/natro_pc/apps.py and files.py), with the same names and flags.
+# The PC app's tools (pc/natro_pc/apps.py, files.py, commands.py and control.py), with the same names and flags.
 PC_TOOLS = [
     _spec("open_app", "Open an app on the PC by name, as from the Start menu.", {"app": "string"}, final=True),
     _spec("close_app", "Close an app normally, as if clicking X on its windows.", {"app": "string"}, final=True),
@@ -22,6 +22,18 @@ PC_TOOLS = [
     _spec("read_file", "Read a text file, Word document or PDF on the PC.", {"path": "string"}, personal=True),
     _spec("open_file", "Open a file or folder on the PC with its usual program.", {"path": "string"}, personal=True),
     _spec("open_link", "Open a web page in the PC's browser.", {"url": "string"}, final=True),
+    _spec("run_command", "Run a harmless PowerShell command on the PC and get its output.", {"command": "string"},
+          personal=True),
+    _spec("run_command_risky", "Run any other PowerShell command on the PC.", {"command": "string"},
+          personal=True, confirm=True),
+    _spec("screen", "Read what's on the PC's screen now, numbered.", {"everything": "boolean"}, personal=True),
+    _spec("find", "Find elements on the PC's screen by their text.", {"text": "string"}, personal=True),
+    _spec("act", "Click, type, press keys or scroll on the PC's screen by element number.", {"actions": "array"},
+          personal=True),
+    _spec("act_risky", "The same as act, for what sends, buys, pays or deletes.", {"actions": "array"},
+          personal=True, confirm=True),
+    _spec("switch_window", "Bring an open window to the front.", {"name": "string"}, personal=True),
+    _spec("wait_for", "Wait until some text shows on the PC's screen.", {"text": "string"}, personal=True),
 ]
 
 

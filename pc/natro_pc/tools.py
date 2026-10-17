@@ -32,8 +32,15 @@ class PCTool:
 def all_tools():
     import threading
 
-    from natro_pc import apps, files
+    from natro_pc import apps, commands, control, files, uia
 
     pc_apps = apps.Apps()
     threading.Thread(target=pc_apps.menu.warm_up, daemon=True).start()
-    return apps.tools(pc_apps) + files.tools()
+    pc_commands = commands.Commands()
+    threading.Thread(target=pc_commands.shell.warm_up, daemon=True).start()
+    tools = apps.tools(pc_apps) + files.tools() + commands.tools(pc_commands)
+    if uia.available():  # screen control: Windows UI Automation, through comtypes
+        screen = control.ScreenControl()
+        threading.Thread(target=screen.desktop.warm_up, daemon=True).start()
+        tools += control.tools(screen)
+    return tools
