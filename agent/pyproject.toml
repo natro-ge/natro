@@ -15,6 +15,12 @@ dependencies = [
     "tzdata",
     # Reading PDFs from Google Drive.
     "pypdf",
+    # Repeating reminders (RRULEs).
+    "python-dateutil",
+    # Converting pictures (convert.py), HEIC from a phone too. Documents, audio and video use
+    # LibreOffice, pandoc and ffmpeg, installed on the VPS with apt.
+    "pillow",
+    "pillow-heif",
 ]
 
 [project.optional-dependencies]

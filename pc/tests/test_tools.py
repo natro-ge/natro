@@ -145,7 +145,7 @@ def test_tool_descriptions_for_the_brain(monkeypatch):
     monkeypatch.setattr(uia.Desktop, "warm_up", lambda self: None)
     monkeypatch.setattr(uia, "available", lambda: True)
     specs = {tool.name: tool.spec() for tool in all_tools()}
-    screen = {"screen", "find", "act", "act_risky", "switch_window", "wait_for"}
+    screen = {"screen", "find", "act", "act_risky", "switch_window", "wait_for", "screenshot"}
     assert set(specs) == {"open_app", "close_app", "force_close_app", "list_open_apps", "search_files",
                           "search_file_contents", "read_file", "open_file", "open_link", "run_command",
                           "run_command_risky"} | screen

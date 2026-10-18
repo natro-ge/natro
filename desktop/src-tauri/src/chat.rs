@@ -15,21 +15,29 @@
 //! closed the dock asks, out loud. A reply that arrives while the chat is closed
 //! shows in the reply box (reply.rs), and in the chat when it opens again.
 //!
+//! The chat is shared with the phone (agent/natro_agent/chats.py): what he asks
+//! there shows here too, with her reply, as the brain sends it (chat_entry), and a
+//! new chat on either clears both. Pictures show in it: screenshots Natro takes for
+//! him, and ones he sends (pasted, or the picture button); a click opens one. While
+//! the PC was off he may have asked for something on the phone: when it connects,
+//! the chat opens with those requests, to run or skip.
+//!
 //! Unlike the dock and the reply box, the chat takes the keyboard while it's open.
 //! Esc or Ctrl+Space closes it and gives the keyboard back to the app you were in;
 //! a click on another app closes it too. The window covers the bottom of the
 //! screen but takes the mouse only over the box and the bubbles (the page says
 //! where they are): elsewhere clicks go through to what's under it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use base64::Engine;
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 use windows::Win32::Foundation::{HWND, POINT, RECT};
@@ -61,6 +69,8 @@ const WATCH_EVERY: Duration = Duration::from_millis(30);
 const MOST: usize = 200;
 /// How many recordings heard but not (yet) known as requests are remembered.
 const REMEMBERED: usize = 16;
+/// The pictures kept (the brain keeps as many: older ones are gone from the chat).
+const PICTURES: usize = 24;
 
 /// One request and Natro's answer, as the bubbles show them.
 #[derive(Serialize, Clone, Default, Debug)]
@@ -81,6 +91,20 @@ pub struct Exchange {
     questions: Vec<Question>,
     /// Why it failed.
     problem: String,
+    /// The device it was asked on ("phone"), for a request made on the other one; empty for the PC's.
+    from: String,
+    /// Its pictures, by id (each comes once, as ChatEvent::Picture).
+    pictures: Vec<String>,
+    /// A request he made on that device while the PC was off ("phone"), run on the PC after.
+    queued: String,
+    /// A picture he sent, not a request.
+    sent: bool,
+    /// A reminder that went off: Natro's words alone, with no request.
+    reminder: bool,
+    /// A background job's task (agent/natro_agent/jobs.py): Natro's work on it, then what she found.
+    job: String,
+    /// Something a watcher saw (agent/natro_agent/watchers.py): her words alone, as a reminder's.
+    alert: bool,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -99,6 +123,18 @@ struct Question {
     text: String,
     /// Empty while she waits; then "Yes", "No", or the words typed or said ("…" until they're heard).
     answer: String,
+    /// The device that asked, for a question about a request made on the other one ("phone").
+    device: String,
+}
+
+/// A request he made on the phone while the PC was off, kept for it (pending.py).
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Queued {
+    id: String,
+    text: String,
+    /// The device it was asked on.
+    from: String,
+    time: u64,
 }
 
 /// The conversation the bubbles show, as the owner and the brain's messages change
@@ -245,30 +281,98 @@ impl Log {
             id: question.into(),
             text: text.trim().into(),
             answer: String::new(),
+            device: String::new(),
         });
         Some(exchange.clone())
     }
 
-    /// The question still waiting for a yes or no.
+    /// The PC's question still waiting for a yes or no.
     fn waiting(&self) -> Option<String> {
         self.exchanges
             .iter()
-            .filter(|e| !e.done)
+            .filter(|e| !e.done && e.from.is_empty())
             .flat_map(|e| &e.questions)
             .find(|q| q.answer.is_empty())
             .map(|q| q.id.clone())
     }
 
-    /// The owner's answer, as it shows under the question.
-    fn answer(&mut self, question: &str, answer: &str) -> Option<Exchange> {
+    /// The owner's answer, as it shows under the question (device: whose question, "" for the PC's).
+    fn answer_for(&mut self, device: &str, question: &str, answer: &str) -> Option<Exchange> {
+        let mine = |q: &Question| q.id == question && q.device == device;
         let exchange = self
             .exchanges
             .iter_mut()
             .rev()
-            .find(|e| e.questions.iter().any(|q| q.id == question))?;
-        let asked = exchange.questions.iter_mut().find(|q| q.id == question)?;
+            .find(|e| e.questions.iter().any(mine))?;
+        let asked = exchange.questions.iter_mut().find(|q| mine(q))?;
         asked.answer = answer.into();
         Some(exchange.clone())
+    }
+
+    fn answer(&mut self, question: &str, answer: &str) -> Option<Exchange> {
+        self.answer_for("", question, answer)
+    }
+
+    /// An entry of the shared chat, as the brain sends it (agent/natro_agent/chats.py). The PC's own
+    /// requests show here as they happen, so from those only the pictures are taken; the rest (the
+    /// phone's, and the PC's from before this app started) show as the brain has them.
+    fn entry(&mut self, entry: &Value) -> Option<Exchange> {
+        let text = |key: &str| entry[key].as_str().unwrap_or_default().to_string();
+        let pictures: Vec<String> = entry["pictures"]
+            .as_array()
+            .map(|all| all.iter().filter_map(|p| p.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        let ours = text("device") == "pc";
+        if ours {
+            if let Some(exchange) = self.find(&text("request")) {
+                exchange.pictures = pictures;
+                return Some(exchange.clone());
+            }
+        }
+        let step = Some(text("step")).filter(|s| !s.is_empty()).map(|label| Step {
+            label,
+            icon: "work".into(),
+            image: None,
+        });
+        let question = &entry["question"];
+        let questions = question.is_object().then(|| Question {
+            id: question["id"].as_str().unwrap_or_default().into(),
+            text: question["text"].as_str().unwrap_or_default().into(),
+            answer: question["answer"].as_str().unwrap_or_default().into(),
+            device: if ours { String::new() } else { text("device") },
+        });
+        let exchange = Exchange {
+            id: if ours { text("request") } else { text("id") },
+            asked: text("asked"),
+            heard: text("heard"),
+            spoken: entry["spoken"].as_bool().unwrap_or(false),
+            reply: text("reply"),
+            done: entry["done"].as_bool().unwrap_or(false),
+            step,
+            questions: questions.into_iter().collect(),
+            problem: text("problem"),
+            from: if ours { String::new() } else { text("label") },
+            pictures,
+            queued: text("queued"),
+            sent: entry["sent"].as_bool().unwrap_or(false),
+            reminder: entry["reminder"].as_bool().unwrap_or(false),
+            job: text("job"),
+            alert: entry["alert"].as_bool().unwrap_or(false),
+        };
+        match self.exchanges.iter_mut().rev().find(|e| e.id == exchange.id) {
+            Some(old) => *old = exchange.clone(),
+            None => self.add(exchange.clone()),
+        }
+        Some(exchange)
+    }
+
+    /// The whole shared chat, as the brain has it (after connecting): the phone's anew, the PC's merged.
+    fn all(&mut self, entries: &[Value]) -> Vec<Exchange> {
+        self.exchanges.retain(|e| e.from.is_empty());
+        for entry in entries {
+            self.entry(entry);
+        }
+        self.exchanges.clone()
     }
 
     /// A spoken answer on its way: what was said shows once it's heard.
@@ -331,16 +435,24 @@ fn is_yes(text: &str) -> bool {
 #[derive(Serialize, Clone)]
 #[serde(tag = "action", rename_all = "lowercase")]
 pub enum ChatEvent {
-    /// Open, with the conversation so far.
+    /// Open, with the conversation so far, its pictures (id -> data URL) and requests kept for the PC.
     Show {
         exchanges: Vec<Exchange>,
         listening: bool,
+        pictures: HashMap<String, String>,
+        queued: Vec<Queued>,
     },
     Hide,
     /// One exchange changed (or is new).
     Exchange { exchange: Exchange },
     /// A new chat.
     Clear,
+    /// Every exchange anew (the shared chat, after connecting).
+    Replace { exchanges: Vec<Exchange> },
+    /// A picture for the exchanges that name it: its id and a data URL.
+    Picture { id: String, url: String },
+    /// The requests kept for the PC while it was off, still to run or skip.
+    Queued { items: Vec<Queued> },
     /// The microphone is on or off.
     Listening { on: bool },
     /// A word over the box for a moment ("Natro is offline").
@@ -365,6 +477,9 @@ pub struct Chat {
 struct State {
     open: bool,
     log: Log,
+    /// The chat's pictures: id -> data URL, oldest first.
+    pictures: Vec<(String, String)>,
+    queued: Vec<Queued>,
     recorder: Option<Recorder>,
     /// The window that had the keyboard before the chat opened (an HWND), to give it back.
     before: isize,
@@ -419,10 +534,7 @@ impl Chat {
         state.open = true;
         let front = unsafe { GetForegroundWindow() };
         state.before = if front == hwnd { 0 } else { front.0 as isize };
-        let event = ChatEvent::Show {
-            exchanges: state.log.exchanges.clone(),
-            listening: state.recorder.is_some(),
-        };
+        let event = state.shown();
         self.turn.fetch_add(1, Ordering::SeqCst);
         drop(state);
         self.hits.lock().unwrap().clear();
@@ -618,15 +730,83 @@ impl Chat {
         self.changed(app, changed);
     }
 
-    /// A new chat. A question waiting gets a no.
+    /// A new chat, on the phone too (and Natro starts a new conversation). A question waiting gets a no.
     fn clear(&self, app: &AppHandle) {
         let mut state = self.state.lock().unwrap();
         if let Some(question) = state.log.waiting() {
             self.answered(app, &question, false, "new chat");
         }
         state.log.clear();
+        state.pictures.clear();
         drop(state);
+        app.state::<Brain>().send_json(json!({"type": "chat_clear"}));
         self.emit(app, ChatEvent::Clear);
+    }
+
+    /// A question about the phone's request, answered here.
+    fn answer_for(&self, app: &AppHandle, device: &str, question: &str, yes: bool) {
+        log::info!("answered {} for the {device} (click in the chat)", if yes { "yes" } else { "no" });
+        app.state::<Brain>().send_answer_for(question, yes, device);
+        let changed = self.state.lock().unwrap().log.answer_for(device, question, if yes { "Yes" } else { "No" });
+        self.changed(app, changed);
+    }
+
+    /// A picture he pasted or picked, as a data URL: into the shared chat. False if it couldn't go.
+    fn send_picture(&self, app: &AppHandle, url: &str, name: &str) -> bool {
+        let Some((mime, bytes)) = from_data_url(url) else {
+            self.notice(app, "That isn't a picture");
+            return false;
+        };
+        if !app.state::<Brain>().send_picture(&mime, name, bytes) {
+            self.notice(app, "Natro is offline");
+            return false;
+        }
+        true
+    }
+
+    /// Open a picture full size, in Windows' own viewer.
+    fn open_picture(&self, id: &str) {
+        let url = {
+            let state = self.state.lock().unwrap();
+            state.pictures.iter().find(|(p, _)| p == id).map(|(_, url)| url.clone())
+        };
+        let Some((mime, bytes)) = url.as_deref().and_then(from_data_url) else { return };
+        let extension = match mime.as_str() {
+            "image/png" => "png",
+            "image/webp" => "webp",
+            "image/gif" => "gif",
+            _ => "jpg",
+        };
+        let path = std::env::temp_dir().join(format!("natro-{id}.{extension}"));
+        if std::fs::write(&path, bytes).is_ok() {
+            let _ = std::process::Command::new("explorer.exe").arg(&path).spawn();
+        }
+    }
+
+    /// Run (or skip) a request kept for the PC: run, it becomes the chat's own request.
+    fn run_queued(&self, app: &AppHandle, id: &str, run: bool) {
+        let mut state = self.state.lock().unwrap();
+        let Some(at) = state.queued.iter().position(|q| q.id == id) else { return };
+        let brain = app.state::<Brain>();
+        if !brain.send_json(json!({"type": if run { "queue_run" } else { "queue_skip" }, "id": id})) {
+            drop(state);
+            return self.notice(app, "Natro is offline");
+        }
+        let item = state.queued.remove(at);
+        let changed = if run {
+            state.log.asked(&item.id, &item.text, false);
+            state.log.find(&item.id).map(|e| {
+                e.queued = item.from.clone();
+                e.clone()
+            })
+        } else {
+            None
+        };
+        let items = state.queued.clone();
+        drop(state);
+        log::info!("{} the request kept for the PC: {}", if run { "ran" } else { "skipped" }, item.text);
+        self.changed(app, changed);
+        self.emit(app, ChatEvent::Queued { items });
     }
 
     /// The paper clip: files to the phone, as the tray's "Send files to the phone…".
@@ -720,6 +900,80 @@ impl Chat {
         taken
     }
 
+    /// An entry of the shared chat changed (or is new).
+    pub fn entry(&self, app: &AppHandle, entry: &Value) {
+        let changed = self.state.lock().unwrap().log.entry(entry);
+        self.changed(app, changed);
+    }
+
+    /// The whole shared chat, after connecting.
+    pub fn all(&self, app: &AppHandle, entries: &[Value]) {
+        let exchanges = self.state.lock().unwrap().log.all(entries);
+        self.emit(app, ChatEvent::Replace { exchanges });
+    }
+
+    /// A picture for the shared chat (its message, then its bytes).
+    pub fn picture(&self, app: &AppHandle, message: &Value, bytes: &[u8]) {
+        let id = message["id"].as_str().unwrap_or_default().to_string();
+        let mime = message["mime"].as_str().unwrap_or("image/jpeg");
+        let url = format!(
+            "data:{mime};base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        );
+        let mut state = self.state.lock().unwrap();
+        state.pictures.retain(|(p, _)| *p != id);
+        state.pictures.push((id.clone(), url.clone()));
+        if state.pictures.len() > PICTURES {
+            state.pictures.remove(0);
+        }
+        drop(state);
+        self.emit(app, ChatEvent::Picture { id, url });
+    }
+
+    /// New chat on the phone (or here, coming back): the bubbles go.
+    pub fn cleared(&self, app: &AppHandle) {
+        let mut state = self.state.lock().unwrap();
+        if let Some(question) = state.log.waiting() {
+            self.answered(app, &question, false, "new chat");
+        }
+        state.log.clear();
+        state.pictures.clear();
+        drop(state);
+        self.emit(app, ChatEvent::Clear);
+    }
+
+    /// The PC's question was answered on the phone.
+    pub fn answered_elsewhere(&self, app: &AppHandle, question: &str, yes: bool) {
+        let changed = self.state.lock().unwrap().log.answer(question, if yes { "Yes" } else { "No" });
+        self.changed(app, changed);
+    }
+
+    /// Requests he made on the phone while the PC was off: the chat opens with them, to run or skip.
+    pub fn queued(&self, app: &AppHandle, items: &[Value]) {
+        let items: Vec<Queued> = items
+            .iter()
+            .map(|item| Queued {
+                id: item["id"].as_str().unwrap_or_default().into(),
+                text: item["text"].as_str().unwrap_or_default().into(),
+                from: match item["from"].as_str().unwrap_or_default() {
+                    "pc" => "PC".into(),
+                    other => other.to_string(),
+                },
+                time: item["time"].as_u64().unwrap_or_default(),
+            })
+            .filter(|item| !item.id.is_empty())
+            .collect();
+        if items.is_empty() {
+            return;
+        }
+        log::info!("{} requests kept for the PC while it was off", items.len());
+        self.state.lock().unwrap().queued = items.clone();
+        self.emit(app, ChatEvent::Queued { items });
+        if !self.is_open() {
+            self.open(app);
+        }
+    }
+
     /// The connection to the brain is lost: requests still waiting won't get their replies.
     pub fn lost(&self, app: &AppHandle) {
         let changed = self.state.lock().unwrap().log.lost();
@@ -747,16 +1001,36 @@ impl Chat {
 /// windows are still being made, before the chat exists.
 static PAGE_LOADED: AtomicBool = AtomicBool::new(false);
 
+impl State {
+    /// The chat as it opens.
+    fn shown(&self) -> ChatEvent {
+        ChatEvent::Show {
+            exchanges: self.log.exchanges.clone(),
+            listening: self.recorder.is_some(),
+            pictures: self.pictures.iter().cloned().collect(),
+            queued: self.queued.clone(),
+        }
+    }
+}
+
+/// A data URL's type and bytes ("data:image/jpeg;base64,...").
+fn from_data_url(url: &str) -> Option<(String, Vec<u8>)> {
+    let (head, data) = url.strip_prefix("data:")?.split_once(',')?;
+    let mime = head.strip_suffix(";base64")?;
+    if !mime.starts_with("image/") {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).ok()?;
+    Some((mime.to_string(), bytes))
+}
+
 /// What the chat shows (None while it's closed): the page asks when it loads.
 #[tauri::command]
 pub fn chat_state(app: AppHandle) -> Option<ChatEvent> {
     PAGE_LOADED.store(true, Ordering::SeqCst);
     let showing = app.try_state::<Chat>().and_then(|chat| {
         let state = chat.state.lock().unwrap();
-        state.open.then(|| ChatEvent::Show {
-            exchanges: state.log.exchanges.clone(),
-            listening: state.recorder.is_some(),
-        })
+        state.open.then(|| state.shown())
     });
     if showing.is_none() {
         hide(&window(&app)); // it was shown off the screen only so the page would load
@@ -783,10 +1057,30 @@ pub fn chat_mic(app: AppHandle) {
     app.state::<Chat>().mic(&app);
 }
 
-/// A question's Yes or No.
+/// A question's Yes or No; device: whose question, for one about the phone's request.
 #[tauri::command]
-pub fn chat_answer(app: AppHandle, question: String, yes: bool) {
-    app.state::<Chat>().answer(&app, &question, yes);
+pub fn chat_answer(app: AppHandle, question: String, yes: bool, device: Option<String>) {
+    match device.filter(|d| !d.is_empty()) {
+        Some(device) => app.state::<Chat>().answer_for(&app, &device, &question, yes),
+        None => app.state::<Chat>().answer(&app, &question, yes),
+    }
+}
+
+/// A picture pasted or picked in the chat, as a data URL. False if it couldn't go.
+#[tauri::command]
+pub fn chat_picture(app: AppHandle, data: String, name: String) -> bool {
+    app.state::<Chat>().send_picture(&app, &data, &name)
+}
+
+#[tauri::command]
+pub fn chat_open_picture(app: AppHandle, id: String) {
+    app.state::<Chat>().open_picture(&id);
+}
+
+/// Run or skip a request kept for the PC.
+#[tauri::command]
+pub fn chat_queue(app: AppHandle, id: String, run: bool) {
+    app.state::<Chat>().run_queued(&app, &id, run);
 }
 
 #[tauri::command]
@@ -932,6 +1226,92 @@ mod tests {
         assert_eq!(ended.len(), 1);
         assert_eq!(ended[0].problem, "Lost the connection to Natro");
         assert!(log.failed("r9", "late").is_none());
+    }
+
+    fn entry(device: &str, request: &str, reply: &str, done: bool) -> Value {
+        json!({"id": format!("{device}:{request}"), "device": device, "label": device, "request": request,
+               "asked": "what's on my calendar", "heard": "", "spoken": false, "reply": reply, "step": "",
+               "done": done, "problem": "", "pictures": [], "question": null, "queued": null, "sent": false})
+    }
+
+    #[test]
+    fn the_phones_requests_show_as_the_brain_has_them() {
+        let mut log = Log::default();
+        let e = log.entry(&entry("phone", "r9", "", false)).unwrap();
+        assert_eq!((e.id.as_str(), e.from.as_str(), e.done), ("phone:r9", "phone", false));
+        let e = log.entry(&entry("phone", "r9", "Nothing today.", true)).unwrap();
+        assert_eq!((e.reply.as_str(), e.done), ("Nothing today.", true));
+        assert_eq!(log.exchanges.len(), 1);
+        // Its question can't take what's typed here: that answers only the PC's own.
+        let mut asking = entry("phone", "r10", "", false);
+        asking["question"] = json!({"id": "c1", "text": "Text Nino?", "answer": ""});
+        let e = log.entry(&asking).unwrap();
+        assert_eq!(e.questions[0].device, "phone");
+        assert_eq!(log.waiting(), None);
+        assert_eq!(log.answer_for("phone", "c1", "Yes").unwrap().questions[0].answer, "Yes");
+    }
+
+    #[test]
+    fn the_pcs_own_requests_take_only_their_pictures_from_the_brain() {
+        let mut log = Log::default();
+        log.asked("r1", "show me my phone screen", false);
+        log.piece("r1", "Here");
+        let mut shared = entry("pc", "r1", "Here it is.", true);
+        shared["pictures"] = json!(["pic1"]);
+        let e = log.entry(&shared).unwrap();
+        assert_eq!((e.reply.as_str(), e.done, e.pictures.clone()), ("Here", false, vec!["pic1".to_string()]));
+        assert!(log.mine.contains("r1"));
+        // One from before the app started shows whole.
+        let e = log.entry(&entry("pc", "r0", "Done.", true)).unwrap();
+        assert_eq!((e.id.as_str(), e.from.as_str(), e.reply.as_str()), ("r0", "", "Done."));
+    }
+
+    #[test]
+    fn after_connecting_the_phones_side_is_replaced_and_the_pcs_kept() {
+        let mut log = Log::default();
+        log.asked("r1", "hi", false);
+        log.entry(&entry("phone", "r5", "Old.", true));
+        let all = log.all(&[entry("phone", "r6", "New.", true)]);
+        let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["r1", "phone:r6"]);
+    }
+
+    #[test]
+    fn a_reminder_is_her_words_alone() {
+        let mut log = Log::default();
+        let mut reminder = entry("natro", "rm1-17", "Time to call Nino.", true);
+        reminder["asked"] = json!("");
+        reminder["reminder"] = json!(true);
+        let e = log.entry(&reminder).unwrap();
+        assert!(e.reminder && e.asked.is_empty() && e.done);
+        assert_eq!((e.id.as_str(), e.reply.as_str()), ("natro:rm1-17", "Time to call Nino."));
+        assert!(!log.entry(&entry("phone", "r1", "Done.", true)).unwrap().reminder);
+        let mut alert = entry("natro", "al1", "Nino emailed: Dinner.", true);
+        alert["asked"] = json!("");
+        alert["alert"] = json!(true);
+        let e = log.entry(&alert).unwrap();
+        assert!(e.alert && !e.reminder && e.asked.is_empty());
+    }
+
+    #[test]
+    fn a_background_job_is_her_work_with_its_task() {
+        let mut log = Log::default();
+        let mut job = entry("natro", "jb1", "", false);
+        job["asked"] = json!("");
+        job["job"] = json!("Find three flats under $600.");
+        job["question"] = json!({"id": "c4", "text": "I'll email Nino the flats.", "answer": "", "device": "pc"});
+        let e = log.entry(&job).unwrap();
+        assert_eq!(e.job, "Find three flats under $600.");
+        assert!(e.asked.is_empty() && !e.done && !e.reminder);
+        // Answered here, it goes to the brain as the device "natro"'s: the brain knows where it was asked.
+        assert_eq!(e.questions[0].device, "natro");
+    }
+
+    #[test]
+    fn pictures_come_as_data_urls() {
+        assert_eq!(from_data_url("data:image/png;base64,iVBO"), Some(("image/png".into(), vec![0x89, 0x50, 0x4e])));
+        assert_eq!(from_data_url("data:text/html;base64,PGI+"), None);
+        assert_eq!(from_data_url("https://example.com/a.png"), None);
     }
 
     #[test]

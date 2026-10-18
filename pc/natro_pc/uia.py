@@ -12,6 +12,7 @@ aware of each monitor's DPI, so the pixels UI Automation gives are the ones the 
 import concurrent.futures
 import ctypes
 import dataclasses
+import io
 import os
 import sys
 import time
@@ -29,6 +30,9 @@ OWN_PROCESSES = {"natro.exe"}
 SHELL_CLASSES = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"}
 TASKBAR_CLASS = "Shell_TrayWnd"
 CHROMIUM_CLASS = "Chrome_WidgetWin_1"  # Chrome, Edge, and Electron apps such as Discord
+# Screenshots: the longest side at most this, as JPEG, so one is a few hundred KB.
+SHOT_PIXELS = 1920
+SHOT_QUALITY = 80
 # Characters some apps put in titles ("Microsoft​ Edge") that would stop a name from matching.
 INVISIBLE = dict.fromkeys(map(ord, "​‌‍⁠﻿"))
 
@@ -236,6 +240,14 @@ if sys.platform == "win32":
     user32.IsWindowVisible.argtypes = [wintypes.HWND]
     user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
     user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+    user32.MonitorFromWindow.restype = wintypes.HMONITOR
+    user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT), ("rcWork", wintypes.RECT),
+                    ("dwFlags", wintypes.DWORD)]
+
+    user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(MONITORINFO)]
     dwmapi.DwmGetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
 
     ULONG_PTR = ctypes.c_size_t
@@ -267,6 +279,7 @@ PER_MONITOR_AWARE_V2 = -4
 GWL_EXSTYLE, WS_EX_TOOLWINDOW = -20, 0x80
 DWMWA_CLOAKED = 14
 GA_ROOT, SW_RESTORE = 2, 9
+MONITOR_DEFAULTTOPRIMARY = 1
 
 
 def _send(inputs):
@@ -674,6 +687,27 @@ class Desktop:
         user32.GetWindowRect(hwnd, ctypes.byref(rect))
         point = wintypes.POINT((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2)
         return (point.x, point.y) if user32.GetAncestor(user32.WindowFromPoint(point), GA_ROOT) == hwnd else None
+
+    # Screenshots
+
+    def screenshot(self):
+        """The screen he's using (the monitor of the window in front), as JPEG bytes."""
+        return self._run(self._screenshot)
+
+    def _screenshot(self):
+        from PIL import ImageGrab
+
+        front, _, _ = pick(windows(), self._own)
+        monitor = user32.MonitorFromWindow(front.hwnd if front else user32.GetForegroundWindow(),
+                                           MONITOR_DEFAULTTOPRIMARY)
+        info = MONITORINFO(cbSize=ctypes.sizeof(MONITORINFO))
+        user32.GetMonitorInfoW(monitor, ctypes.byref(info))
+        area = info.rcMonitor
+        image = ImageGrab.grab(bbox=(area.left, area.top, area.right, area.bottom), all_screens=True)
+        image.thumbnail((SHOT_PIXELS, SHOT_PIXELS))
+        out = io.BytesIO()
+        image.convert("RGB").save(out, "JPEG", quality=SHOT_QUALITY, optimize=True)
+        return out.getvalue()
 
     # Windows and waiting
 

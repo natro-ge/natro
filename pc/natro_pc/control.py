@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass, field
 
 from natro_pc import uia
-from natro_pc.tools import PCTool, ToolError
+from natro_pc.tools import PCTool, Picture, ToolError
 
 MAX_ELEMENTS = uia.MAX_ELEMENTS
 LABEL_CHARS = 60
@@ -201,6 +201,11 @@ class ScreenControl:
         time.sleep(SETTLE_SECONDS)
         return self._show(self.desktop.read())
 
+    def screenshot(self):
+        data = self.desktop.screenshot()
+        return Picture("The screenshot of his PC's screen is in the chat, where he can see it (you can't).", data,
+                       "image/jpeg", f"PC screen {time.strftime('%H.%M')}.jpg")
+
     def wait_for(self, text, seconds=10):
         if not (text or "").strip():
             raise ToolError("Say what to wait for.")
@@ -249,4 +254,7 @@ def tools(control=None):
         PCTool("wait_for", "Wait until some text shows on the PC's screen (a page loading, a dialog), up to 20 "
                "seconds; returns the screen.", control.wait_for,
                {"text": {"type": "string"}, "seconds": {"type": "integer"}}, ["text"], personal=True),
+        PCTool("screenshot", "Take a picture of the PC's screen and put it in the chat on his devices, for him to "
+               "see (\"show me my PC screen\"). You don't see it yourself: to read the screen, use screen.",
+               control.screenshot, personal=True),
     ]

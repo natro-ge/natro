@@ -29,9 +29,10 @@ SECRET = "Tuxa's sister is Nino."
 
 # The only tools the free Gemini tier may ever see: neither personal nor asking first.
 FREE_TIER_TOOLS = {
-    "web_search",
+    "web_search", "weather", "web_page",
     "pc_open_app", "pc_close_app", "pc_list_open_apps", "pc_open_link",
     "spotify_play", "spotify_control", "spotify_now_playing", "spotify_like", "spotify_add_to_playlist",
+    "spotify_create_playlist",  # makes an empty one and says only its name and URI: nothing of his is read
     "phone_open_app", "phone_set_alarm", "phone_set_timer", "phone_next_alarm", "phone_media",
     "phone_flashlight", "phone_volume",
 }
@@ -40,7 +41,7 @@ FREE_TIER_TOOLS = {
 ASK_FIRST_TOOLS = {
     "pc_force_close_app", "calendar_delete_event", "tasks_delete", "gmail_send", "docs_replace",
     "forget", "notes_delete", "phone_call", "phone_send_sms", "phone_tap_risky", "pc_run_command_risky",
-    "pc_act_risky",
+    "pc_act_risky", "pc_browser_act_risky",
 }
 
 # A tool whose name says it deletes, sends, calls, kills or pays must be on the list above.
@@ -54,11 +55,18 @@ PERSONAL_REQUESTS = [
     "delete that note", "find the invoice file on my PC", "open the document about taxes",
     "what do you know about me", "any new notifications", "remind me to call mom at 6",
     "what's in my Drive", "share the file with Nino", "what is my address", "send my last photo to the PC",
+    "brief me", "what's my day like", "give me my morning briefing",
+    "what are you working on", "in the background, compare flights to Berlin", "cancel that job",
+    "let me know when the bank texts me", "always tell me when Nino emails", "stop the meeting heads-ups",
+    "what are you watching for", "convert the newest PDF in my Downloads to Word",
+    "what was that restaurant I asked about on Tuesday", "what did you tell me yesterday about the flight",
+    "how long does it take to get to the airport", "when should I leave for the dentist",
 ]
 
 # Plain requests that are fine on the free tier.
 FREE_REQUESTS = ["open Chrome", "what's the capital of France", "play Yellow", "turn the flashlight on",
-                 "what's 15 percent of 80", "set a timer for ten minutes", "weather in Tbilisi tomorrow"]
+                 "what's 15 percent of 80", "set a timer for ten minutes", "weather in Tbilisi tomorrow",
+                 "what does the article at https://example.com/news say"]
 
 
 # --- Setup --------------------------------------------------------------------------------------
@@ -119,7 +127,10 @@ def test_screen_and_message_tools_are_personal(tmp):
             "phone_contacts", "pc_read_file", "pc_search_files", "pc_search_file_contents", "pc_open_file",
             "spotify_library", "remember", "gmail_read", "gmail_search", "calendar_events", "copy_to_device",
             "phone_search_files", "pc_run_command", "pc_run_command_risky", "pc_screen", "pc_find", "pc_act",
-            "pc_act_risky", "pc_switch_window", "pc_wait_for"} <= personal
+            "pc_act_risky", "pc_switch_window", "pc_wait_for", "pc_screenshot", "phone_screenshot",
+            "queue_for_device", "remind", "reminders_list", "reminders_cancel", "briefing", "start_job",
+            "jobs_list", "jobs_cancel", "watch", "watchers_list", "watchers_cancel", "convert_file", "history_search", "travel_time", "pc_browser_open",
+            "pc_browser_page", "pc_browser_act", "pc_browser_act_risky", "pc_browser_tabs"} <= personal
 
 
 # --- 1. Personal data never reaches the free tier -----------------------------------------------
@@ -294,6 +305,17 @@ def test_a_tool_on_a_device_that_just_left_returns_an_error_not_a_success(tmp):
 SEND_PHOTO = ("copy_to_device", {"from_device": "phone", "path": "/storage/emulated/0/DCIM/Camera/a.jpg",
                                  "to_device": "pc"})
 
+REMIND_OVEN = ("remind", {"text": "Check the oven.", "in_minutes": 20})
+
+WATCH_NINO = ("watch", {"kind": "email", "from": "Nino"})
+
+NEWEST_PDF = ("pc_search_files", {"query": "ext:pdf"})
+AIRPORT_BY_BUS = ("travel_time", {"destination": "Tbilisi airport", "mode": "transit"})
+RESTAURANT = ("history_search", {"words": "restaurant", "start": "2026-10-13", "end": "2026-10-13"})
+PDF_TO_WORD = ("convert_file", {"from_device": "pc", "path": "C:/Users/Tuxa/Downloads/report.pdf", "to": "docx"})
+
+FLATS_JOB = ("start_job", {"task": "Find three flats in Tbilisi under 600 dollars a month and put them in a note."})
+
 # (request, scripted Claude replies, the tool calls that must run, the model route)
 JOURNEYS = [
     ("pause the music", [], [("spotify_control", {"action": "pause"})], "quick"),
@@ -307,6 +329,13 @@ JOURNEYS = [
     ("what's on my PC's screen", [("pc_screen", {})], [("pc_screen", {})], "claude"),
     ("send my last photo to the PC", [("phone_search_files", {"kind": "image"}), SEND_PHOTO],
      [("phone_search_files", {"kind": "image"}), SEND_PHOTO], "claude"),
+    ("remind me in 20 minutes to check the oven", [REMIND_OVEN], [REMIND_OVEN], "claude"),
+    ("brief me", [("briefing", {})], [("briefing", {})], "claude"),
+    ("in the background, find three flats under 600 dollars", [FLATS_JOB], [FLATS_JOB], "claude"),
+    ("always tell me when Nino emails", [WATCH_NINO], [WATCH_NINO], "claude"),
+    ("make my newest PDF a Word file", [NEWEST_PDF, PDF_TO_WORD], [NEWEST_PDF, PDF_TO_WORD], "claude"),
+    ("what was that restaurant I asked about on Tuesday", [RESTAURANT], [RESTAURANT], "claude"),
+    ("how long to the airport by bus", [AIRPORT_BY_BUS], [AIRPORT_BY_BUS], "claude"),
 ]
 
 
@@ -337,4 +366,5 @@ def test_the_header_names_the_time_the_device_and_who_is_online(tmp):
     world = World(tmp, claude=[message(text("Hi."))])
     world.ask("hi there friend")
     header = world.claude.requests[0]["messages"][-1]["content"].splitlines()[0]
-    assert re.fullmatch(r"\[\w+ \d\d \w+ \d{4}, \d\d:\d\d · from the typed chat · online: PC, phone\]", header)
+    # Tbilisi is UTC+4 all year: the offset lets her work out other time zones.
+    assert re.fullmatch(r"\[\w+ \d\d \w+ \d{4}, \d\d:\d\d UTC\+4 · from the typed chat · online: PC, phone\]", header)

@@ -3,13 +3,20 @@ package dev.natro
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
+import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import java.io.ByteArrayOutputStream
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.roundToInt
 
 /**
  * Controlling apps by their screen (the owner turns it on in Settings > Accessibility > Natro).
@@ -37,6 +44,37 @@ class ScreenControl : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
 
     override fun onInterrupt() {}
+
+    /** The screen as a JPEG, the longest side at most SHOT_PIXELS (blocks for up to a few seconds). */
+    fun screenshot(): ByteArray {
+        val done = CountDownLatch(1)
+        var shot: Bitmap? = null
+        var problem: String? = null
+        takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+            override fun onSuccess(result: ScreenshotResult) {
+                val buffer = result.hardwareBuffer
+                shot = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace)?.copy(Bitmap.Config.ARGB_8888, false)
+                buffer.close()
+                done.countDown()
+            }
+
+            override fun onFailure(errorCode: Int) {
+                problem = when (errorCode) {
+                    ERROR_TAKE_SCREENSHOT_SECURE_WINDOW -> "The app on screen doesn't allow screenshots."
+                    ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT -> "Too soon after the last screenshot: try again."
+                    else -> "The phone couldn't take a screenshot (error $errorCode)."
+                }
+                done.countDown()
+            }
+        })
+        if (!done.await(SHOT_SECONDS, TimeUnit.SECONDS)) throw ToolFailure("The phone didn't take the screenshot in time.")
+        val bitmap = shot ?: throw ToolFailure(problem ?: "The phone couldn't take a screenshot.")
+        val scale = minOf(1f, SHOT_PIXELS.toFloat() / max(bitmap.width, bitmap.height))
+        val small = if (scale < 1f) {
+            Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).roundToInt(), (bitmap.height * scale).roundToInt(), true)
+        } else bitmap
+        return ByteArrayOutputStream().also { small.compress(Bitmap.CompressFormat.JPEG, SHOT_QUALITY, it) }.toByteArray()
+    }
 
     fun describe(): String {
         val root = rootInActiveWindow ?: throw ToolFailure("Can't read the screen right now (it may be locked or off).")
@@ -168,6 +206,10 @@ class ScreenControl : AccessibilityService() {
 
     companion object {
         private const val MAX_ELEMENTS = 150
+        // Screenshots: the longest side at most this, as JPEG, so one is a few hundred KB.
+        private const val SHOT_PIXELS = 1920
+        private const val SHOT_QUALITY = 80
+        private const val SHOT_SECONDS = 5L
         private const val SETTLE_MILLIS = 900L
         private const val FRONT_WAIT_MILLIS = 3000
 

@@ -73,3 +73,6 @@ object Names {
 }
 
 class ToolFailure(message: String) : Exception(message)
+
+/** A tool's result with a picture (a screenshot): text tells Natro, the picture goes into the chat for him. */
+class ToolPicture(val text: String, val data: ByteArray, val mime: String, val name: String)

@@ -27,8 +27,8 @@ const TOOL_WAIT: Duration = Duration::from_secs(60);
 const APP_WAIT: Duration = Duration::from_secs(10);
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// Tool calls waiting for their result, by id.
-type Waiting = Arc<Mutex<HashMap<String, oneshot::Sender<(bool, String)>>>>;
+/// Tool calls waiting for their result, by id: whether it worked, the text, and a picture (or null).
+type Waiting = Arc<Mutex<HashMap<String, oneshot::Sender<(bool, String, Value)>>>>;
 
 pub struct Helper {
     stdin: Mutex<Option<ChildStdin>>,
@@ -72,8 +72,8 @@ impl Helper {
                                 if let Some(waiter) = pending.lock().unwrap().remove(id) {
                                     let result =
                                         message["result"].as_str().unwrap_or_default().to_string();
-                                    let _ = waiter
-                                        .send((message["ok"].as_bool().unwrap_or(false), result));
+                                    let ok = message["ok"].as_bool().unwrap_or(false);
+                                    let _ = waiter.send((ok, result, message["picture"].clone()));
                                 }
                             }
                             _ => {}
@@ -116,19 +116,19 @@ impl Helper {
         }
     }
 
-    /// Run one of the PC's tools: (ok, result for the brain).
-    pub async fn run_tool(&self, id: &str, name: &str, args: &Value) -> (bool, String) {
+    /// Run one of the PC's tools: (ok, result for the brain, a picture for the chat or null).
+    pub async fn run_tool(&self, id: &str, name: &str, args: &Value) -> (bool, String, Value) {
         let (done, result) = oneshot::channel();
         self.waiting.lock().unwrap().insert(id.to_string(), done);
         if !self.write(json!({"type": "tool", "id": id, "name": name, "args": args})) {
             self.waiting.lock().unwrap().remove(id);
-            return (false, "The PC's tools aren't running.".into());
+            return (false, "The PC's tools aren't running.".into(), Value::Null);
         }
         match tokio::time::timeout(TOOL_WAIT, result).await {
             Ok(Ok(result)) => result,
             _ => {
                 self.waiting.lock().unwrap().remove(id);
-                (false, format!("{name} took too long on the PC."))
+                (false, format!("{name} took too long on the PC."), Value::Null)
             }
         }
     }
@@ -144,7 +144,7 @@ impl Helper {
             return None;
         }
         match tokio::time::timeout(APP_WAIT, result).await {
-            Ok(Ok((found, app_id))) => Some(found.then_some(app_id)),
+            Ok(Ok((found, app_id, _))) => Some(found.then_some(app_id)),
             _ => {
                 self.waiting.lock().unwrap().remove(&id);
                 None

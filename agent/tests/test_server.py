@@ -83,9 +83,10 @@ def test_typed_request_with_a_device_tool_and_a_yes_by_key():
     confirm = next(m for m in seen if m["type"] == "confirm")
     assert confirm["question"] == "I'll force close Spotify."
     assert calls == [("force_close_app", {"app": "Spotify"})]
-    assert seen[-1]["type"] == "reply" and seen[-1]["text"] == "I'll force close Spotify. Done."
+    # The question showed as she wrote it; the reply, shown in its place and spoken, doesn't repeat it.
+    assert "".join(m["text"] for m in seen if m["type"] == "reply_text") == "I'll force close Spotify. Done."
+    assert seen[-1]["type"] == "reply" and seen[-1]["text"] == "Done."
     assert seen[-1]["spent"] >= 0 and seen[-1]["budget"] == 15
-    assert any(m["type"] == "reply_text" for m in seen)
 
 
 def test_spoken_request_counts_voice_cost():

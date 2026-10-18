@@ -13,6 +13,9 @@ def test_spotify_steps_are_about_spotify():
     assert describe("spotify_play", {"kind": "liked_songs"})["text"] == "Playing Liked Songs"
     assert describe("spotify_control", {"action": "pause"})["text"] == "Pausing music"
     assert describe("spotify_control", {"action": "shuffle", "value": "on"})["text"] == "Shuffle on"
+    assert describe("spotify_create_playlist", {"name": "Classic Rock"})["text"] == "Creating Classic Rock"
+    assert describe("spotify_add_to_playlist", {"playlist": "Gym"})["text"] == "Adding to Gym"
+    assert describe("spotify_add_to_playlist", {"playlist": "spotify:playlist:abc"})["text"] == "Adding to a playlist"
 
 
 def test_phone_steps():

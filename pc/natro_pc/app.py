@@ -40,7 +40,7 @@ from natro_pc.config import ROOT, load_env
 from natro_pc.hotkey import wait_for_answer_key
 from natro_pc.listen import SILENCE_SECONDS, keys_pressed, record, record_instruction, wait_for_wake_word
 from natro_pc.speak import Speaker
-from natro_pc.tools import ToolError, all_tools
+from natro_pc.tools import ToolError, all_tools, result_fields
 
 DEFAULT_SERVER = "ws://127.0.0.1:8700"
 MAX_MESSAGE_BYTES = 16 * 2**20
@@ -243,8 +243,9 @@ class App:
             result, ok = str(e), False
         except Exception as e:
             result, ok = f"{name} failed on the PC: {type(e).__name__}: {e}", False
-        self.on_tool(name, result, ok)
-        await self.ws.send(json.dumps({"type": "tool_result", "id": id, "ok": ok, "result": result}))
+        fields = result_fields(result)
+        self.on_tool(name, fields["result"], ok)
+        await self.ws.send(json.dumps({"type": "tool_result", "id": id, "ok": ok, **fields}))
 
     # Requests
 

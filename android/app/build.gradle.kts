@@ -88,4 +88,6 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation(files(sherpaAar))
     testImplementation("junit:junit:4.13.2")
+    // The real org.json for unit tests (Android's is a stub off the phone): the shared chat's entries are JSON.
+    testImplementation("org.json:json:20240303")
 }

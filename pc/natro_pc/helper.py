@@ -6,7 +6,8 @@ The desktop app starts it (no console window) and talks to it in JSON lines:
 
   helper to app:  {"type": "tools", "tools": [...]}            first: the tools, as the brain should see them
   app to helper:  {"type": "tool", "id": "c1", "name": "...", "args": {...}}
-  helper to app:  {"type": "tool_result", "id": "c1", "ok": true, "result": "..."}
+  helper to app:  {"type": "tool_result", "id": "c1", "ok": true, "result": "...", "picture": {...}}
+                                                               picture: only with a screenshot (tools.Picture)
   app to helper:  {"type": "say", "text": "..."}               speak it (Kokoro), after anything already queued
   app to helper:  {"type": "app", "id": "a1", "name": "Spotify"}
   helper to app:  {"type": "app", "id": "a1", "ok": true, "result": "<AppID>"}   the Start menu app, for its icon
@@ -20,7 +21,7 @@ import threading
 from natro_pc.apps import StartMenu
 from natro_pc.config import load_env
 from natro_pc.speak import Speaker
-from natro_pc.tools import ToolError, all_tools
+from natro_pc.tools import ToolError, all_tools, result_fields
 
 
 def main():
@@ -45,7 +46,7 @@ def main():
             result, ok = str(e), False
         except Exception as e:
             result, ok = f"{name} failed on the PC: {type(e).__name__}: {e}", False
-        send(type="tool_result", id=id, ok=ok, result=result)
+        send(type="tool_result", id=id, ok=ok, **result_fields(result))
 
     def find_app(id, name):
         try:

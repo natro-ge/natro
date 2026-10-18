@@ -19,15 +19,55 @@ and your online accounts, and answers on screen and out loud, in English.
 - **Google:** Calendar, Tasks, Gmail (read, and send after you say yes),
   Drive (read) and Docs.
 - **Spotify:** play any song, album, artist, playlist or podcast; pause, skip,
-  volume, queue, like; on whichever device has Spotify open.
+  volume, queue, like; make playlists and fill them, many songs at once,
+  without playing them; on whichever device has Spotify open.
 - **Files between the PC and the phone** (up to 1 GB): ask her ("send the
   invoice to my phone", "send my last photo to the PC"), share to "Send to
   PC" on the phone, or right-click > Send to > "Phone (Natro)" on the PC. They
   land in Downloads. The server only passes them along: a file waits there
   for a device that's offline (up to 7 days) and is deleted once it arrives.
+- **One chat on the PC and the phone:** what you ask on either shows on both,
+  with her replies, until you start a new chat on either. It lives on the
+  server, in memory only. "Show me my PC screen" (or the phone's) puts a
+  screenshot in it, and you can send pictures into it; she never sees them.
+  When she asks before something risky, you can answer on either: the phone
+  shows the PC's question as a notification with Yes and No, and the PC's
+  reply box shows the phone's.
+- **Requests wait for a device that's offline:** ask on the phone for
+  something on the PC while it's off, and when the PC is back it asks you
+  whether to run it (Run or Skip; up to 24 hours). The same the other way.
 - **Memory and notes:** she remembers what you tell her and preferences she
   notices herself; longer notes are Markdown files.
-- **Web search,** and any other tools you plug in as MCP servers.
+- **Reminders and a briefing:** "remind me in 20 minutes to check the oven",
+  "every Monday at 9", "when my PC is back": at that moment she says it and
+  shows it on your devices, with no model call. "Brief me" gives the
+  weather, what's left on your calendar, tasks due, reminders still to come
+  and new email, in a few sentences.
+- **Background jobs:** long work ("in the background, compare flights to
+  Berlin for every weekend in November") runs while you go on talking to
+  her. "What are you working on?" and "cancel that" work on it, and when
+  it's done she tells you the answer, with the details in the chat.
+- **She keeps an eye out:** "always tell me when Nino emails", "let me know
+  right away when the bank texts me", and a heads-up ten minutes before each
+  meeting, or when to leave for one further away. The checks are cheap rules
+  with no model call, and the phone matches its own notifications, so only the
+  ones you asked about leave it.
+- **Your own browser:** she uses your Edge, logged in as you, through
+  Playwright and Microsoft's Playwright Extension: open a site, read the page,
+  click and type, in tabs of her own. What sends, buys or deletes asks first;
+  bank and payment sites are read only.
+- **Getting places:** "how long to the airport?", "when should I leave for the
+  dentist?", by car with traffic or by public transport with its lines
+  (Google's Routes API).
+- **File conversion:** "make the newest PDF in my Downloads a Word file",
+  "this video as an MP3". The server converts it (LibreOffice, pandoc,
+  Pillow, ffmpeg) and the result lands in Downloads; nothing is kept, and no
+  model sees the file.
+- **She remembers earlier conversations:** "what was that restaurant I asked
+  about on Tuesday?" searches what you asked and what she answered before.
+- **Web search, whole web pages** (she reads a link in full, and never a
+  private address), **the weather** (Open-Meteo, no key), and any other tools you
+  plug in as MCP servers.
 - **Asks before anything risky:** deleting, sending, calling, force-closing
   an app, or a tap that sends, buys or deletes waits for your yes (by voice,
   hotkey or tap).
@@ -176,7 +216,10 @@ model, the time and the cost.
 ([Google AI Studio](https://aistudio.google.com/apikey)) sends requests with
 no personal data to Gemini's free tier; `TAVILY_API_KEY`
 ([tavily.com](https://tavily.com), 1,000 free searches a month) turns on web
-search.
+search. `GOOGLE_MAPS_API_KEY` (a Google Cloud key for the Routes API) turns on
+travel time, from `NATRO_HOME_ADDRESS` by `NATRO_TRAVEL_MODE` (drive, transit,
+walk or bicycle). The weather needs no key; `NATRO_WEATHER_PLACE` is where you live
+(default Tbilisi).
 
 ### 2. Talk to her on the PC
 

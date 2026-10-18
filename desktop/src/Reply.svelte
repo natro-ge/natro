@@ -293,6 +293,38 @@
     text-underline-offset: 2px;
     cursor: pointer;
   }
+  /* Yes and No to Natro's question on the phone (reply.rs): buttons, as in the chat. */
+  .body :global(a[href^='natro:answer/']) {
+    display: inline-block;
+    margin: 4px 6px 0 0;
+    padding: 0 16px;
+    line-height: 28px;
+    border-radius: 14px;
+    font-size: 13px;
+    font-weight: 600;
+    text-decoration: none;
+    background: var(--decline);
+    color: var(--text);
+    transition:
+      background 150ms ease,
+      color 150ms ease,
+      filter 150ms ease,
+      scale 120ms ease;
+  }
+  .body :global(a[href^='natro:answer/']:active) {
+    scale: 0.95;
+  }
+  .body :global(a[href^='natro:answer/'][href$='/yes']) {
+    background: var(--green);
+    color: #fff;
+  }
+  .body :global(a[href^='natro:answer/'][href$='/yes']:hover) {
+    filter: brightness(1.1);
+  }
+  .body :global(a[href^='natro:answer/'][href$='/no']:hover) {
+    background: #ff453a;
+    color: #fff;
+  }
   .body :global(.caret) {
     display: inline-block;
     width: 2px;

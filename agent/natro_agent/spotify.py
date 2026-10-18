@@ -7,13 +7,17 @@ file exists. Spotify ends a sign-in six months after it was made (refreshing
 doesn't extend it), so Natro mentions it in the last two weeks.
 
 Playing, controlling and liking music is not personal (the free Gemini tier may
-do it); his playlists and listening history are. Nothing here deletes, so nothing
-asks first.
+do it), nor is making a playlist and filling it; the list of his playlists and his
+listening history are. Nothing here deletes, so nothing asks first.
+
+Filling a playlist never touches playback: songs are found by search (studio
+versions before live ones), many in one call, and added without playing them.
 
 Spotify's rules for "Development Mode" apps (February 2026) shape this: search
-returns at most 10 results, saving goes through /me/library with URIs, playlist
-contents only for playlists he owns or collaborates on, and Spotify's own
-made-for-you playlists (On Repeat, Discover Weekly) can't be looked up, only
+returns at most 10 results, saving goes through /me/library with URIs, playlists
+are made with POST /me/playlists and filled through /playlists/{id}/items,
+playlist contents only for playlists he owns or collaborates on, and Spotify's
+own made-for-you playlists (On Repeat, Discover Weekly) can't be looked up, only
 played by their link.
 """
 import asyncio
@@ -38,6 +42,11 @@ SIGN_IN_AGAIN = "The Spotify sign-in has expired or was revoked: run `python -m 
 SIGN_IN_DAYS = 182  # Spotify's six months
 WARN_DAYS = 14
 MAX_PLAYLISTS = 200
+MAX_SEARCH = 10  # Development Mode's most results per search
+MAX_ADD = 50  # songs found and added in one call
+SEARCHES_AT_ONCE = 5
+# A playlist's songs read to keep from adding one twice (a page is 50).
+MAX_CHECKED = 500
 VOLUME_STEP = 10
 # A Spotify app that just started (say, opened on the PC by Natro) shows up as a device after a few seconds.
 START_SECONDS = 10
@@ -47,6 +56,11 @@ MADE_FOR_YOU = re.compile(r"(my )?(on repeat|repeat rewind|discover weekly|relea
                           r"your top songs( \d+)?|time capsule)( playlist)?")
 DEVICE_TYPES = {"pc": "computer", "computer": "computer", "laptop": "computer", "phone": "smartphone",
                 "mobile": "smartphone", "speaker": "speaker", "tv": "tv"}
+# What a name may carry after the title: "Kashmir - Remaster", "Money (Live at Wembley)".
+SUFFIXES = re.compile(r"\s+-\s+.*$|\s*[(\[][^)\]]*[)\]]")
+# Other takes than the studio one, in a name's suffix or its album's name.
+OTHER_TAKES = re.compile(r"\b(live|demo|acoustic|unplugged|karaoke|instrumental|rehearsal|remix|outtake|session|"
+                         r"take|commentary|cover|tribute|bbc)\b")
 
 
 class NothingPlaying(ToolError):
@@ -211,6 +225,38 @@ def uri_kind(uri):
     return uri.split(":")[1]
 
 
+def studio_version(found, query):
+    """The search's best match in its plainest version by the same artist, or None.
+
+    A plain name first, then one marked otherwise (a remaster, a mono mix), and
+    live takes, demos and the like only when the search found nothing else. Words
+    the query adds to the title count as asked for ("Kashmir live"); the title's
+    own words never mark a version ("Live and Let Die"). Otherwise Spotify's order
+    stands.
+    """
+    if not found:
+        return None
+
+    def title(item):
+        return plain(SUFFIXES.sub("", item["name"]))
+
+    def first_artist(item):
+        return plain((item.get("artists") or [{}])[0].get("name", ""))
+
+    def distance(item):
+        own = set(title(item).split())
+        asked = set(plain(query).split()) - own
+        suffix = plain(" ".join(SUFFIXES.findall(item["name"])))
+        album = " ".join(set(plain(item.get("album", {}).get("name", "")).split()) - own)
+        if set(OTHER_TAKES.findall(f"{suffix} {album}")) - asked:
+            return 2
+        return 1 if set(suffix.split()) - asked else 0
+
+    best = found[0]
+    versions = [item for item in found if title(item) == title(best) and first_artist(item) == first_artist(best)]
+    return min(versions, key=distance)  # the first of the plainest
+
+
 class Spotify:
     def __init__(self, api, start_seconds=START_SECONDS):
         self.api = api
@@ -280,8 +326,8 @@ class Spotify:
 
     # Finding things
 
-    async def search(self, query, kind):
-        found = await self.api.call("GET", "/search", {"q": query, "type": kind, "limit": 5})
+    async def search(self, query, kind, limit=5):
+        found = await self.api.call("GET", "/search", {"q": query, "type": kind, "limit": min(limit, MAX_SEARCH)})
         return [item for item in found.get(f"{kind}s", {}).get("items", []) if item]
 
     async def playlists(self):
@@ -304,6 +350,47 @@ class Spotify:
         exact = [p for p in mine if plain(p["name"]) == wanted]
         close = sorted((p for p in mine if wanted in plain(p["name"])), key=lambda p: len(p["name"]))
         return (exact or close or [None])[0]
+
+    async def _playlist_to_fill(self, playlist):
+        """His playlist that can take songs, by name or by URI or link (as spotify_create_playlist gives it)."""
+        if re.match(r"spotify:playlist:|https?://open\.spotify\.com/", playlist.strip()):
+            uri = spotify_uri(playlist)
+            if uri_kind(uri) != "playlist":
+                raise ToolError(f"{playlist!r} isn't a playlist.")
+            found = await self.api.call("GET", f"/playlists/{uri.split(':')[2]}",
+                                        {"fields": "id,name,uri,type,collaborative,owner(id)"})
+            if found.get("owner", {}).get("id") != await self._user_id() and not found.get("collaborative"):
+                raise ToolError(f"{describe(found)} isn't his, so songs can't be added to it.")
+            return found
+        found = await self._his_playlist(playlist, editable=True)
+        if found is None:
+            raise ToolError(f"He has no playlist called {playlist!r} that he can add to (spotify_create_playlist "
+                            "makes one).")
+        return found
+
+    async def _uris_in(self, playlist):
+        """The songs already in a playlist (its first MAX_CHECKED), so none goes in twice."""
+        uris, offset = set(), 0
+        while offset < MAX_CHECKED:
+            page = await self.api.call("GET", f"/playlists/{playlist['id']}/items", {
+                "limit": 50, "offset": offset, "fields": "next,items(item(uri),track(uri))"})
+            uris |= {(entry.get("item") or entry.get("track") or {}).get("uri") for entry in page.get("items", [])
+                     if entry}
+            if not page.get("next"):
+                break
+            offset += 50
+        return uris
+
+    async def _album_songs(self, album_id):
+        return [song["uri"] for song in (await self.api.call("GET", f"/albums/{album_id}/tracks", {"limit": 50}))
+                .get("items", []) if song]
+
+    async def _to_add(self, query, kind):
+        """(What it is, its songs' URIs) for the best match of a search, or None."""
+        item = studio_version(await self.search(query, kind, limit=MAX_SEARCH), query)
+        if item is None:
+            return None
+        return describe(item), (await self._album_songs(item["id"]) if kind == "album" else [item["uri"]])
 
     async def _current_item(self):
         state = await self.api.call("GET", "/me/player/currently-playing", {"additional_types": "track,episode"})
@@ -439,13 +526,74 @@ class Spotify:
         await self.api.call("PUT", "/me/library", {"uris": item["uri"]})
         return f"Saved {name} to {where}."
 
-    async def add_to_playlist(self, playlist, uri=None):
-        found = await self._his_playlist(playlist, editable=True)
-        if found is None:
-            raise ToolError(f"He has no playlist called {playlist!r} that he can add to.")
+    async def _wanted(self, queries, kind, uri):
+        """[(what it is, its songs' URIs)] to add, and the queries Spotify found nothing for."""
+        if queries:
+            at_once = asyncio.Semaphore(SEARCHES_AT_ONCE)
+
+            async def find(query):
+                async with at_once:
+                    return await self._to_add(query, kind)
+
+            found = await asyncio.gather(*map(find, queries))
+            return [each for each in found if each], [query for query, each in zip(queries, found) if not each]
         item = {"uri": spotify_uri(uri)} if uri else await self._current_item()
-        await self.api.call("POST", f"/playlists/{found['id']}/items", body={"uris": [item["uri"]]})
-        return f"Added {describe(item) if 'name' in item else 'it'} to {describe(found)}."
+        album = uri_kind(item["uri"]) == "album"
+        songs = await self._album_songs(item["uri"].split(":")[2]) if album else [item["uri"]]
+        return [(describe(item) if "name" in item else "it", songs)], []
+
+    async def add_to_playlist(self, playlist, queries=None, query=None, kind="track", uri=None):
+        queries = [queries] if isinstance(queries, str) else list(queries or [])
+        queries = [each.strip() for each in [query, *queries] if each and each.strip()]
+        if kind not in ("track", "album"):
+            raise ToolError("kind must be track or album.")
+        if len(queries) > MAX_ADD:
+            raise ToolError(f"At most {MAX_ADD} at a time: add the rest in another call.")
+
+        async def target():
+            found = await self._playlist_to_fill(playlist)
+            return found, await self._uris_in(found)
+
+        (found, present), (wanted, missing) = await asyncio.gather(target(), self._wanted(queries, kind, uri))
+        if not wanted:
+            raise ToolError(f"Spotify found nothing for: {', '.join(missing)}.")
+        added, already, uris = [], [], []
+        for what, songs in wanted:
+            new = [song for song in dict.fromkeys(songs) if song not in present]
+            present.update(new)
+            (added if new else already).append(what)
+            uris += new
+        for start in range(0, len(uris), 100):  # Spotify takes 100 at a time
+            await self.api.call("POST", f"/playlists/{found['id']}/items", body={"uris": uris[start:start + 100]})
+
+        place = describe(found)
+        if len(added) == 1:
+            text = f"Added {added[0]} to {place}."
+        elif added:
+            text = f"Added {len(added)} {'songs' if kind == 'track' else 'albums'} to {place}: {'; '.join(added)}."
+        elif len(already) == 1:
+            text = f"{already[0][0].upper()}{already[0][1:]} is already in {place}."
+        else:
+            text = f"They're all already in {place}."
+        if added and already:
+            text += f" Already in it: {'; '.join(already)}."
+        if missing:
+            text += f" Spotify found nothing for: {', '.join(missing)}."
+        return text
+
+    async def create_playlist(self, name, description=None, public=False):
+        name = (name or "").strip()
+        if not name:
+            raise ToolError("Say what to call the playlist.")
+        public = str(public).lower() == "true"
+        me, his = await asyncio.gather(self._user_id(), self.playlists())
+        same = next((p for p in his if p.get("owner", {}).get("id") == me and plain(p["name"]) == plain(name)), None)
+        if same:  # two of the same name would leave "add to Rock" guessing
+            return (f"He already has {describe(same)} [{same['uri']}], so no new one was made: add to that one, or "
+                    "make one with another name.")
+        body = {"name": name, "public": public, **({"description": description} if description else {})}
+        made = await self.api.call("POST", "/me/playlists", body=body)
+        return f"Made the {'public' if public else 'private'} playlist {made['name']} [{made['uri']}]; it's empty."
 
     async def library(self, what="playlists"):
         if what == "recently_played":
@@ -483,7 +631,8 @@ class Spotify:
                  "matches. With uri: plays exactly that. kind liked_songs plays his Liked Songs. With nothing to "
                  "play: resumes, or moves playback to device. Plays where Spotify is playing now; if it's playing "
                  "nowhere, on his PC if Spotify is open there, else any open Spotify. queue: add a song to the "
-                 "queue instead.",
+                 "play queue instead. Queueing is not adding to a playlist: for his playlists use "
+                 "spotify_add_to_playlist, which needs nothing played or queued.",
                  {"query": {"type": "string", "description": "What to search for, e.g. \"Yellow Coldplay\"."},
                   "kind": {"type": "string", "enum": [*KINDS, "liked_songs"], "description": "Default track."},
                   "uri": uri, "device": device, "queue": {"type": "boolean"}}, self.play, final=True),
@@ -497,8 +646,25 @@ class Spotify:
                  "Spotify open.", {}, self.now_playing),
             tool("spotify_like", "Save the song that's playing (or uri) to his Liked Songs; albums, playlists and "
                  "podcasts to his library.", {"uri": uri}, self.like),
-            tool("spotify_add_to_playlist", "Add the song that's playing (or uri) to one of his own playlists, by "
-                 "name.", {"playlist": {"type": "string"}, "uri": uri}, self.add_to_playlist, ["playlist"]),
+            tool("spotify_add_to_playlist", "Add songs to one of his own playlists without playing or queueing "
+                 "anything (never play a song to add it). queries: songs to find on Spotify and add, all in one "
+                 "call; the studio version is taken over live ones and remasters unless the query asks for one. "
+                 "kind album adds whole albums. uri adds exactly that; with neither, the song that's playing. "
+                 "Songs already in the playlist are left out; the result names what was added.",
+                 {"playlist": {"type": "string", "description": "His playlist's name, or the URI "
+                                                                "spotify_create_playlist gave."},
+                  "queries": {"type": "array", "items": {"type": "string"},
+                              "description": f"Each a song and its artist, e.g. [\"Comfortably Numb Pink Floyd\", "
+                                             f"\"Kashmir Led Zeppelin\"]; at most {MAX_ADD}."},
+                  "query": {"type": "string", "description": "One song, as in queries."},
+                  "kind": {"type": "string", "enum": ["track", "album"], "description": "Default track."},
+                  "uri": uri}, self.add_to_playlist, ["playlist"]),
+            tool("spotify_create_playlist", "Make a new, empty playlist in his Spotify (private unless public); "
+                 "the result gives its URI, for spotify_add_to_playlist. If he already has one by that name, "
+                 "nothing is made and the result names it.",
+                 {"name": {"type": "string"}, "description": {"type": "string"},
+                  "public": {"type": "boolean", "description": "Default false."}},
+                 self.create_playlist, ["name"]),
             tool("spotify_library", "List his Spotify playlists, or what he played recently.",
                  {"what": {"type": "string", "enum": ["playlists", "recently_played"]}}, self.library,
                  personal=True),

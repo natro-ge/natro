@@ -10,12 +10,22 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from natro_agent.briefing import Briefing
+from natro_agent.convert import Converter
 from natro_agent.dryrun import PC_TOOLS, DryRunDevice
 from natro_agent.files import Transfers
+from natro_agent.history import History
+from natro_agent.jobs import Jobs
 from natro_agent.google_tools import SCOPES, Google
 from natro_agent.memory import Memory
 from natro_agent.notes import Notes
+from natro_agent.pending import PendingRequests
+from natro_agent.reminders import Reminders
 from natro_agent.spotify import Spotify
+from natro_agent.travel import Travel
+from natro_agent.watchers import Watchers
+from natro_agent.weather import Weather
+from natro_agent.webpage import WebPage
 from natro_agent.websearch import WebSearch
 
 PHONE_TOOLS_KT = Path(__file__).resolve().parents[2] / "android/app/src/main/java/dev/natro/PhoneTools.kt"
@@ -25,8 +35,15 @@ def own_tools(folder):
     """Natro's own tools, the server's (files between devices), and the cloud ones (Google, Spotify), signed in."""
     google_api = MagicMock(scopes=SCOPES)  # signed in with every permission, so Drive and Docs are offered
     search = WebSearch(key="tvly-test", post=lambda url, body, key: {"results": []})
+    transfers = Transfers(folder / "transfers", {})
     return (Memory(folder / "memory").tools() + Notes(folder / "notes").tools() + search.tools()
-            + Transfers(folder / "transfers", {}).tools() + Google(google_api).tools() + Spotify(MagicMock()).tools())
+            + WebPage(get=MagicMock()).tools() + History(folder / "logs").tools()
+            + Travel(key="maps-key", home="Home", post=MagicMock()).tools()
+            + transfers.tools() + Converter(transfers).tools() + PendingRequests(folder / "pending.json", {}).tools()
+            + Reminders(folder / "reminders.json", {}).tools() + Weather(home="Tbilisi", get=MagicMock()).tools()
+            + Briefing(folder / "briefing.json").tools() + Jobs().tools()
+            + Watchers(folder / "watchers.json", {}, google=MagicMock()).tools()
+            + Google(google_api).tools() + Spotify(MagicMock()).tools())
 
 
 def pc_specs():
@@ -34,9 +51,9 @@ def pc_specs():
         from natro_pc import apps, commands, files
     except Exception:  # not on Windows, or the PC app isn't installed
         return PC_TOOLS
-    from natro_pc import control
+    from natro_pc import browser, control
     return [tool.spec() for tool in apps.tools(MagicMock()) + files.tools(MagicMock())
-            + commands.tools(MagicMock()) + control.tools(MagicMock())]
+            + commands.tools(MagicMock()) + control.tools(MagicMock()) + browser.tools(MagicMock())]
 
 
 def phone_specs():

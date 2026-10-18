@@ -43,7 +43,8 @@ class PhoneTools(private val context: Context) {
         val confirm: Boolean = false,
         // Its result is a fine spoken reply on its own ("Flashlight on."): the brain may skip wording one.
         val final: Boolean = false,
-        val run: (JSONObject) -> String,
+        // Text for the brain, or a ToolPicture (text, and a picture for the chat).
+        val run: (JSONObject) -> Any,
     )
 
     private val audio = context.getSystemService(AudioManager::class.java)
@@ -131,6 +132,12 @@ class PhoneTools(private val context: Context) {
             "key" to JSONObject().put("type", "string")
                 .put("enum", JSONArray(listOf("back", "home", "recents", "notifications", "quick_settings"))),
         ), listOf("key"), personal = true) { screen().press(it.getString("key")) },
+        Tool("screenshot", "Take a picture of the phone's screen and put it in the chat on his devices, for him to see " +
+            "(\"show me my phone screen\"). You don't see it yourself: to read the screen, use screen.", props(), listOf(),
+            personal = true) {
+            ToolPicture("The screenshot of his phone's screen is in the chat, where he can see it (you can't).",
+                screen().screenshot(), "image/jpeg", "Phone screen ${SimpleDateFormat("HH.mm", Locale.US).format(Date())}.jpg")
+        },
     )
 
     /** The tools as the hello describes them. */
@@ -140,7 +147,7 @@ class PhoneTools(private val context: Context) {
                 .put("properties", tool.properties).put("required", JSONArray(tool.required)))
     })
 
-    fun run(name: String, args: JSONObject): String {
+    fun run(name: String, args: JSONObject): Any {
         val tool = tools.firstOrNull { it.name == name } ?: throw ToolFailure("The phone has no tool called $name.")
         return tool.run(args)
     }

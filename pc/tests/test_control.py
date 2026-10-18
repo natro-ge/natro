@@ -1,4 +1,5 @@
 """Using apps by their screen, against a stand-in for the desktop that UI Automation reads."""
+import base64
 import dataclasses
 import re
 from pathlib import Path
@@ -7,9 +8,10 @@ import pytest
 
 from natro_pc import control
 from natro_pc.control import RISKY, Element, Screen, ScreenControl
-from natro_pc.tools import ToolError
+from natro_pc.tools import ToolError, result_fields
 
 SPEECH_KT = Path(__file__).resolve().parents[2] / "android/app/src/main/java/dev/natro/Speech.kt"
+JPEG = bytes([0xFF, 0xD8]) + b"jpeg"
 
 
 def discord():
@@ -74,6 +76,10 @@ class FakeDesktop:
     def wait_for(self, text, seconds=10):
         self.calls.append(("wait_for", text, seconds))
         return True, self.read()
+
+    def screenshot(self):
+        self.calls.append(("screenshot",))
+        return JPEG
 
     def actions(self):
         return [call for call in self.calls if call[0] != "read"]
@@ -228,6 +234,15 @@ def test_switching_windows_and_waiting():
     assert fake.actions() == [("switch", "Notepad"), ("wait_for", "Messages", 20)]
 
 
+def test_a_screenshot_is_a_picture_for_the_chat():
+    pc, fake = make()
+    shot = pc.screenshot()
+    fields = result_fields(shot)
+    assert fields["result"].startswith("The screenshot of his PC's screen is in the chat")
+    assert fields["picture"]["mime"] == "image/jpeg" and base64.b64decode(fields["picture"]["data"]) == JPEG
+    assert result_fields("Opened Spotify.") == {"result": "Opened Spotify."}
+
+
 def test_the_risky_words_are_the_phones():
     kotlin = SPEECH_KT.read_text(encoding="utf-8")
     pattern = re.search(r"val RISKY = Regex\(\s*(.*?),\s*RegexOption", kotlin, re.DOTALL).group(1)
@@ -237,6 +252,6 @@ def test_the_risky_words_are_the_phones():
 
 def test_the_tools_as_the_brain_sees_them():
     tools = {tool.name: tool for tool in control.tools(ScreenControl(FakeDesktop()))}
-    assert set(tools) == {"screen", "find", "act", "act_risky", "switch_window", "wait_for"}
+    assert set(tools) == {"screen", "find", "act", "act_risky", "switch_window", "wait_for", "screenshot"}
     assert all(tool.personal for tool in tools.values())
     assert {name for name, tool in tools.items() if tool.confirm} == {"act_risky"}

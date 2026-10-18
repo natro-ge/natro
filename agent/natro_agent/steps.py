@@ -57,6 +57,12 @@ def _device_step(tool, args):
         "act_risky": (_act(args.get("actions")), "screen"),
         "switch_window": (f"Switching to {short(args.get('name'), 18)}", "app", short(args.get("name"), 18)),
         "wait_for": ("Waiting", "screen"),
+        "screenshot": ("Taking a screenshot", "screen"),
+        "browser_open": (f"Opening {short(_domain(args.get('url')) or args.get('url'), 18)}", "web"),
+        "browser_page": ("Reading the page", "web"),
+        "browser_act": (_browser_act(args.get("actions")), "web"),
+        "browser_act_risky": (_browser_act(args.get("actions")), "web"),
+        "browser_tabs": ("Switching tabs" if args.get("action") == "select" else "Checking tabs", "web"),
         "set_alarm": (f"Alarm for {args['time']}" if args.get("time") else "Setting an alarm", "alarm"),
         "set_timer": (_timer(args.get("seconds")), "timer"),
         "next_alarm": ("Checking alarms", "alarm"),
@@ -79,6 +85,8 @@ def _device_step(tool, args):
 
 def _natro_step(tool, args):
     query = short(args.get("query"))
+    words = short(args.get("words"), 14)
+    domain = _domain(args.get("url"))
     title = short(args.get("title"))
     if tool == "spotify_play":
         if args.get("kind") == "liked_songs":
@@ -90,10 +98,15 @@ def _natro_step(tool, args):
         return f"{'Queueing' if args.get('queue') else 'Playing'} {what}", "music", "Spotify"
     if tool == "spotify_control":
         return _spotify_control(args.get("action"), args.get("value")), "music", "Spotify"
+    if tool == "spotify_add_to_playlist":
+        playlist = str(args.get("playlist") or "")
+        where = "a playlist" if re.match(r"spotify:|https?:", playlist) else short(playlist)  # a URI says nothing
+        return f"Adding to {where}", "music", "Spotify"
     return {
         "spotify_now_playing": ("Checking what's on", "music", "Spotify"),
         "spotify_like": ("Liking it", "music", "Spotify"),
-        "spotify_add_to_playlist": (f"Adding to {short(args.get('playlist'))}", "music", "Spotify"),
+        "spotify_create_playlist": (f"Creating {short(args.get('name'))}" if args.get("name") else "Creating a playlist",
+                                    "music", "Spotify"),
         "spotify_library": ("Checking playlists", "music", "Spotify"),
         "calendar_events": ("Checking calendar", "calendar"),
         "calendar_create_event": (f"Adding {title}" if title else "Adding an event", "calendar"),
@@ -122,7 +135,48 @@ def _natro_step(tool, args):
         "notes_delete": ("Deleting a note", "notes"),
         "copy_to_device": (f"Sending {short(file_name(args.get('path')))}" if args.get("path") else "Sending a file",
                            "files"),
+        "queue_for_device": (f"Keeping it for the {'PC' if args.get('device') == 'pc' else 'phone'}", "work"),
+        "remind": (_reminder(args), "alarm"),
+        "reminders_list": ("Checking reminders", "alarm"),
+        "reminders_cancel": ("Cancelling a reminder", "alarm"),
+        "weather": (f"Weather in {short(args.get('place'), 14)}" if args.get("place") else "Checking the weather",
+                    "web"),
+        "briefing": ("Getting your day", "calendar"),
+        "start_job": ("Starting a job", "work"),
+        "jobs_list": ("Checking jobs", "work"),
+        "jobs_cancel": ("Cancelling a job", "work"),
+        "convert_file": (f"Converting to {short(args.get('to'), 8).upper()}" if args.get("to") else "Converting a file",
+                         "files"),
+        "watch": ("Watching for it", "notifications"),
+        "travel_time": (f"Route to {short(args.get('destination'), 16)}" if args.get("destination") else
+                        "Checking the route", "web"),
+        "history_search": (f"Looking back for {words}" if words else "Looking back", "memory"),
+        "web_page": (f"Reading {short(domain, 18)}" if domain else "Reading a page", "web"),
+        "watchers_list": ("Checking watchers", "notifications"),
+        "watchers_cancel": ("Stopping a watcher", "notifications"),
     }.get(tool)
+
+
+def _domain(url):
+    """example.com, from a whole address."""
+    found = re.match(r"\w+://(?:www\.)?([^/:?#]+)", str(url or ""))
+    return found.group(1) if found else ""
+
+
+def _reminder(args):
+    if args.get("when_online") in ("pc", "phone"):
+        return f"Reminder for the {'PC' if args['when_online'] == 'pc' else 'phone'}"
+    minutes = args.get("in_minutes")
+    if isinstance(minutes, (int, float)) and not isinstance(minutes, bool) and minutes > 0:
+        return f"Reminder in {round(minutes)} min" if minutes < 120 else f"Reminder in {round(minutes / 60)} h"
+    when = re.search(r"T(\d\d:\d\d)", str(args.get("at") or ""))
+    return f"Reminder for {when.group(1)}" if when else "Setting a reminder"
+
+
+def _browser_act(actions):
+    first = (actions or [{}])[0] if isinstance(actions, list) else {}
+    do = first.get("do") if isinstance(first, dict) else None
+    return {"type": "Typing", "key": "Pressing a key", "select": "Choosing", "back": "Going back"}.get(do, "Clicking")
 
 
 def _command(command):

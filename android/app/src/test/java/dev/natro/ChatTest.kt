@@ -1,5 +1,7 @@
 package dev.natro
 
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -90,6 +92,89 @@ class ChatTest {
         }
         assertEquals(Chat.MAX_TURNS, turns.size)
         assertEquals("r6", turns.first().id)
+    }
+
+    private fun entry(device: String, request: String, reply: String = "", done: Boolean = false) = JSONObject()
+        .put("id", "$device:$request").put("device", device).put("label", if (device == "pc") "PC" else device)
+        .put("request", request).put("time", 5L).put("asked", "what's on my screen").put("heard", "").put("spoken", false)
+        .put("reply", reply).put("step", "").put("done", done).put("problem", "").put("pictures", JSONArray())
+        .put("question", JSONObject.NULL).put("queued", JSONObject.NULL).put("sent", false)
+
+    @Test
+    fun thePcsRequestsShowAsTheBrainHasThemAndKeepTheirStepsAndPhoneTools() {
+        var turns = Chat.entry(emptyList(), entry("pc", "r1").put("step", "Taking a screenshot"))
+        turns = Chat.toolRan(turns, null, tool, time = 6, request = "pc:r1")
+        turns = Chat.entry(turns, entry("pc", "r1", "Here it is.", done = true).put("pictures", JSONArray(listOf("pic2"))))
+        val turn = turns.single()
+        assertEquals(Turn.From.Other, turn.from)
+        assertEquals("PC", turn.device)
+        assertEquals("" , turn.queued)  // JSON null is no device, not "null"
+        assertEquals(listOf("Taking a screenshot"), turn.steps)
+        assertEquals(listOf(tool), turn.tools)
+        assertEquals(listOf("pic2"), turn.pictures)
+        assertEquals(Turn.State.Done, turn.state)
+    }
+
+    @Test
+    fun thePhonesOwnRequestsTakeOnlyTheirPicturesFromTheBrain() {
+        var turns = Chat.asked(emptyList(), "r1", Turn.From.Typed, "show me my PC screen", time = 1)
+        turns = Chat.replyText(turns, "r1", "Here")
+        turns = Chat.entry(turns, entry("phone", "r1", "Here it is.", done = true).put("pictures", JSONArray(listOf("pic1"))))
+        val turn = turns.single()
+        assertEquals("Here", turn.reply)
+        assertEquals(Turn.State.Working, turn.state)
+        assertEquals(listOf("pic1"), turn.pictures)
+    }
+
+    @Test
+    fun questionsAboutThePcsRequestsAreAnsweredHere() {
+        val asking = entry("pc", "r2").put("question", JSONObject().put("id", "c1").put("text", "Force close Steam?").put("answer", ""))
+        var turns = Chat.entry(emptyList(), asking)
+        assertEquals(Asked("Force close Steam?", "", "", "c1", "pc"), turns.single().questions.single())
+        turns = Chat.answeredFor(turns, "pc", "c1", "Yes")
+        turns = Chat.answeredFor(turns, "pc", "c1", "No")  // answered already
+        assertEquals("Yes", turns.single().questions.single().answer)
+    }
+
+    @Test
+    fun aNewChatAndCatchingUp() {
+        var turns = Chat.asked(emptyList(), "r1", Turn.From.Typed, "hi", time = 1)
+        turns = Chat.replied(turns, "r1", "Hi!", "gemini", null, null, null)
+        turns = Chat.asked(turns, "r2", Turn.From.Typed, "and now", time = 2)
+        turns = Chat.entry(turns, entry("pc", "r3", "Done.", done = true))
+        // Catching up: the PC's turns as the brain has them now (r3 went with a new chat there), the phone's kept.
+        assertEquals(listOf("r1", "r2", "pc:r4"), Chat.all(turns, JSONArray(listOf(entry("pc", "r4")))).map { it.id })
+        assertEquals(listOf("r2"), Chat.cleared(turns).map { it.id })
+    }
+
+    @Test
+    fun aReminderIsHerWordsAlone() {
+        val reminder = entry("natro", "rm1-17", "Time to call Nino.", done = true).put("asked", "").put("reminder", true)
+        val turn = Chat.entry(emptyList(), reminder).single()
+        assertTrue(turn.reminder)
+        assertEquals("natro:rm1-17", turn.id)
+        assertEquals("Time to call Nino.", turn.reply)
+        assertEquals(Turn.State.Done, turn.state)
+        assertEquals(false, Chat.entry(emptyList(), entry("pc", "r1")).single().reminder)
+        val alert = entry("natro", "al1", "Nino emailed: Dinner.", done = true).put("asked", "").put("alert", true)
+        val seen = Chat.entry(emptyList(), alert).single()
+        assertTrue(seen.alert)
+        assertEquals(false, seen.reminder)
+    }
+
+    @Test
+    fun aBackgroundJobIsHerWorkWithItsTask() {
+        val question = JSONObject().put("id", "c4").put("text", "I'll email Nino the flats.").put("answer", "")
+            .put("device", "pc")
+        val job = entry("natro", "jb1").put("asked", "").put("job", "Find three flats under \$600.")
+            .put("step", "Searching flats").put("question", question)
+        val turn = Chat.entry(emptyList(), job).single()
+        assertEquals("Find three flats under \$600.", turn.job)
+        assertEquals(Turn.State.Working, turn.state)
+        assertEquals("", turn.asked)
+        // Answered here, it goes to the brain as the device "natro"'s: the brain knows where it was asked.
+        assertEquals("natro", turn.questions.single().device)
+        assertEquals("", Chat.entry(emptyList(), entry("pc", "r1")).single().job)
     }
 
     @Test

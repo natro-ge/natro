@@ -4,12 +4,32 @@ A tool is described to the brain in the device's hello (see agent/natro_agent/se
 name, description, input schema, whether its results are personal (so only Claude
 sees them) and whether the owner must say yes first.
 """
+import base64
 from dataclasses import dataclass, field
 from typing import Callable
 
 
 class ToolError(Exception):
     """A tool failed in a way Natro should hear about: the message goes back to her."""
+
+
+@dataclass
+class Picture:
+    """A tool's result with a picture (a screenshot): text tells Natro, the picture goes into the chat for him."""
+    text: str
+    data: bytes
+    mime: str = "image/jpeg"
+    name: str = "picture.jpg"
+
+    def message(self):
+        """The tool_result's result and picture (agent/natro_agent/server.py)."""
+        return {"result": self.text, "picture": {"mime": self.mime, "name": self.name,
+                                                 "data": base64.b64encode(self.data).decode("ascii")}}
+
+
+def result_fields(result):
+    """A tool's return value as tool_result fields: text, or text and a picture."""
+    return result.message() if isinstance(result, Picture) else {"result": result}
 
 
 @dataclass
@@ -32,7 +52,7 @@ class PCTool:
 def all_tools():
     import threading
 
-    from natro_pc import apps, commands, control, files, uia
+    from natro_pc import apps, browser, commands, control, files, uia
 
     pc_apps = apps.Apps()
     threading.Thread(target=pc_apps.menu.warm_up, daemon=True).start()
@@ -43,4 +63,4 @@ def all_tools():
         screen = control.ScreenControl()
         threading.Thread(target=screen.desktop.warm_up, daemon=True).start()
         tools += control.tools(screen)
-    return tools
+    return tools + browser.tools()  # his Edge, once the Playwright Extension's token is in .env

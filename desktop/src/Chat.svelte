@@ -3,7 +3,8 @@
   // with the conversation above it as bubbles. Rust (src-tauri/src/chat.rs) places the
   // window, gives it the keyboard and says what to show; this page draws and animates
   // it, and says where the box and the bubbles are, so that clicks anywhere else go
-  // through the window to what's under it.
+  // through the window to what's under it. The chat is shared with the phone: its
+  // requests show too, labelled, and pictures (screenshots, ones he sends) in bubbles.
   import { invoke } from '@tauri-apps/api/core'
   import { listen } from '@tauri-apps/api/event'
   import { onMount, tick } from 'svelte'
@@ -13,7 +14,8 @@
 
   type Step = { label: string; icon: string; image: string | null }
   // answer: empty while Natro waits; then "Yes", "No", or what was typed or said.
-  type Question = { id: string; text: string; answer: string }
+  // device: whose question, for one about a request made on the phone ("" for the PC's).
+  type Question = { id: string; text: string; answer: string; device: string }
   // asked: typed, or her English for what was said; heard: the Georgian, for a spoken request.
   type Exchange = {
     id: string
@@ -25,12 +27,31 @@
     step: Step | null
     questions: Question[]
     problem: string
+    // The device it was asked on, for one made on the phone ("" for the PC's).
+    from: string
+    pictures: string[]
+    // Asked on that device while the PC was off, run here after.
+    queued: string
+    // A picture he sent, not a request.
+    sent: boolean
+    // A reminder that went off: her words alone, with no request.
+    reminder: boolean
+    // A background job's task: her work on it as it goes, then what she found.
+    job: string
+    // Something a watcher saw: her words alone, as a reminder's.
+    alert: boolean
   }
+  // A request he made on the phone while the PC was off, to run or skip.
+  type Queued = { id: string; text: string; from: string; time: number }
+  type Shown = { exchanges: Exchange[]; listening: boolean; pictures: Record<string, string>; queued: Queued[] }
   type ChatEvent =
-    | { action: 'show'; exchanges: Exchange[]; listening: boolean }
+    | ({ action: 'show' } & Shown)
     | { action: 'hide' }
     | { action: 'exchange'; exchange: Exchange }
     | { action: 'clear' }
+    | { action: 'replace'; exchanges: Exchange[] }
+    | { action: 'picture'; id: string; url: string }
+    | { action: 'queued'; items: Queued[] }
     | { action: 'listening'; on: boolean }
     | { action: 'notice'; text: string }
 
@@ -38,6 +59,8 @@
   const TALLEST_TEXT = 110
   // A notice ("Natro is offline") shows this long.
   const NOTICE_MILLIS = 2600
+  // Pictures he sends: the longest side at most this, as JPEG.
+  const PICTURE_PIXELS = 2048
 
   // Solid icons, on a 20 × 20 grid in the text's color.
   const ICONS = {
@@ -45,6 +68,8 @@
       '<path fill-rule="evenodd" d="M10 2.5c-4.7 0-8.5 3.1-8.5 7 0 2.1 1.1 4 2.9 5.3-.2 1.1-.8 2.1-1.6 2.8 1.8 0 3.4-.6 4.6-1.5.8.2 1.7.3 2.6.3 4.7 0 8.5-3.1 8.5-7s-3.8-6.9-8.5-6.9zm-.8 3.7h1.6v2.5h2.5v1.6h-2.5v2.5H9.2v-2.5H6.7V8.7h2.5z"/>',
     attach:
       '<path class="line" d="M13.5 6.5 8 12a1.8 1.8 0 0 0 2.5 2.5l6-6a3.5 3.5 0 0 0-5-5l-6.2 6.2a5.2 5.2 0 0 0 7.4 7.4L17 12.8"/>',
+    picture:
+      '<path fill-rule="evenodd" d="M4.5 3h11A2.5 2.5 0 0 1 18 5.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 2 14.5v-9A2.5 2.5 0 0 1 4.5 3zm9 4.2a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zM3.8 14.6l3.6-4.4a1 1 0 0 1 1.5 0l2.2 2.5 1.3-1.4a1 1 0 0 1 1.5 0l2.3 2.6v.6c0 .6-.4 1-1 1H4.8a1 1 0 0 1-1-.9z"/>',
     mic: '<rect x="7" y="1.5" width="6" height="10.5" rx="3"/><path class="line" d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v3"/>',
     stop: '<rect x="5" y="5" width="10" height="10" rx="2.6"/>',
     send: '<path class="line thick" d="M10 15.5V5M5.6 9.2 10 4.8l4.4 4.4"/>',
@@ -52,6 +77,10 @@
 
   let open = $state(false)
   let exchanges = $state<Exchange[]>([])
+  // Picture id -> data URL.
+  let pictures = $state<Record<string, string>>({})
+  let queued = $state<Queued[]>([])
+  let picker: HTMLInputElement | undefined = $state()
   let listening = $state(false)
   let draft = $state('')
   let notice = $state('')
@@ -63,7 +92,7 @@
   // Natro's question still waiting for a yes or no: what's typed (or said) answers it.
   let waiting = $derived(
     exchanges
-      .filter((e) => !e.done)
+      .filter((e) => !e.done && !e.from)
       .flatMap((e) => e.questions)
       .find((q) => !q.answer),
   )
@@ -73,9 +102,11 @@
   let noticeTimer = 0
   let lastHits = ''
 
-  function show(event: { exchanges: Exchange[]; listening: boolean }) {
+  function show(event: Shown) {
     exchanges = event.exchanges
     listening = event.listening
+    pictures = event.pictures
+    queued = event.queued
     following = true
     if (!open) {
       // Let the closed blob be drawn once, so it rises from there.
@@ -118,9 +149,57 @@
     focusField()
   }
 
-  function answer(question: string, yes: boolean) {
-    invoke('chat_answer', { question, yes })
+  function answer(question: Question, yes: boolean) {
+    invoke('chat_answer', { question: question.id, yes, device: question.device || null })
     focusField()
+  }
+
+  function runQueued(item: Queued, run: boolean) {
+    invoke('chat_queue', { id: item.id, run })
+    focusField()
+  }
+
+  /** A picture, made small enough to send quickly, as a JPEG data URL. */
+  async function pictureData(file: Blob) {
+    const bitmap = await createImageBitmap(file)
+    const scale = Math.min(1, PICTURE_PIXELS / Math.max(bitmap.width, bitmap.height))
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale))
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale))
+    const context = canvas.getContext('2d')!
+    context.fillStyle = '#fff' // a transparent picture on white, not black
+    context.fillRect(0, 0, canvas.width, canvas.height)
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+    bitmap.close()
+    return canvas.toDataURL('image/jpeg', 0.85)
+  }
+
+  async function sendPicture(file: Blob, name: string) {
+    try {
+      following = true
+      await invoke<boolean>('chat_picture', { data: await pictureData(file), name })
+    } catch {
+      showNotice("That picture couldn't be read")
+    }
+    focusField()
+  }
+
+  function picked() {
+    for (const file of picker?.files ?? []) sendPicture(file, file.name)
+    if (picker) picker.value = ''
+  }
+
+  /** A picture pasted into the box goes into the chat; text is pasted as usual. */
+  function pasted(event: ClipboardEvent) {
+    const item = [...(event.clipboardData?.items ?? [])].find((i) => i.type.startsWith('image/'))
+    const file = item?.getAsFile()
+    if (!file) return
+    event.preventDefault()
+    sendPicture(file, file.name || 'pasted picture.png')
+  }
+
+  function time(millis: number) {
+    return new Date(millis).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
   }
 
   function newChat() {
@@ -215,7 +294,17 @@
             return update(payload.exchange)
           case 'clear':
             exchanges = []
+            pictures = {}
             return
+          case 'replace':
+            exchanges = payload.exchanges
+            return scrollToEnd()
+          case 'picture':
+            pictures[payload.id] = payload.url
+            return scrollToEnd()
+          case 'queued':
+            queued = payload.items
+            return scrollToEnd()
           case 'listening':
             listening = payload.on
             heard = 0
@@ -246,8 +335,25 @@
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="list" bind:this={list} onscroll={scrolled} onclick={clicked} aria-live="polite">
     {#each exchanges as exchange (exchange.id)}
-      {#if exchange.asked || exchange.spoken}
-        <div class="bubble you" data-hit title={exchange.heard || null}>
+      {#if exchange.reminder}
+        <span class="from reminder">Reminder</span>
+      {:else if exchange.alert}
+        <span class="from reminder">Heads-up</span>
+      {:else if exchange.job}
+        <span class="from reminder job" title={exchange.job}>In the background: {exchange.job}</span>
+      {:else if exchange.from || exchange.queued}
+        <span class="from">
+          {exchange.queued ? `Asked on your ${exchange.queued} while the PC was off` : `On your ${exchange.from}`}
+        </span>
+      {/if}
+      {#if exchange.sent}
+        <div class="bubble you shots" class:elsewhere={exchange.from} data-hit>
+          {#each exchange.pictures as id (id)}
+            {@render shot(id)}
+          {/each}
+        </div>
+      {:else if exchange.asked || exchange.spoken}
+        <div class="bubble you" class:elsewhere={exchange.from} data-hit title={exchange.heard || null}>
           {#if exchange.spoken}
             <svg class="said" viewBox="0 0 20 20" aria-label="Said">{@html ICONS.mic}</svg>
           {/if}
@@ -265,13 +371,13 @@
             <span class="answer">Your answer: {question.answer}</span>
           {:else}
             <div class="choices">
-              <button class="yes" onclick={() => answer(question.id, true)}>Yes</button>
-              <button class="no" onclick={() => answer(question.id, false)}>No</button>
+              <button class="yes" onclick={() => answer(question, true)}>Yes</button>
+              <button class="no" onclick={() => answer(question, false)}>No</button>
             </div>
           {/if}
         </div>
       {/each}
-      {#if exchange.reply || exchange.problem || (!exchange.done && exchange.asked && !exchange.questions.some((q) => !q.answer))}
+      {#if exchange.reply || exchange.problem || (!exchange.done && (exchange.asked || exchange.job) && !exchange.questions.some((q) => !q.answer))}
         <div class="bubble natro" class:problem={!exchange.reply && exchange.problem} data-hit>
           {#if exchange.reply}
             <div class="text">{@html format(exchange.reply, !exchange.done)}</div>
@@ -299,8 +405,35 @@
           {/if}
         </div>
       {/if}
+      {#if !exchange.sent && exchange.pictures.length}
+        <div class="bubble natro shots" data-hit>
+          {#each exchange.pictures as id (id)}
+            {@render shot(id)}
+          {/each}
+        </div>
+      {/if}
+    {/each}
+    {#each queued as item (item.id)}
+      <div class="bubble natro question waiting queued" data-hit>
+        <p><span class="orb"></span><span>While the PC was off, you asked on your {item.from} at {time(item.time)}:</span></p>
+        <span class="kept">{item.text}</span>
+        <div class="choices">
+          <button class="yes" onclick={() => runQueued(item, true)}>Run</button>
+          <button class="no" onclick={() => runQueued(item, false)}>Skip</button>
+        </div>
+      </div>
     {/each}
   </div>
+
+  {#snippet shot(id: string)}
+    {#if pictures[id]}
+      <button class="shot" title="Open full size" onclick={() => invoke('chat_open_picture', { id })}>
+        <img src={pictures[id]} alt="" />
+      </button>
+    {:else}
+      <span class="gone">Picture no longer here</span>
+    {/if}
+  {/snippet}
 
   <div class="bottom">
     {#if notice}
@@ -316,6 +449,10 @@
         <button class="tool" title="Send files to the phone" aria-label="Send files to the phone" onclick={() => invoke('chat_attach')}>
           <svg viewBox="0 0 20 20" aria-hidden="true">{@html ICONS.attach}</svg>
         </button>
+        <button class="tool" title="Send a picture into the chat (or paste one)" aria-label="Send a picture" onclick={() => picker?.click()}>
+          <svg viewBox="0 0 20 20" aria-hidden="true">{@html ICONS.picture}</svg>
+        </button>
+        <input class="picker" type="file" accept="image/*" multiple bind:this={picker} onchange={picked} />
         {#if listening}
           <div class="field heard" style:--level={level}><span class="live"></span>Listening…</div>
         {:else}
@@ -326,6 +463,7 @@
             placeholder={waiting ? 'Answer Natro: yes or no' : 'Ask Natro…'}
             aria-label="Message to Natro"
             onkeydown={fieldKeydown}
+            onpaste={pasted}
           ></textarea>
         {/if}
         <button
@@ -416,6 +554,70 @@
     box-shadow: 0 4px 16px color-mix(in srgb, var(--green-glow) 22%, transparent);
     transform-origin: bottom right;
     white-space: pre-wrap;
+  }
+  /* The phone's requests: the same green, a shade quieter, with where they were asked above. */
+  .you.elsewhere {
+    background: linear-gradient(135deg, #2f6b2d 0%, #3d8f3e 100%);
+    box-shadow: none;
+  }
+  .from {
+    align-self: flex-end;
+    margin: 4px 6px -4px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-dim);
+    user-select: none;
+  }
+  /* A reminder is her words alone: the label sits on her side. */
+  .from.reminder {
+    align-self: flex-start;
+  }
+  /* A background job's label holds its task: one line, the whole of it on hover. */
+  .from.job {
+    max-width: 70%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  /* Pictures: screenshots and ones he sent; a click opens one full size. */
+  .shots {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px;
+    background: var(--glass-dense);
+  }
+  .you.shots {
+    background: var(--glass-dense);
+    border: 1px solid var(--border);
+  }
+  .shot {
+    display: block;
+    padding: 0;
+    border: none;
+    border-radius: 12px;
+    background: none;
+    overflow: hidden;
+    cursor: zoom-in;
+  }
+  .shot img {
+    display: block;
+    max-width: 100%;
+    max-height: 300px;
+    border-radius: 12px;
+  }
+  .gone {
+    padding: 4px 8px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .queued .kept {
+    display: block;
+    margin: 6px 0 0 16px;
+    font-weight: 600;
+  }
+  .picker {
+    display: none;
   }
   .said {
     width: 12px;

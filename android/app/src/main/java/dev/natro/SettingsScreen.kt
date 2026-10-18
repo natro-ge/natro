@@ -123,7 +123,7 @@ fun SettingsScreen(setup: List<SetupStep>, back: () -> Unit, openWakeTest: () ->
                 Row(
                     Modifier.fillMaxWidth().clickable { clearing = true }.padding(horizontal = 18.dp, vertical = 16.dp),
                 ) {
-                    Text("Clear the chat", color = colors.danger, fontSize = 16.sp)
+                    Text("New chat (here and on the PC)", color = colors.danger, fontSize = 16.sp)
                 }
             }
 
@@ -141,13 +141,13 @@ fun SettingsScreen(setup: List<SetupStep>, back: () -> Unit, openWakeTest: () ->
     if (clearing) {
         AlertDialog(
             onDismissRequest = { clearing = false },
-            title = { Text("Clear the chat?") },
-            text = { Text("The conversation on this phone goes, with its details. Natro's memory on the server stays.") },
+            title = { Text("Start a new chat?") },
+            text = { Text("The chat goes, here and on the PC, and Natro starts a new conversation. Her memory stays.") },
             confirmButton = {
                 TextButton(onClick = {
-                    Natro.clearHistory()
+                    Natro.newChat()
                     clearing = false
-                }) { Text("Clear", color = colors.danger) }
+                }) { Text("New chat", color = colors.danger) }
             },
             dismissButton = { TextButton(onClick = { clearing = false }) { Text("Keep", color = colors.text) } },
             containerColor = colors.surface,

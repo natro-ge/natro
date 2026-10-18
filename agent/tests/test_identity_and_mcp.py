@@ -16,7 +16,7 @@ def test_capabilities_say_which_devices_are_offline():
     assert "phone is offline" in text
     assert ("Tools from the PC: pc_act, pc_act_risky, pc_close_app, pc_find, pc_force_close_app, pc_list_open_apps, "
             "pc_open_app, pc_open_file, pc_open_link, pc_read_file, pc_run_command, pc_run_command_risky, pc_screen, "
-            "pc_search_file_contents, pc_search_files, pc_switch_window, pc_wait_for.") in text
+            "pc_screenshot, pc_search_file_contents, pc_search_files, pc_switch_window, pc_wait_for.") in text
     assert "no tools yet" in capabilities([], [])
 
 

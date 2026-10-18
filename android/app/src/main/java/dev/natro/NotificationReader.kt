@@ -11,9 +11,21 @@ import java.util.Locale
 /**
  * Reads the phone's notifications for "what did I miss?". The owner turns it on in Settings >
  * Notification access (the Natro app has a button). Everything it reads is personal: only Claude
- * gets it.
+ * gets it. New ones are matched here against what he asked Natro to watch for (NotificationWatch), and
+ * only those that fit a rule go to the brain.
  */
 class NotificationReader : NotificationListenerService() {
+    override fun onNotificationPosted(item: StatusBarNotification) {
+        val rules = NotificationWatch.rules
+        if (rules.isEmpty() || item.isOngoing || item.packageName == packageName) return
+        if (item.notification.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
+        val (title, body) = parts(item)
+        if (title.isBlank() && body.isBlank()) return
+        val app = appName(item.packageName)
+        val rule = NotificationWatch.match(rules, app, item.packageName, title, body) ?: return
+        if (NotificationWatch.firstTime("${item.key}|$title|$body")) Natro.notificationMatched(rule.id, app, title, body)
+    }
+
     override fun onListenerConnected() {
         current = this
     }
@@ -35,12 +47,18 @@ class NotificationReader : NotificationListenerService() {
     }
 
     private fun text(item: StatusBarNotification): String {
+        val (title, body) = parts(item)
+        return Text.short(listOf(title, body).filter { it.isNotBlank() }.joinToString(": "), 300)
+    }
+
+    /** A notification's title, and its text (with the lines of an inbox-style one). */
+    private fun parts(item: StatusBarNotification): Pair<String, String> {
         val extras = item.notification.extras
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
         val body = (extras.getCharSequence(Notification.EXTRA_BIG_TEXT) ?: extras.getCharSequence(Notification.EXTRA_TEXT))
             ?.toString().orEmpty()
         val lines = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)?.joinToString(" / ").orEmpty()
-        return Text.short(listOf(title, body, lines).filter { it.isNotBlank() }.joinToString(": "), 300)
+        return title to listOf(body, lines).filter { it.isNotBlank() }.joinToString(": ")
     }
 
     private fun appName(pkg: String): String = try {

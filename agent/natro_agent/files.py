@@ -12,6 +12,11 @@ file never fills memory, nor holds a voice request up for long on the same conne
 
 Asking Natro works too ("send the invoice to my phone"): copy_to_device asks the device that has
 the file to send it (file_request).
+
+The server itself can be one end, for a file it works on (convert.py): fetch asks a device for a file
+with to "Natro" (SERVER), and keeps it in transfers/fetched/ for the caller, never passing it on; send
+puts a file made here in line for a device, from "Natro". The apps show that name as is ("Sending
+report.pdf to your Natro", "report.docx, from your Natro").
 """
 import asyncio
 import itertools
@@ -36,6 +41,8 @@ SPARE_BYTES = 1 << 30
 STALL_SECONDS = 60
 # How long a device has to start sending a file Natro asked it for.
 REQUEST_SECONDS = 30
+# The server itself, as a file's to or from (the apps show it as is).
+SERVER = "Natro"
 
 SAFE_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 UNSAFE_IN_NAME = re.compile(r'[\x00-\x1f\x7f<>:"/\\|?*]')
@@ -97,11 +104,14 @@ class Transfers:
         self._uploads = {}  # id -> Upload
         self._deliveries = {}  # id -> Delivery
         self._delivering = {}  # device name -> (device, the task sending it its files)
-        self._requests = {}  # id -> (device, future for its file_offer), for copy_to_device
+        self._requests = {}  # id -> (device, future for its file_offer), for copy_to_device and fetch
+        self._fetches = {}  # id -> (device, future for (path, name) once all of it is here), for fetch
         self._ids = itertools.count(1)
         self.folder.mkdir(parents=True, exist_ok=True)
-        for part in self.folder.glob("*.part"):
-            part.unlink(missing_ok=True)  # an upload cut off by a restart
+        self.fetched = self.folder / "fetched"
+        self.fetched.mkdir(exist_ok=True)
+        for part in [*self.folder.glob("*.part"), *self.fetched.iterdir()]:
+            part.unlink(missing_ok=True)  # an upload cut off by a restart, a file a restart left behind
         self.expire()
 
     def tools(self):
@@ -147,6 +157,56 @@ class Transfers:
         later = "" if self._can_receive(target) else f" His {there} is offline, so it will arrive when it's back."
         return f"Sending {upload.name} ({human_size(upload.size)}) to the {there}'s Downloads folder.{later}"
 
+    # The server's own files (convert.py)
+
+    async def fetch(self, source, path, most=MAX_BYTES):
+        """A file from one of his devices, here: (where it is, its name). The caller deletes it when done."""
+        device = self.devices.get(source)
+        if device is None:
+            raise ToolError(f"Your owner's {KNOWN_DEVICES.get(source, source)} is offline right now.")
+        if not getattr(device, "files", False):
+            raise ToolError(f"The Natro app on his {device.label} is too old to send files.")
+        id = f"natro-{time.time_ns() // 1_000_000:x}-{next(self._ids)}"
+        loop = asyncio.get_running_loop()
+        offered, arrived = loop.create_future(), loop.create_future()
+        self._requests[id] = (device, offered)
+        self._fetches[id] = (device, arrived)
+        try:
+            device.post(type="file_request", id=id, path=str(path or ""), to=SERVER)
+            try:
+                upload = await asyncio.wait_for(offered, REQUEST_SECONDS)
+            except asyncio.TimeoutError:
+                raise ToolError(f"The {device.label} didn't start sending it.")
+            if upload.size > most:
+                self._abort(upload, f"{upload.name} is {human_size(upload.size)}: at most {human_size(most)} here.")
+                raise ToolError(f"{upload.name} is {human_size(upload.size)}; Natro takes at most {human_size(most)}.")
+            received = -1
+            while not arrived.done():  # wait while it keeps coming
+                if upload.received == received:
+                    self._abort(upload, "It stopped coming.")
+                    raise ToolError(f"{upload.name} stopped coming from the {device.label}.")
+                received = upload.received
+                await asyncio.wait([arrived], timeout=STALL_SECONDS)
+            return arrived.result()
+        finally:
+            self._requests.pop(id, None)
+            self._fetches.pop(id, None)
+            if arrived.done() and not arrived.cancelled():
+                arrived.exception()  # seen, though this raised its own (refused, stalled)
+
+    def send(self, path, name, to):
+        """A file made here (moved from path) goes to one of his devices, from "Natro", as soon as it's there."""
+        id = f"natro-{time.time_ns() // 1_000_000:x}-{next(self._ids)}"
+        shutil.move(str(path), self._data(id))
+        meta = {"id": id, "from": SERVER, "to": to, "name": safe_name(name), "size": self._data(id).stat().st_size,
+                "at": time.time()}
+        written = self._meta(id).with_suffix(".tmp")
+        written.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        written.replace(self._meta(id))
+        log.write("file", event="made", **self._fields(meta))
+        self._deliver_to(to)
+        return meta
+
     # Devices coming and going
 
     def connected(self, device):
@@ -157,7 +217,7 @@ class Transfers:
     def disconnected(self, device):
         for upload in [upload for upload in self._uploads.values() if upload.device is device]:
             self._abort(upload, "The sender disconnected.", tell=False)
-        for id, (asked, future) in list(self._requests.items()):
+        for id, (asked, future) in [*self._requests.items(), *self._fetches.items()]:
             if asked is device and not future.done():
                 future.set_exception(ToolError(f"The {device.label} disconnected."))
         running = self._delivering.get(device.name)
@@ -226,7 +286,9 @@ class Transfers:
         if id in self._uploads:
             return refuse("That file is already on its way.")
         to, size, name = data.get("to"), data.get("size"), safe_name(data.get("name"))
-        if to not in KNOWN_DEVICES or to == device.name:
+        if to == SERVER and id in self._fetches:
+            pass  # a file Natro asked for, to work on here
+        elif to not in KNOWN_DEVICES or to == device.name:
             others = [label for key, label in KNOWN_DEVICES.items() if key != device.name]
             return refuse(f"Files can go to the {' or the '.join(others)}.")
         if not isinstance(size, int) or isinstance(size, bool) or size < 0:
@@ -249,6 +311,17 @@ class Transfers:
             return self._abort(upload, f"Only {human_size(upload.received)} of {human_size(upload.size)} arrived.")
         del self._uploads[id]
         upload.file.close()
+        if upload.to == SERVER:  # for Natro herself: kept for whoever fetched it, never passed on
+            kept = self.fetched / id
+            self._part(id).replace(kept)
+            device.post(type="file_sent", id=id, waiting=False)
+            log.write("file", event="fetched", **self._fields(upload.__dict__ | {"from": device.name}))
+            fetching = self._fetches.get(id)
+            if fetching and not fetching[1].done():
+                fetching[1].set_result((kept, upload.name))
+            else:
+                kept.unlink(missing_ok=True)
+            return
         self._part(id).replace(self._data(id))
         meta = {"id": id, "from": device.name, "to": upload.to, "name": upload.name, "size": upload.size,
                 "at": time.time()}
@@ -270,9 +343,9 @@ class Transfers:
         upload = self._uploads.get(id)
         if upload and upload.device is device:
             self._abort(upload, message, tell=False)
-        asked = self._requests.get(id)
-        if asked and asked[0] is device and not asked[1].done():
-            asked[1].set_exception(ToolError(message))
+        for asked in (self._requests.get(id), self._fetches.get(id)):
+            if asked and asked[0] is device and not asked[1].done():
+                asked[1].set_exception(ToolError(message))
         delivery = self._deliveries.get(id)
         if delivery and delivery.device is device and not delivery.done.done():
             delivery.done.set_exception(ToolError(message))
@@ -282,6 +355,9 @@ class Transfers:
         self._uploads.pop(upload.id, None)
         upload.file.close()
         self._part(upload.id).unlink(missing_ok=True)
+        fetching = self._fetches.get(upload.id)
+        if fetching and not fetching[1].done():
+            fetching[1].set_exception(ToolError(message))
         if tell:
             upload.device.post(type="file_failed", id=upload.id, message=message)
         log.write("file", event="upload_failed", id=upload.id, error=message)

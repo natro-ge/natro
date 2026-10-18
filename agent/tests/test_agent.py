@@ -1,9 +1,16 @@
+import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import anthropic
 import httpx2
+import pytest
+from google.genai import errors
 
 from conftest import FakeClient, Owner, fallback, message, run, text, thinking, tool_use
 from natro_agent import agent as agent_module
-from natro_agent.agent import Agent, echo_content
+from natro_agent.agent import Agent, echo_content, noise, plain_question, utc_offset
+from natro_agent.gemini import MAX_REST_SECONDS, rest_seconds, without_header
 from natro_agent.dryrun import PC_TOOLS, DryRunDevice
 from natro_agent.tools import ASKS_FIRST, Tool
 
@@ -218,3 +225,82 @@ def test_tools_that_ask_first_say_so_to_claude():
     tools = {tool.name: tool for tool in make_agent(FakeClient())[0].offered_tools()}
     assert tools["pc_force_close_app"].definition()["description"].endswith(ASKS_FIRST)
     assert ASKS_FIRST not in tools["pc_open_app"].definition()["description"]
+
+
+def test_reply_is_her_last_words_not_the_question_or_her_steps():
+    client = FakeClient(
+        message(text("Live version matched; use the studio one."), tool_use("t1", "pc_open_app", app="Spotify"),
+                stop="tool_use"),
+        message(text("I'll force close Chrome."), tool_use("t2", "pc_force_close_app", app="Chrome"), stop="tool_use"),
+        message(text("Done, Chrome is closed.")),
+    )
+    agent, _ = make_agent(client)
+    shown = []
+    reply = run(agent.respond("open Spotify and force close Chrome", Owner(), on_text=shown.append))
+    assert reply.text == "Done, Chrome is closed."
+    # Everything showed as she wrote it; devices show the reply in its place.
+    assert "".join(shown) == "Live version matched; use the studio one. I'll force close Chrome. Done, Chrome is closed."
+
+
+def test_with_nothing_after_her_last_tool_the_reply_is_not_the_question():
+    client = FakeClient(
+        message(text("Spotify is open."), tool_use("t1", "pc_open_app", app="Spotify"), stop="tool_use"),
+        message(text("I'll force close Chrome."), tool_use("t2", "pc_force_close_app", app="Chrome"), stop="tool_use"),
+        message(),
+    )
+    reply = run(make_agent(client)[0].respond("open Spotify and force close Chrome", Owner()))
+    assert reply.text == "Spotify is open."
+
+
+def test_too_many_steps_leaves_out_her_planning():
+    steps = [message(text("Now add it."), tool_use(f"t{i}", "pc_open_app", app="Chrome"), stop="tool_use")
+             for i in range(agent_module.MAX_STEPS)]
+    reply = run(make_agent(FakeClient(*steps))[0].respond("add them all", Owner()))
+    assert reply.text == "I stopped there: that was taking too many steps."
+
+
+def test_risky_tool_without_a_sentence_asks_in_plain_words():
+    client = FakeClient(message(tool_use("t1", "pc_force_close_app", app="Spotify"), stop="tool_use"),
+                        message(text("OK, I left it.")))
+    owner = Owner(answer=False)
+    run(make_agent(client)[0].respond("force close Spotify", owner))
+    assert owner.questions[0][0] == "Force-closing Spotify on the PC. Should I go ahead?"
+    assert plain_question("phone_call", {"number": "599184413"}) == "Calling on the phone: 599184413. Should I go ahead?"
+
+
+def test_header_has_the_utc_offset(monkeypatch):
+    monkeypatch.setenv("NATRO_TIMEZONE", "Asia/Kolkata")
+    client = FakeClient(message(text("Hi.")))
+    run(make_agent(client)[0].respond("hi", Owner()))
+    assert re.match(r"\[\w+ \d\d \w+ \d{4}, \d\d:\d\d UTC\+5:30 · ", client.requests[0]["messages"][-1]["content"])
+
+    def at(zone):
+        return utc_offset(datetime(2026, 10, 17, 14, 43, tzinfo=ZoneInfo(zone)))
+    assert [at(zone) for zone in ("Asia/Tbilisi", "Asia/Tokyo", "America/Sao_Paulo", "UTC")] == \
+        ["UTC+4", "UTC+9", "UTC-3", "UTC"]
+
+
+@pytest.mark.parametrize("said, in_conversation, dropped", [
+    ("1 1 1 1 1", False, True), ("1 1 1 1 1", True, True), ("...", True, True), ("", False, True),
+    ("a", True, True), ("2", False, True), ("2", True, False), ("07:30", True, False), ("ok", True, False),
+    ("open Chrome", False, False), ("გამარჯობა", False, False),
+])
+def test_noise(said, in_conversation, dropped):
+    assert noise(said, in_conversation) is dropped
+
+
+def test_noise_never_reaches_a_model():
+    client = FakeClient(message(text("Hi.")), message(text("Calling the second one.")))
+    agent, _ = make_agent(client)
+    run(agent.respond("hi", Owner()))
+    reply = run(agent.respond("1 1 1 1 1", Owner()))
+    assert reply.text == "I didn't catch that." and reply.cost == 0 and len(client.requests) == 1
+    run(agent.respond("2", Owner()))  # a number alone in a conversation may answer her question
+    assert len(client.requests) == 2 and len(client.requests[1]["messages"]) == 3
+
+
+def test_gemini_reply_loses_a_copied_header_and_a_failing_model_rests_longer():
+    assert without_header("[2026-10-13 15:23] Of course, here it is.") == "Of course, here it is."
+    assert without_header("[1] is the first.") == "[1] is the first."
+    busy = errors.APIError(503, {"error": {"code": 503, "message": "high demand"}})
+    assert [rest_seconds(busy, n) for n in (1, 2, 3, 10)] == [600, 1200, 2400, MAX_REST_SECONDS]

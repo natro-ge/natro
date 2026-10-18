@@ -21,3 +21,10 @@ results/
 
 # Downloaded models (see pc/natro_pc/wakeword.py for the source).
 models/
+# Requests kept for a device that is offline (agent/natro_agent/pending.py).
+pending.json
+# His reminders (agent/natro_agent/reminders.py) and when his last briefing was (briefing.py).
+reminders.json
+briefing.json
+# What he asked Natro to watch for, and what she told him (watchers.py).
+watchers.json

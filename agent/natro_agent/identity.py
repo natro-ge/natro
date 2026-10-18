@@ -38,7 +38,8 @@ def capabilities(tools, devices):
         if name in connected:
             lines.append(f"- Your owner's {label} is connected.")
         else:
-            lines.append(f"- Your owner's {label} is offline, so you can't use it or its tools right now.")
+            lines.append(f"- Your owner's {label} is offline, so you can't use it or its tools right now; "
+                         "queue_for_device keeps a request for it.")
 
     by_source = defaultdict(list)
     for tool in tools:
@@ -47,7 +48,7 @@ def capabilities(tools, devices):
         if source in connected:
             where = f"the {connected[source].label}"
         elif source == "natro":
-            where = "you (memory, notes, web)"
+            where = "you (memory, notes, reminders, web, weather)"
         elif source == "google":
             where = "his Google account (Calendar, Tasks, Gmail, Drive, Docs)"
         elif source == "spotify":

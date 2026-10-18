@@ -83,7 +83,9 @@ async def serving(server, play):
 
 
 def left(transfers):
-    return sorted(path.name for path in transfers.folder.iterdir())
+    """What's left in the folder (the folder for fetched files only if something is in it)."""
+    return sorted([path.name for path in transfers.folder.iterdir() if path != transfers.fetched]
+                  + [f"fetched/{path.name}" for path in transfers.fetched.iterdir()])
 
 
 def test_a_file_goes_from_the_pc_to_the_phone_and_isnt_kept(tmp_path):
@@ -287,3 +289,74 @@ def test_the_tool_is_offered_only_with_the_server(tmp_path):
     server, _ = world(tmp_path)
     tool = next(tool for tool in server.agent.offered_tools() if tool.name == "copy_to_device")
     assert tool.personal and not tool.confirm and tool.source == "natro"
+
+
+# --- The server's own files (convert.py) --------------------------------------------------------
+
+def test_natro_fetches_a_file_for_herself_and_passes_nothing_on(tmp_path):
+    server, transfers = world(tmp_path)
+    content = os.urandom(files.PART_BYTES + 1000)
+
+    async def play(port):
+        pc = await Device.join(port, "pc")
+        phone = await Device.join(port, "phone")
+        fetching = asyncio.create_task(transfers.fetch("pc", r"C:\Users\Tuxa\report.docx"))
+        asked = await pc.next("file_request")
+        assert asked["to"] == files.SERVER and asked["path"] == r"C:\Users\Tuxa\report.docx"
+        await pc.send_file(asked["id"], files.SERVER, content, name="report.docx")
+        sent = await pc.next("file_sent")
+        path, name = await fetching
+        got = path.read_bytes()
+        path.unlink()
+        await asyncio.sleep(0.05)
+        return sent, name, got, [m for m in phone.seen if m["type"].startswith("file_")]
+
+    sent, name, got, at_phone = run(serving(server, play))
+    assert sent["waiting"] is False and name == "report.docx" and got == content
+    assert at_phone == [] and left(transfers) == []  # nothing for the phone, nothing kept
+
+
+def test_only_a_file_natro_asked_for_may_come_to_her(tmp_path):
+    server, transfers = world(tmp_path)
+
+    async def play(port):
+        pc = await Device.join(port, "pc")
+        await pc.send_file("pc-9", files.SERVER, b"hello")
+        return await pc.next("file_failed")
+
+    assert "Files can go to the phone" in run(serving(server, play))["message"]
+
+
+def test_a_fetch_too_big_or_from_nowhere_is_refused(tmp_path):
+    server, transfers = world(tmp_path)
+
+    async def play(port):
+        pc = await Device.join(port, "pc")
+        fetching = asyncio.create_task(transfers.fetch("pc", "C:/big.mkv", most=10))
+        asked = await pc.next("file_request")
+        await pc.ws.send(json.dumps({"type": "file_offer", "id": asked["id"], "to": files.SERVER, "name": "big.mkv",
+                                     "size": 11}))
+        with pytest.raises(files.ToolError, match="at most 10 bytes"):
+            await fetching
+        return await pc.next("file_failed")
+
+    assert "at most 10 bytes" in run(serving(server, play))["message"]
+    with pytest.raises(files.ToolError, match="offline"):
+        run(transfers.fetch("phone", "/sdcard/a.jpg"))
+
+
+def test_a_file_made_here_goes_down_from_natro(tmp_path):
+    server, transfers = world(tmp_path)
+    made = tmp_path / "made.pdf"
+    made.write_bytes(b"%PDF-1.7 converted")
+
+    async def play(port):
+        phone = await Device.join(port, "phone")
+        meta = transfers.send(made, "report.pdf", "phone")
+        incoming, content, _ = await phone.receive_file()
+        await asyncio.sleep(0.05)
+        return meta, incoming, content
+
+    meta, incoming, content = run(serving(server, play))
+    assert incoming["from"] == files.SERVER and incoming["name"] == "report.pdf" and content == b"%PDF-1.7 converted"
+    assert meta["to"] == "phone" and not made.exists() and left(transfers) == []

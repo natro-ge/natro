@@ -20,7 +20,11 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -33,6 +37,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -55,13 +60,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -69,10 +77,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -85,18 +97,27 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.text.DateFormat
+import java.util.Date
 import kotlin.math.PI
 import kotlin.math.sin
 
-/** The chat: the conversation, her questions, and a field to type or talk. */
+/** The chat, shared with the PC: the conversation, her questions, requests kept for the phone, and a field to type
+ * or talk (or send a picture). */
 @Composable
 fun ChatScreen(setupLeft: Int, openSettings: () -> Unit, actions: AppActions) {
     val colors = palette
     val turns by Natro.turns.collectAsStateWithLifecycle()
     val status by Natro.status.collectAsStateWithLifecycle()
     val question by Natro.question.collectAsStateWithLifecycle()
+    val kept by Natro.kept.collectAsStateWithLifecycle()
     val power by Prefs.power.collectAsStateWithLifecycle()
     Box(Modifier.fillMaxSize().background(colors.background)) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))) {
@@ -113,6 +134,7 @@ fun ChatScreen(setupLeft: Int, openSettings: () -> Unit, actions: AppActions) {
             ) {
                 asked?.let { QuestionCard(it) }
             }
+            kept.forEach { KeptCard(it) }
             if (power) Composer(actions) else OffBar(actions)
         }
         Notice(Modifier.align(Alignment.TopCenter))
@@ -122,6 +144,22 @@ fun ChatScreen(setupLeft: Int, openSettings: () -> Unit, actions: AppActions) {
 @Composable
 private fun TopBar(status: Natro.Status, openSettings: () -> Unit) {
     val colors = palette
+    var starting by remember { mutableStateOf(false) }
+    if (starting) {
+        AlertDialog(
+            onDismissRequest = { starting = false },
+            title = { Text("Start a new chat?") },
+            text = { Text("The chat goes, here and on the PC, and Natro starts a new conversation.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    Natro.newChat()
+                    starting = false
+                }) { Text("New chat", color = colors.accentText) }
+            },
+            dismissButton = { TextButton(onClick = { starting = false }) { Text("Keep", color = colors.text) } },
+            containerColor = colors.surface,
+        )
+    }
     Row(
         Modifier.fillMaxWidth().statusBarsPadding().padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -132,6 +170,7 @@ private fun TopBar(status: Natro.Status, openSettings: () -> Unit) {
             Text("Natro", color = colors.text, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
             StatusLine(status)
         }
+        RoundIcon(Glyph.NewChat, "New chat", { starting = true })
         RoundIcon(Glyph.Settings, "Settings", openSettings)
     }
 }
@@ -222,11 +261,26 @@ private fun TurnView(turn: Turn, modifier: Modifier) {
     Column(modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 7.dp)) {
         if (turn.from == Turn.From.Pc) {
             FromPc(turn, open) { open = !open }
-        } else {
-            Mine(turn)
-            Spacer(Modifier.height(10.dp))
+        } else if (turn.reminder || turn.alert) {
+            ReminderLabel(if (turn.alert) "Heads-up" else "Reminder")
             Theirs(turn)
+        } else if (turn.job.isNotBlank()) {
+            JobLabel(turn.job)
+            Theirs(turn)
+            OtherQuestion(turn)
             if (turn.hasDetails) DetailsToggle(turn, open) { open = !open }
+        } else {
+            if (turn.device.isNotBlank() || turn.queued.isNotBlank()) Where(turn)
+            if (turn.sent) {
+                Pictures(turn.pictures, mine = true)
+            } else {
+                Mine(turn)
+                Spacer(Modifier.height(10.dp))
+                Theirs(turn)
+                if (turn.from == Turn.From.Other) OtherQuestion(turn)
+                if (turn.pictures.isNotEmpty()) Pictures(turn.pictures, mine = false)
+                if (turn.hasDetails) DetailsToggle(turn, open) { open = !open }
+            }
         }
         AnimatedVisibility(
             visible = open,
@@ -238,7 +292,127 @@ private fun TurnView(turn: Turn, modifier: Modifier) {
     }
 }
 
-/** What the owner asked: on the right, in green. */
+/** Where a request was made, when it wasn't here: "On your PC". */
+@Composable
+private fun Where(turn: Turn) {
+    val text = if (turn.queued.isNotBlank()) "Asked on your ${turn.queued} while the phone was offline"
+        else "On your ${turn.device}"
+    Text(text, color = palette.faint, fontSize = 11.5.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.End,
+        modifier = Modifier.fillMaxWidth().padding(end = 6.dp, bottom = 4.dp))
+}
+
+/** Above a reminder that went off (or what a watcher saw), on her side. */
+@Composable
+private fun ReminderLabel(text: String) {
+    Text(text, color = palette.faint, fontSize = 11.5.sp, fontWeight = FontWeight.Medium,
+        modifier = Modifier.fillMaxWidth().padding(start = 6.dp, bottom = 4.dp))
+}
+
+/** Above a background job, on her side: its task, on one line. */
+@Composable
+private fun JobLabel(task: String) {
+    Text("In the background: $task", color = palette.faint, fontSize = 11.5.sp, fontWeight = FontWeight.Medium,
+        maxLines = 1, overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.fillMaxWidth().padding(start = 6.dp, end = 40.dp, bottom = 4.dp))
+}
+
+/** A question about the PC's request (or a background job's): answered here too. */
+@Composable
+private fun OtherQuestion(turn: Turn) {
+    val colors = palette
+    val asked = turn.questions.lastOrNull()?.takeIf { it.answer.isEmpty() && turn.working && it.id.isNotBlank() } ?: return
+    Column(
+        Modifier.padding(top = 8.dp, end = 40.dp).clip(RoundedCornerShape(20.dp)).background(colors.surface)
+            .border(1.dp, colors.line, RoundedCornerShape(20.dp)).padding(14.dp),
+    ) {
+        Text(asked.question, color = colors.text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PillButton("No", colors.raised, colors.text, Modifier.width(96.dp)) { Natro.answerFor(asked, false) }
+            PillButton("Yes", colors.accent, colors.onAccent, Modifier.width(96.dp)) { Natro.answerFor(asked, true) }
+        }
+    }
+}
+
+/** The chat's pictures: on the right if he sent them, else under her reply. A tap shows one whole. */
+@Composable
+private fun Pictures(ids: List<String>, mine: Boolean) {
+    val colors = palette
+    val all by Natro.pictures.collectAsStateWithLifecycle()
+    var viewing by remember { mutableStateOf<String?>(null) }
+    Column(
+        Modifier.fillMaxWidth().padding(top = if (mine) 0.dp else 8.dp),
+        horizontalAlignment = if (mine) Alignment.End else Alignment.Start,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        ids.forEach { id ->
+            val bytes = all[id]
+            val image = remember(id, bytes) { bytes?.let { Pictures.decode(it, THUMB_PIXELS)?.asImageBitmap() } }
+            if (image == null) {
+                Text("Picture no longer here", color = colors.faint, fontSize = 13.sp, modifier = Modifier.padding(6.dp))
+            } else {
+                // At most 300 wide and 360 tall: a phone's screenshot is tall, and mostly as dark as the chat.
+                val ratio = image.width.toFloat() / image.height
+                val shape = RoundedCornerShape(18.dp)
+                Image(
+                    image, contentDescription = "Picture", contentScale = ContentScale.Fit,
+                    modifier = Modifier.padding(start = if (mine) 48.dp else 0.dp, end = if (mine) 0.dp else 40.dp)
+                        .width(minOf(300f, 360f * ratio).dp).aspectRatio(ratio)
+                        .clip(shape).border(1.dp, colors.line, shape).clickable { viewing = id },
+                )
+            }
+        }
+    }
+    viewing?.let { id -> all[id]?.let { PictureView(it) { viewing = null } } }
+}
+
+/** One picture, the whole screen; a tap closes it. */
+@Composable
+private fun PictureView(bytes: ByteArray, close: () -> Unit) {
+    val image = remember(bytes) { Pictures.decode(bytes, FULL_PIXELS)?.asImageBitmap() } ?: return close()
+    Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Box(Modifier.fillMaxSize().background(Color.Black).clickable(onClick = close), contentAlignment = Alignment.Center) {
+            Image(image, contentDescription = "Picture", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+        }
+    }
+}
+
+private const val THUMB_PIXELS = 900
+private const val FULL_PIXELS = 2048
+
+/** A request he made on the PC while the phone was offline: Run or Skip. */
+@Composable
+private fun KeptCard(kept: Kept) {
+    val colors = palette
+    val haptics = LocalHapticFeedback.current
+    val time = remember(kept.time) { DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(kept.time)) }
+    Column(
+        Modifier.padding(horizontal = 12.dp, vertical = 6.dp).fillMaxWidth().clip(RoundedCornerShape(24.dp))
+            .background(colors.surface).border(1.dp, colors.line, RoundedCornerShape(24.dp)).padding(18.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(8.dp).clip(CircleShape).background(colors.accent))
+            Spacer(Modifier.width(8.dp))
+            Text("While your phone was offline, on your ${kept.from} at $time", color = colors.muted, fontSize = 12.sp,
+                fontWeight = FontWeight.Medium)
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(kept.text, color = colors.text, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, lineHeight = 23.sp)
+        Spacer(Modifier.height(16.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            PillButton("Skip", colors.raised, colors.text, Modifier.weight(1f)) {
+                haptics.performHapticFeedback(HapticFeedbackType.Reject)
+                Natro.runKept(kept.id, run = false)
+            }
+            PillButton("Run", colors.accent, colors.onAccent, Modifier.weight(1f)) {
+                haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                Natro.runKept(kept.id, run = true)
+            }
+        }
+    }
+}
+
+/** What the owner asked: on the right, in green (a little quieter when he asked on the PC). */
 @Composable
 private fun Mine(turn: Turn) {
     val colors = palette
@@ -251,7 +425,8 @@ private fun Mine(turn: Turn) {
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         Row(
-            Modifier.padding(start = 48.dp).clip(RoundedCornerShape(22.dp, 22.dp, 6.dp, 22.dp)).background(colors.mine)
+            Modifier.padding(start = 48.dp).clip(RoundedCornerShape(22.dp, 22.dp, 6.dp, 22.dp))
+                .background(if (turn.from == Turn.From.Other) colors.mine.copy(alpha = 0.72f) else colors.mine)
                 .animateContentSize().padding(horizontal = 16.dp, vertical = 11.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -486,6 +661,18 @@ private fun Composer(actions: AppActions) {
     val colors = palette
     val haptics = LocalHapticFeedback.current
     var typed by rememberSaveable { mutableStateOf("") }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val pick = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) scope.launch {
+            try {
+                val bytes = withContext(Dispatchers.IO) { Pictures.forChat(context.contentResolver, uri) }
+                Natro.sendPicture(bytes, "image/jpeg", uri.lastPathSegment?.let { "$it.jpg" } ?: "picture.jpg")
+            } catch (e: Exception) {
+                Natro.notice.value = "Couldn't read that picture."
+            }
+        }
+    }
     val recording by Natro.recording.collectAsStateWithLifecycle()
     val handsFree by Natro.handsFree.collectAsStateWithLifecycle()
     val level by Natro.level.collectAsStateWithLifecycle()
@@ -502,6 +689,12 @@ private fun Composer(actions: AppActions) {
         Modifier.fillMaxWidth().navigationBarsPadding().imePadding().padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 10.dp),
         verticalAlignment = Alignment.Bottom,
     ) {
+        Box(Modifier.height(52.dp), contentAlignment = Alignment.Center) {
+            RoundIcon(Glyph.Picture, "Send a picture", {
+                pick.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            })
+        }
+        Spacer(Modifier.width(4.dp))
         Box(
             Modifier.weight(1f).heightIn(min = 52.dp).clip(RoundedCornerShape(26.dp)).background(colors.raised)
                 .padding(horizontal = 20.dp, vertical = 14.dp),

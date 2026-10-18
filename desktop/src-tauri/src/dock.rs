@@ -196,6 +196,16 @@ impl Dock {
         }
     }
 
+    /// The keys it takes from other apps for a while, for the reply box to share (Esc).
+    pub fn keys(&self) -> TemporaryKeys {
+        self.keys.clone()
+    }
+
+    /// Whether it's on the screen (Esc closes it first, then the reply box).
+    pub fn is_shown(&self) -> bool {
+        self.state.lock().unwrap().status.is_some()
+    }
+
     /// From the tray: listen hands-free, or send if it's listening.
     pub fn toggle(&self, app: &AppHandle) {
         self.listen(app);
@@ -359,6 +369,18 @@ impl Dock {
         self.close_after(app, SHOW_DONE);
     }
 
+    /// Her question was answered on the phone: the dock stops asking.
+    pub fn answered_elsewhere(&self, app: &AppHandle, question: &str) {
+        let mut state = self.state.lock().unwrap();
+        if state.question.as_deref() != Some(question) {
+            return;
+        }
+        state.question = None;
+        drop(state);
+        self.keys.answering(false);
+        self.show_status(app, Status::Thinking);
+    }
+
     /// Natro asks before something risky (she speaks the question).
     pub fn asked(&self, app: &AppHandle, question: &str, text: &str) {
         let mut state = self.state.lock().unwrap();
@@ -485,7 +507,7 @@ impl Dock {
         let Ok(hwnd) = window(app).hwnd() else { return };
         let place = place_on_screen_with_mouse();
         set_window_pos(hwnd, place.x, place.y, place.w, place.h, SWP_SHOWWINDOW);
-        self.keys.escape(true);
+        self.keys.escape("dock", true);
         let _ = app.emit_to("dock", "dock", DockEvent::Show);
     }
 
@@ -514,7 +536,7 @@ impl Dock {
         state.keys.finished();
         let turn = self.turn.fetch_add(1, Ordering::SeqCst) + 1;
         drop(state);
-        self.keys.escape(false);
+        self.keys.escape("dock", false);
         let _ = app.emit_to("dock", "dock", DockEvent::Hide);
         // The page slides the dock out; hide the (by then empty) window after.
         let app = app.clone();
@@ -720,44 +742,109 @@ pub fn no_key() -> Shortcut {
     Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyN)
 }
 
-/// Keys taken from other apps only while the dock needs them: Esc while it's
-/// open, Ctrl+Alt+Y and Ctrl+Alt+N while Natro asks.
+/// Keys taken from other apps only while one of Natro's windows needs them: Esc
+/// while the dock or the reply box is open, Ctrl+Alt+Y and Ctrl+Alt+N while
+/// Natro asks. A key is held while anyone wants it (the dock, "reply").
 ///
 /// Registering a key from inside the shortcut handler would deadlock (the plugin
 /// holds its lock while calling it), so a worker thread does it, in order.
-struct TemporaryKeys(mpsc::Sender<(Shortcut, bool)>);
+#[derive(Clone)]
+pub struct TemporaryKeys(mpsc::Sender<(Shortcut, &'static str, bool)>);
 
 impl TemporaryKeys {
     fn new(app: AppHandle) -> TemporaryKeys {
-        let (wanted, changes) = mpsc::channel::<(Shortcut, bool)>();
+        let (wanted, changes) = mpsc::channel::<(Shortcut, &'static str, bool)>();
         thread::spawn(move || {
-            let mut taken = Vec::new();
-            while let Ok((key, take)) = changes.recv() {
-                if taken.contains(&key) == take {
-                    continue;
-                }
+            let mut holders = Holders::default();
+            while let Ok((key, holder, take)) = changes.recv() {
+                let Some(take) = holders.want(key, holder, take) else { continue };
                 let shortcuts = app.global_shortcut();
                 let result = if take {
                     shortcuts.register(key)
                 } else {
                     shortcuts.unregister(key)
                 };
-                match result {
-                    Ok(()) if take => taken.push(key),
-                    Ok(()) => taken.retain(|k| *k != key),
-                    Err(e) => log::warn!("{key}: {e}"),
+                if let Err(e) = result {
+                    log::warn!("{key}: {e}");
+                    holders.failed(key, take);
                 }
             }
         });
         TemporaryKeys(wanted)
     }
 
-    fn escape(&self, take: bool) {
-        let _ = self.0.send((Shortcut::new(None, Code::Escape), take));
+    /// Esc, for the dock or the reply box ("dock", "reply").
+    pub fn escape(&self, holder: &'static str, take: bool) {
+        let _ = self.0.send((Shortcut::new(None, Code::Escape), holder, take));
     }
 
     fn answering(&self, take: bool) {
-        let _ = self.0.send((yes_key(), take));
-        let _ = self.0.send((no_key(), take));
+        let _ = self.0.send((yes_key(), "dock", take));
+        let _ = self.0.send((no_key(), "dock", take));
+    }
+}
+
+/// Who wants which temporary key: it's taken when the first wants it, given back when the last lets go.
+#[derive(Default)]
+struct Holders(Vec<(Shortcut, Vec<&'static str>)>);
+
+impl Holders {
+    /// Some(true): take the key now; Some(false): give it back; None: nothing to do.
+    fn want(&mut self, key: Shortcut, holder: &'static str, take: bool) -> Option<bool> {
+        let at = match self.0.iter().position(|(k, _)| *k == key) {
+            Some(at) => at,
+            None => {
+                self.0.push((key, Vec::new()));
+                self.0.len() - 1
+            }
+        };
+        let holders = &mut self.0[at].1;
+        let held = !holders.is_empty();
+        if take && !holders.contains(&holder) {
+            holders.push(holder);
+        } else if !take {
+            holders.retain(|h| *h != holder);
+        }
+        match (held, !holders.is_empty()) {
+            (false, true) => Some(true),
+            (true, false) => Some(false),
+            _ => None,
+        }
+    }
+
+    /// Taking (or giving back) the key failed: as if it hadn't been asked for, so the next try tries again.
+    fn failed(&mut self, key: Shortcut, take: bool) {
+        if take {
+            self.0.retain(|(k, _)| *k != key);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_key_is_held_while_anyone_wants_it() {
+        let esc = Shortcut::new(None, Code::Escape);
+        let mut holders = Holders::default();
+        assert_eq!(holders.want(esc, "dock", true), Some(true)); // taken
+        assert_eq!(holders.want(esc, "reply", true), None); // already
+        assert_eq!(holders.want(esc, "dock", true), None);
+        assert_eq!(holders.want(esc, "dock", false), None); // the reply box still wants it
+        assert_eq!(holders.want(esc, "reply", false), Some(false)); // given back
+        assert_eq!(holders.want(esc, "reply", false), None);
+        // Other keys are their own.
+        assert_eq!(holders.want(yes_key(), "dock", true), Some(true));
+        assert_eq!(holders.want(esc, "reply", true), Some(true));
+    }
+
+    #[test]
+    fn a_key_that_couldnt_be_taken_is_tried_again() {
+        let esc = Shortcut::new(None, Code::Escape);
+        let mut holders = Holders::default();
+        assert_eq!(holders.want(esc, "reply", true), Some(true));
+        holders.failed(esc, true);
+        assert_eq!(holders.want(esc, "dock", true), Some(true));
     }
 }

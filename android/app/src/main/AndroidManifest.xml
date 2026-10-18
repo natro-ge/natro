@@ -102,6 +102,21 @@
                 android:value="true" />
         </service>
 
+        <!-- Run or Skip on a request kept for the phone while it was offline (Kept.kt). -->
+        <receiver
+            android:name=".KeptAction"
+            android:exported="false" />
+
+        <!-- Yes or No to Natro's question on the PC (Questions.kt). -->
+        <receiver
+            android:name=".QuestionAction"
+            android:exported="false" />
+
+        <!-- Snooze or Done on a reminder (Reminders.kt). -->
+        <receiver
+            android:name=".ReminderAction"
+            android:exported="false" />
+
         <!-- Connects again after a restart or an update, if Natro is on. -->
         <receiver
             android:name=".BootReceiver"

@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Screen control (ScreenControl.kt): reads the screen and taps, types and scrolls only when Natro's brain asks. -->
+<!-- Screen control (ScreenControl.kt): reads the screen and taps, types and scrolls only when Natro's brain asks,
+     and takes a screenshot when he asks to see the phone's screen on the PC. -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
     android:canPerformGestures="true"
     android:canRetrieveWindowContent="true"
+    android:canTakeScreenshot="true"
     android:description="@string/screen_control_description"
     android:notificationTimeout="100" />

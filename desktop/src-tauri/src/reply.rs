@@ -8,8 +8,19 @@
 //! the tray icon, the tray's "Show last reply", or a click on the dock brings the
 //! last reply back.
 //!
+//! A reminder that goes off shows here too, with a Snooze link, whatever that
+//! switch says, and stays until closed; so does what a background job found, and
+//! what a watcher saw (a short one fades by itself, as a reply does).
+//!
+//! So does Natro's question on the phone, before something risky, with Yes and No:
+//! he can answer it here. Once it's answered (here or on the phone) or she stops
+//! waiting, the box lets go of it; its ✕ or Esc only closes the box, and the phone
+//! still asks.
+//!
 //! The window takes clicks (the ✕, links, scrolling) but never the keyboard, and
-//! it's only as big as the box: the page says how tall it is.
+//! it's only as big as the box: the page says how tall it is. While it's open, Esc
+//! closes it, from any app (the dock's Esc first, if the dock is open too): Esc is
+//! taken from other apps meanwhile, and given back when it closes.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,7 +35,7 @@ use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{SW_SHOWNORMAL, SWP_SHOWWINDOW};
 use windows::core::{HSTRING, w};
 
-use crate::dock::{hide, prepare_overlay, set_window_pos, work_area_with_mouse};
+use crate::dock::{TemporaryKeys, hide, prepare_overlay, set_window_pos, work_area_with_mouse};
 
 /// The window's width (logical pixels): the box and, around it, room for its
 /// shadow (MARGIN in Reply.svelte, 20 on each side). Keep in step with Reply.svelte.
@@ -54,6 +65,8 @@ pub struct Reply {
     off_marker: PathBuf,
     /// Moves on each time the box opens or closes; a late hide from before does nothing.
     turn: AtomicU64,
+    /// Esc, shared with the dock: taken while the box is open.
+    keys: TemporaryKeys,
 }
 
 #[derive(Default)]
@@ -70,6 +83,8 @@ struct State {
     max_height: f64,
     /// As the page laid the box out (logical pixels).
     height: f64,
+    /// The phone's question it asks, while she waits for his answer (its key: question_key).
+    asking: Option<String>,
 }
 
 impl State {
@@ -107,13 +122,14 @@ impl State {
 }
 
 impl Reply {
-    pub fn new(home: &Path) -> Reply {
+    pub fn new(home: &Path, keys: TemporaryKeys) -> Reply {
         let off_marker = home.join("logs").join("reply-text.off");
         Reply {
             state: Mutex::default(),
             on: AtomicBool::new(!off_marker.is_file()),
             off_marker,
             turn: AtomicU64::new(0),
+            keys,
         }
     }
 
@@ -181,6 +197,82 @@ impl Reply {
         }
     }
 
+    /// A reminder going off (brain.rs). late: it says itself when it was for.
+    pub fn reminder(&self, app: &AppHandle, id: &str, text: &str, late: bool) {
+        self.notice(app, id, &reminder_text(id, text, late));
+    }
+
+    /// A background job is done (brain.rs): what she found, or why it failed.
+    pub fn job_done(&self, app: &AppHandle, id: &str, text: &str, ok: bool) {
+        self.notice(app, id, &job_text(text, ok));
+    }
+
+    /// Something a watcher saw (brain.rs): "Nino emailed: Dinner on Friday."
+    pub fn alert(&self, app: &AppHandle, id: &str, text: &str) {
+        self.notice(app, id, &format!("**Heads-up:** {text}"));
+    }
+
+    /// Natro asks on another device (brain.rs): her question there, with Yes and No.
+    pub fn question(&self, app: &AppHandle, device: &str, id: &str, label: &str, text: &str) {
+        let key = question_key(device, id);
+        self.notice(app, &key, &question_text(device, id, label, text));
+        self.state.lock().unwrap().asking = Some(key);
+    }
+
+    /// That question is over: answered (yes) on the other device, or (None) not, and she stopped waiting.
+    /// The box closes, and says what came of it if it's brought back.
+    pub fn question_done(&self, app: &AppHandle, device: &str, id: &str, label: &str, yes: Option<bool>) {
+        let key = question_key(device, id);
+        let mut state = self.state.lock().unwrap();
+        if state.asking.as_deref() != Some(key.as_str()) {
+            return; // answered here, or the box never asked it
+        }
+        state.asking = None;
+        if state.id.as_deref() != Some(key.as_str()) {
+            return; // a reply has taken its place
+        }
+        state.text = settled(&state.text, &match yes {
+            Some(true) => format!("You said yes on your {label}."),
+            Some(false) => format!("You said no on your {label}."),
+            None => "No answer came, so Natro didn't do it.".into(),
+        });
+        let shown = state.shown;
+        drop(state);
+        if shown {
+            self.close(app);
+        }
+    }
+
+    /// The connection to Natro was lost: a question the box asks can't be answered any more.
+    pub fn lost(&self, app: &AppHandle) {
+        let mut state = self.state.lock().unwrap();
+        let Some(key) = state.asking.take() else { return };
+        if state.id.as_deref() == Some(key.as_str()) {
+            state.text = settled(&state.text, "Lost the connection to Natro.");
+            if state.shown {
+                let _ = app.emit_to("reply", "reply", state.event("text"));
+            }
+        }
+    }
+
+    /// Its Yes or No, clicked (a link: natro:answer/phone/c4/yes).
+    fn answer(&self, app: &AppHandle, link: &str) {
+        let Some((device, id, yes)) = answer_link(link) else { return };
+        let key = question_key(device, id);
+        if self.state.lock().unwrap().asking.as_deref() != Some(key.as_str()) {
+            return; // over already (or a second click)
+        }
+        let sent = app.state::<crate::brain::Brain>().send_answer_for(id, yes, device);
+        log::info!("answered {} for the {device} (the reply box)", if yes { "yes" } else { "no" });
+        self.state.lock().unwrap().asking = None;
+        let words = match (sent, yes) {
+            (false, _) => "Natro is offline, so your answer didn't go.",
+            (true, true) => "You said yes: Natro goes on with it.",
+            (true, false) => "You said no: Natro won't do it.",
+        };
+        self.notice(app, &key, words);
+    }
+
     fn update(&self, app: &AppHandle, state: std::sync::MutexGuard<'_, State>, new: bool) {
         if state.text.trim().is_empty() {
             return;
@@ -226,6 +318,7 @@ impl Reply {
         let event = state.event("show");
         self.place(app, &state);
         drop(state);
+        self.keys.escape("reply", true);
         let _ = app.emit_to("reply", "reply", event);
     }
 
@@ -238,7 +331,7 @@ impl Reply {
         set_window_pos(hwnd, right - width, top, width, height, SWP_SHOWWINDOW);
     }
 
-    /// Slide out and hide (its ✕, a short reply's time, the tray).
+    /// Slide out and hide (its ✕, Esc, a short reply's time, the tray).
     pub fn close(&self, app: &AppHandle) {
         let mut state = self.state.lock().unwrap();
         if !state.shown {
@@ -247,6 +340,7 @@ impl Reply {
         state.shown = false;
         let turn = self.turn.fetch_add(1, Ordering::SeqCst) + 1;
         drop(state);
+        self.keys.escape("reply", false);
         let _ = app.emit_to("reply", "reply", ReplyEvent { action: "hide", text: String::new(), done: true, max_height: 0.0 });
         let app = app.clone();
         thread::spawn(move || {
@@ -302,10 +396,37 @@ pub fn reply_show(app: AppHandle) {
     app.state::<Reply>().show_last(&app);
 }
 
-/// A link in a reply: opened in the browser (web links only), or a file that came
-/// from the phone, opened or shown in its folder (natro:open/3, natro:show/3).
+/// What the box says for a reminder: its words, then the Snooze link (a short
+/// reply fades by itself; this, on two lines, stays).
+fn reminder_text(id: &str, text: &str, late: bool) -> String {
+    let words = if late { text.to_string() } else { format!("**Reminder:** {text}") };
+    format!("{words}\n\n[Snooze 10 minutes](natro:snooze/{id})")
+}
+
+/// What the box says for a background job that's done: it stays until closed (two lines).
+fn job_text(text: &str, ok: bool) -> String {
+    if ok {
+        format!("**Done in the background:**\n\n{text}")
+    } else {
+        text.to_string()
+    }
+}
+
+/// A link in a reply: opened in the browser (web links only), a file that came
+/// from the phone, opened or shown in its folder (natro:open/3, natro:show/3), a
+/// reminder's Snooze (natro:snooze/<its id>), or the Yes or No to a question on the
+/// phone (natro:answer/phone/<its id>/yes).
 #[tauri::command]
 pub fn reply_open(app: AppHandle, url: String) {
+    if url.starts_with("natro:answer/") {
+        return app.state::<Reply>().answer(&app, &url);
+    }
+    if let Some(reminder) = url.strip_prefix("natro:snooze/") {
+        if !app.state::<crate::brain::Brain>().snooze(reminder) {
+            app.state::<Reply>().notice(&app, reminder, "Natro is offline, so it can't be snoozed.");
+        }
+        return;
+    }
     if url.starts_with("natro:") {
         return app.state::<std::sync::Arc<crate::files::Files>>().open_received(&url);
     }
@@ -314,6 +435,40 @@ pub fn reply_open(app: AppHandle, url: String) {
     }
     unsafe {
         ShellExecuteW(None, w!("open"), &HSTRING::from(url.as_str()), None, None, SW_SHOWNORMAL);
+    }
+}
+
+/// A question on another device, as the box knows it.
+fn question_key(device: &str, id: &str) -> String {
+    format!("{device}:{id}")
+}
+
+/// What the box says for a question on another device: it, then Yes and No (the page draws
+/// those links as buttons). On two lines, it stays until it's answered or closed.
+fn question_text(device: &str, id: &str, label: &str, text: &str) -> String {
+    format!(
+        "**On your {label}:** {}\n\n[Yes](natro:answer/{device}/{id}/yes) [No](natro:answer/{device}/{id}/no)",
+        text.trim()
+    )
+}
+
+/// The question without its Yes and No, and what came of it instead.
+fn settled(text: &str, outcome: &str) -> String {
+    let question = text.rsplit_once("\n\n").map_or(text, |(question, _)| question);
+    format!("{question}\n\n{outcome}")
+}
+
+/// natro:answer/phone/c4/yes -> ("phone", "c4", true).
+fn answer_link(link: &str) -> Option<(&str, &str, bool)> {
+    let mut parts = link.strip_prefix("natro:answer/")?.split('/');
+    let (device, id, answer) = (parts.next()?, parts.next()?, parts.next()?);
+    if device.is_empty() || id.is_empty() || parts.next().is_some() {
+        return None;
+    }
+    match answer {
+        "yes" => Some((device, id, true)),
+        "no" => Some((device, id, false)),
+        _ => None,
     }
 }
 
@@ -338,6 +493,43 @@ mod tests {
         assert!(state.done);
         assert!(state.add("r2", "Done"));
         assert_eq!(state.text, "Done");
+    }
+
+    #[test]
+    fn a_finished_job_says_what_it_is() {
+        assert_eq!(
+            job_text("I found three flats.", true),
+            "**Done in the background:**\n\nI found three flats."
+        );
+        assert_eq!(job_text("The job failed: no network.", false), "The job failed: no network.");
+    }
+
+    #[test]
+    fn a_reminder_says_what_it_is_and_can_be_snoozed() {
+        assert_eq!(
+            reminder_text("rm1-17", "Time to call Nino.", false),
+            "**Reminder:** Time to call Nino.\n\n[Snooze 10 minutes](natro:snooze/rm1-17)"
+        );
+        assert!(reminder_text("rm1-17", "A reminder from 15:00: Call Nino.", true).starts_with("A reminder from"));
+    }
+
+    #[test]
+    fn the_phones_question_has_yes_and_no_and_says_what_came_of_it() {
+        let asked = question_text("phone", "c4", "phone", "I'll text Nino \"running late\". ");
+        assert_eq!(
+            asked,
+            "**On your phone:** I'll text Nino \"running late\".\n\n\
+             [Yes](natro:answer/phone/c4/yes) [No](natro:answer/phone/c4/no)"
+        );
+        assert_eq!(answer_link("natro:answer/phone/c4/yes"), Some(("phone", "c4", true)));
+        assert_eq!(answer_link("natro:answer/phone/c4/no"), Some(("phone", "c4", false)));
+        assert_eq!(answer_link("natro:answer/phone/c4/maybe"), None);
+        assert_eq!(answer_link("natro:answer/phone/c4/yes/more"), None);
+        assert_eq!(answer_link("natro:answer//c4/yes"), None);
+        assert_eq!(
+            settled(&asked, "You said yes on your phone."),
+            "**On your phone:** I'll text Nino \"running late\".\n\nYou said yes on your phone."
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@ improve its products: the owner accepted that for non-personal requests.
 """
 import asyncio
 import os
+import re
 import time
 from dataclasses import dataclass
 
@@ -21,14 +22,21 @@ from natro_agent import log
 # newest are often overloaded ("503: high demand"; on 2026-10-05 3.8, 3.7 and 3.5
 # Flash were, while 3.6 Flash and 3.5 Flash-Lite answered).
 MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"]
-# A model that is overloaded is skipped for this long; one over its quota until Google says it resets
-# (its 429 has a retry delay: hours for the daily quota), but at least MIN_REST_SECONDS.
+# A model that is overloaded is skipped for this long, twice as long after each failure in a row, up to
+# MAX_REST_SECONDS (over 12-17 October 3.8 Flash failed 17 times and answered 5); one over its quota until
+# Google says it resets (its 429 has a retry delay: hours for the daily quota), but at least MIN_REST_SECONDS.
 REST_SECONDS = 600
+MAX_REST_SECONDS = 3 * 3600
 MIN_REST_SECONDS = 30
 # A model that hasn't answered by then is treated as overloaded (a call once hung for minutes;
-# answers normally take 1-5 s).
+# answers normally take 1-5 s). A request's first call, which writes a short answer or picks a tool, gets
+# less (its answers took 1-4 s), so a model that hangs costs less of the request.
 ANSWER_SECONDS = 10
+FIRST_ANSWER_SECONDS = 6
 BUSY_CODES = {429, 503}
+# Gemini sometimes starts its reply with a copy of the request's first line ("[2026-10-13 15:23] ..."):
+# square brackets with a time of day or the line's "·" in them.
+HEADER_COPY = re.compile(r"^\s*\[[^\[\]\n]{0,300}?(?:\d:\d\d|·)[^\[\]\n]{0,300}\]\s*")
 MAX_STEPS = 8
 HAND_OVER = "hand_over"
 
@@ -58,15 +66,21 @@ class Outcome:
     model: str = ""
 
 
-def rest_seconds(error):
-    """How long a busy model rests: until its quota resets if Google says when, else REST_SECONDS."""
+def rest_seconds(error, failures=1):
+    """How long a busy model rests: until its quota resets if Google says when, else REST_SECONDS, doubled for
+    each failure in a row before this one (failures counts this one), up to MAX_REST_SECONDS."""
     try:
         for detail in error.details["error"]["details"]:
             if detail.get("@type", "").endswith("RetryInfo"):
                 return max(MIN_REST_SECONDS, float(detail["retryDelay"].rstrip("s")))
     except (AttributeError, KeyError, TypeError, ValueError):
         pass
-    return REST_SECONDS
+    return min(MAX_REST_SECONDS, REST_SECONDS * 2 ** (failures - 1))
+
+
+def without_header(text):
+    """The reply without a copy of the request's first line at its start."""
+    return HEADER_COPY.sub("", text, count=1) or text
 
 
 def declaration(tool):
@@ -79,6 +93,7 @@ class Gemini:
         self.client = client or genai.Client(api_key=os.environ["GEMINI_API_KEY"])
         self.models = list(models)
         self._resting = {}  # model -> when it may be tried again
+        self._failures = {}  # model -> how many times in a row it failed
 
     @property
     def model(self):
@@ -103,7 +118,7 @@ class Gemini:
         """
         session.contents.append(types.Content(role="user", parts=[types.Part.from_text(text=request)]))
         for step in range(MAX_STEPS):
-            response = await self._generate(session)
+            response = await self._generate(session, first=step == 0)
             calls = response.function_calls or []
             for call in calls:
                 if call.name == HAND_OVER:
@@ -114,7 +129,7 @@ class Gemini:
                 return Outcome(handed_over=True, reason="no answer from Gemini", model=session.model)
             session.contents.append(content)
             if not calls:
-                return Outcome(text=(response.text or "").strip(), model=session.model)
+                return Outcome(text=without_header((response.text or "").strip()), model=session.model)
             parts = []
             results = []
             for call in calls:
@@ -131,24 +146,29 @@ class Gemini:
                 return Outcome(text=reply, model=session.model)
         return Outcome(text="I stopped there: that was taking too many steps.", model=session.model)
 
-    async def _generate(self, session):
-        """One model call. The session keeps the model that first answered; a busy model is skipped for a while."""
+    async def _generate(self, session, first=False):
+        """One model call (first: a request's first). The session keeps the model that first answered; a busy
+        model is skipped for a while."""
         now = time.monotonic()
         order = [session.model] if session.model else []
         order += [model for model in self.models if model not in order and self._resting.get(model, 0) <= now]
+        seconds = min(FIRST_ANSWER_SECONDS, ANSWER_SECONDS) if first else ANSWER_SECONDS
         error = RuntimeError("every free Gemini model is resting")
         for model in order:
             try:
                 response = await asyncio.wait_for(self.client.aio.models.generate_content(
-                    model=model, contents=session.contents, config=self._config(session)), ANSWER_SECONDS)
+                    model=model, contents=session.contents, config=self._config(session)), seconds)
             except (errors.APIError, asyncio.TimeoutError) as e:
                 if isinstance(e, errors.APIError) and e.code not in BUSY_CODES:
                     raise
-                rest = rest_seconds(e)
+                self._failures[model] = self._failures.get(model, 0) + 1
+                rest = rest_seconds(e, self._failures[model])
                 self._resting[model] = time.monotonic() + rest
-                log.write("model_rest", model=model, seconds=round(rest), error=repr(e)[:300])
+                log.write("model_rest", model=model, seconds=round(rest), failures=self._failures[model],
+                          error=repr(e)[:300])
                 error = e
                 continue
+            self._failures.pop(model, None)
             session.model = model
             return response
         raise error

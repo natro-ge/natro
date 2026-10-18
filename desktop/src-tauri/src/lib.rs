@@ -58,7 +58,12 @@ pub fn run() {
                     } else if *shortcut == chat_key() {
                         app.state::<Chat>().toggle(app);
                     } else if shortcut.key == Code::Escape {
-                        dock.cancel(app);
+                        // The dock first; once it's gone, the reply box.
+                        if dock.is_shown() {
+                            dock.cancel(app);
+                        } else {
+                            app.state::<Reply>().close(app);
+                        }
                     } else if *shortcut == dock::yes_key() {
                         dock.answer(app, true, "Ctrl+Alt+Y");
                     } else if *shortcut == dock::no_key() {
@@ -83,6 +88,9 @@ pub fn run() {
             chat::chat_answer,
             chat::chat_clear,
             chat::chat_attach,
+            chat::chat_picture,
+            chat::chat_open_picture,
+            chat::chat_queue,
             chat::chat_close
         ])
         .setup(|app| {
@@ -104,8 +112,9 @@ pub fn run() {
             let chat = Chat::new(test_clip.clone());
             let dock = Dock::new(app.handle(), test_clip, test_text, test_ask);
             dock.prepare(app.handle())?;
+            let keys = dock.keys(); // Esc, shared with the reply box
             app.manage(dock);
-            let reply = Reply::new(&config.home);
+            let reply = Reply::new(&config.home, keys);
             reply.prepare(app.handle())?;
             app.manage(reply);
             chat.prepare(app.handle())?;

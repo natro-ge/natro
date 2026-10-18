@@ -19,6 +19,8 @@ dependencies = [
     "pystray",
     "pillow",
     "pynput",
+    # His Edge through Playwright's MCP server (browser.py; the server itself runs with npx).
+    "mcp>=2.3",
 ]
 
 [project.optional-dependencies]

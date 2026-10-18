@@ -139,6 +139,17 @@ def describe_event(event):
     return f"{when}: {event.get('summary', '(no title)')}{where} [id {event['id']}{series}]"
 
 
+def task_due(task):
+    """The day a task is due (Tasks keeps only the date), or None."""
+    return date.fromisoformat(task["due"][:10]) if task.get("due") else None
+
+
+def describe_task(task):
+    due = f" (due {task_due(task):%a %d %b})" if task.get("due") else ""
+    done = " (done)" if task.get("status") == "completed" else ""
+    return f"- {task.get('title', '(no title)')}{due}{done} [id {task['id']}]"
+
+
 def repeat_rule(rule, start):
     """Google's recurrence for an RRULE ("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;UNTIL=20261231").
 
@@ -179,12 +190,16 @@ class Google:
             until = last + timedelta(days=1) if not isinstance(last, datetime) else last
         else:
             until = first + timedelta(days=1 if start else 7)
-        params = {"timeMin": as_moment(first).isoformat(), "timeMax": as_moment(until).isoformat(),
-                  "singleEvents": "true", "orderBy": "startTime", "maxResults": MAX_EVENTS}
+        items = await self.event_items(as_moment(first), as_moment(until), query)
+        return "\n".join(describe_event(event) for event in items) or "No events then."
+
+    async def event_items(self, start, end, query=None):
+        """Events (each day of a repeating one) from start to end (datetimes), as Google gives them."""
+        params = {"timeMin": start.isoformat(), "timeMax": end.isoformat(), "singleEvents": "true",
+                  "orderBy": "startTime", "maxResults": MAX_EVENTS}
         if query:
             params["q"] = query
-        items = (await self.api.call("GET", f"{CALENDAR}/events", params)).get("items", [])
-        return "\n".join(describe_event(event) for event in items) or "No events then."
+        return (await self.api.call("GET", f"{CALENDAR}/events", params)).get("items", [])
 
     async def create_event(self, title, start, end=None, location=None, description=None, repeat=None):
         first = parse_when(start)
@@ -225,15 +240,13 @@ class Google:
 
     # Tasks (the default list, "My Tasks")
 
-    async def tasks(self, show_completed=False):
+    async def task_items(self, show_completed=False):
+        """His tasks as Google gives them."""
         params = {"showCompleted": "true" if show_completed else "false", "showHidden": "false", "maxResults": 100}
-        items = (await self.api.call("GET", f"{TASKS}/lists/@default/tasks", params)).get("items", [])
-        lines = []
-        for task in items:
-            due = f" (due {date.fromisoformat(task['due'][:10]):%a %d %b})" if task.get("due") else ""
-            done = " (done)" if task.get("status") == "completed" else ""
-            lines.append(f"- {task.get('title', '(no title)')}{due}{done} [id {task['id']}]")
-        return "\n".join(lines) or "No tasks."
+        return (await self.api.call("GET", f"{TASKS}/lists/@default/tasks", params)).get("items", [])
+
+    async def tasks(self, show_completed=False):
+        return "\n".join(describe_task(task) for task in await self.task_items(show_completed)) or "No tasks."
 
     async def add_task(self, title, due=None, notes=None):
         body = {"title": title}
@@ -256,13 +269,18 @@ class Google:
 
     # Gmail
 
-    async def search_mail(self, query="in:inbox", max_results=10):
+    async def mail_items(self, query, max_results=10):
+        """The newest emails matching query, as Gmail gives them (with From, Subject and Date), and its listing."""
         params = {"q": query, "maxResults": max(1, min(int(max_results), 20))}
         listing = await self.api.call("GET", f"{GMAIL}/messages", params)
-        found = listing.get("messages", [])
         messages = await asyncio.gather(*(self.api.call(
             "GET", f"{GMAIL}/messages/{item['id']}",
-            {"format": "metadata", "metadataHeaders": ["From", "Subject", "Date"]}) for item in found))
+            {"format": "metadata", "metadataHeaders": ["From", "Subject", "Date"]})
+            for item in listing.get("messages", [])))
+        return list(messages), listing
+
+    async def search_mail(self, query="in:inbox", max_results=10):
+        messages, listing = await self.mail_items(query, max_results)
         lines = []
         for message in messages:
             headers = header_map(message)

@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import pytest
 
 from conftest import run
-from natro_agent.spotify import API, SIGN_IN_AGAIN, TOKEN_URL, Spotify, SpotifyAPI, spotify_uri
+from natro_agent.spotify import API, MAX_ADD, SIGN_IN_AGAIN, TOKEN_URL, Spotify, SpotifyAPI, spotify_uri, studio_version
 from natro_agent.tools import ToolError
 
 PC = {"id": "d-pc", "name": "TUXA-ASUS", "type": "Computer", "is_active": False, "volume_percent": 50}
@@ -28,7 +28,8 @@ class FakeResponse:
 
 
 class FakeSpotify:
-    """Answers (method, path) with scripted responses (a list is used up in order); records every request."""
+    """Answers (method, path) with scripted responses (a list is used up in order, a function gets the request's
+    params); records every request."""
 
     def __init__(self, answers):
         self.answers = answers
@@ -41,6 +42,8 @@ class FakeSpotify:
         answer = self.answers.get((method, path), (204, None))
         if isinstance(answer, list):
             answer = answer.pop(0) if len(answer) > 1 else answer[0]
+        if callable(answer):
+            answer = answer(params or {})
         return FakeResponse(*answer)
 
     def sent(self, method, path):
@@ -252,6 +255,95 @@ def test_like_and_add_to_playlist():
     assert fake.sent("POST", "/playlists/g2/items")[0]["json"] == {"uris": ["spotify:track:y1"]}
 
 
+def song(name, id, artist, album="An album"):
+    return {"type": "track", "name": name, "id": id, "uri": f"spotify:track:{id}", "artists": [{"name": artist}],
+            "album": {"name": album}}
+
+
+NUMB_LIVE = song("Comfortably Numb - Live", "n1", "Pink Floyd", "Pulse (Live)")
+NUMB = song("Comfortably Numb", "n2", "Pink Floyd", "The Wall")
+KASHMIR = song("Kashmir - Remaster", "k1", "Led Zeppelin", "Physical Graffiti (Remaster)")
+GYM_MINE = {"type": "playlist", "name": "Gym mine", "id": "g2", "uri": "spotify:playlist:g2", "owner": {"id": "tuxa"}}
+
+
+def test_studio_versions_come_first():
+    cover = song("Comfortably Numb", "n3", "Scissor Sisters")
+    assert studio_version([NUMB_LIVE, cover, NUMB], "comfortably numb pink floyd") is NUMB
+    # A remaster over a live take (here only its album says so); a cover by someone else is another song.
+    kashmir_live = song("Kashmir", "k2", "Led Zeppelin", "Celebration Day (Live)")
+    kashmir_cover = song("Kashmir", "k3", "A Tribute Band")
+    assert studio_version([kashmir_live, kashmir_cover, KASHMIR], "kashmir") is KASHMIR
+    remaster = song("Wish You Were Here - 2011 Remaster", "w1", "Pink Floyd")
+    plain_name = song("Wish You Were Here", "w2", "Pink Floyd")
+    assert studio_version([remaster, plain_name], "wish you were here") is plain_name
+    assert studio_version([remaster, plain_name], "wish you were here 2011 remaster") is remaster
+    # Only live takes found, or a live one asked for: that.
+    assert studio_version([NUMB_LIVE], "comfortably numb") is NUMB_LIVE
+    assert studio_version([NUMB_LIVE, NUMB], "comfortably numb live") is NUMB_LIVE
+    # A title's own words aren't a version.
+    wings = song("Live and Let Die", "l1", "Wings", "Live and Let Die")
+    wings_live = song("Live and Let Die - Live", "l2", "Wings", "Wings Over America (Live)")
+    assert studio_version([wings_live, wings], "live and let die wings") is wings
+    assert studio_version([], "nothing") is None
+
+
+def test_songs_are_found_and_added_without_playing():
+    found = {"comfortably numb pink floyd": [NUMB_LIVE, NUMB], "kashmir led zeppelin": [KASHMIR],
+             "yellow coldplay": [YELLOW], "zzzz": []}
+    s, fake = spotify({("GET", "/search"): lambda params: (200, {"tracks": {"items": found[params["q"]]}}),
+                       ("GET", "/me/playlists"): (200, {"items": [GYM_MINE]}), ("GET", "/me"): (200, {"id": "tuxa"}),
+                       ("GET", "/playlists/g2/items"): (200, {"items": [{"item": YELLOW}], "next": None})})
+    text = run(s.add_to_playlist("gym", queries=["comfortably numb pink floyd", "kashmir led zeppelin",
+                                                 "yellow coldplay", "kashmir led zeppelin", "zzzz"]))
+    assert text == ("Added 2 songs to the playlist Gym mine: Comfortably Numb by Pink Floyd; Kashmir - Remaster by "
+                    "Led Zeppelin. Already in it: Yellow by Coldplay; Kashmir - Remaster by Led Zeppelin. Spotify "
+                    "found nothing for: zzzz.")
+    # One request adds them all, and nothing was played or queued for it.
+    assert [r["json"] for r in fake.sent("POST", "/playlists/g2/items")] == [
+        {"uris": ["spotify:track:n2", "spotify:track:k1"]}]
+    assert not any(r["path"].startswith("/me/player") for r in fake.requests)
+    assert {r["params"]["limit"] for r in fake.sent("GET", "/search")} == {10}  # Development Mode's most
+    # A single query, and a song already there.
+    assert run(s.add_to_playlist("gym", query="yellow coldplay")) == \
+        "Yellow by Coldplay is already in the playlist Gym mine."
+    assert len(fake.sent("POST", "/playlists/g2/items")) == 1
+    with pytest.raises(ToolError, match="found nothing for: zzzz"):
+        run(s.add_to_playlist("gym", queries=["zzzz"]))
+    with pytest.raises(ToolError, match="spotify_create_playlist makes one"):
+        run(s.add_to_playlist("road trip", queries=["yellow coldplay"]))
+    with pytest.raises(ToolError, match=f"At most {MAX_ADD}"):
+        run(s.add_to_playlist("gym", queries=["yellow coldplay"] * (MAX_ADD + 1)))
+
+
+def test_a_new_playlist_is_made_then_filled_by_its_uri():
+    made = {"type": "playlist", "name": "Classic Rock", "id": "new1", "uri": "spotify:playlist:new1",
+            "owner": {"id": "tuxa"}}
+    wall = {"type": "album", "name": "The Wall", "id": "a1", "uri": "spotify:album:a1", "artists": [{"name": "Pink Floyd"}]}
+    s, fake = spotify({("GET", "/me/playlists"): (200, {"items": [GYM_MINE]}), ("GET", "/me"): (200, {"id": "tuxa"}),
+                       ("POST", "/me/playlists"): (201, made), ("GET", "/playlists/new1"): (200, made),
+                       ("GET", "/search"): (200, {"albums": {"items": [wall]}}),
+                       ("GET", "/albums/a1/tracks"): (200, {"items": [{"uri": "spotify:track:t1"},
+                                                                      {"uri": "spotify:track:t2"}]})})
+    assert run(s.create_playlist("Classic Rock", "Like Pink Floyd")) == \
+        "Made the private playlist Classic Rock [spotify:playlist:new1]; it's empty."
+    assert fake.sent("POST", "/me/playlists")[0]["json"] == {"name": "Classic Rock", "public": False,
+                                                            "description": "Like Pink Floyd"}
+    # Found by its URI at once, even before Spotify lists it among his playlists; a whole album goes in.
+    assert run(s.add_to_playlist("spotify:playlist:new1", query="the wall pink floyd", kind="album")) == \
+        "Added the album The Wall by Pink Floyd to the playlist Classic Rock."
+    assert fake.sent("GET", "/search")[0]["params"]["type"] == "album"
+    assert fake.sent("POST", "/playlists/new1/items")[0]["json"] == {"uris": ["spotify:track:t1", "spotify:track:t2"]}
+    # One by the same name isn't made twice.
+    fake.answers[("GET", "/me/playlists")] = (200, {"items": [made]})
+    assert run(s.create_playlist("classic rock")).startswith(
+        "He already has the playlist Classic Rock [spotify:playlist:new1], so no new one was made")
+    assert len(fake.sent("POST", "/me/playlists")) == 1
+    # Someone else's can't be filled.
+    fake.answers[("GET", "/playlists/new1")] = (200, dict(made, owner={"id": "someone"}))
+    with pytest.raises(ToolError, match="isn't his"):
+        run(s.add_to_playlist("https://open.spotify.com/playlist/new1?si=x", query="yellow"))
+
+
 def test_library():
     playlists = {"items": [{"name": "Gym", "uri": "spotify:playlist:g1", "owner": {"id": "tuxa"},
                             "items": {"total": 42}},
@@ -271,6 +363,10 @@ def test_tools_routing_and_sign_in_reminder():
     # Playing and controlling music may go to the free tier; his playlists and history may not.
     assert {name for name, tool in tools.items() if tool.personal} == {"spotify_library"}
     assert not any(tool.confirm for tool in tools.values())
+    # Filling a playlist is its own tool, which says it needs no playing; queueing points to it.
+    assert "never play" in tools["spotify_add_to_playlist"].description
+    assert "not adding to a playlist" in tools["spotify_play"].description
+    assert "queries" in tools["spotify_add_to_playlist"].input_schema["properties"]
     assert all(tool.source == "spotify" for tool in tools.values())
     text = run(tools["spotify_control"].run({"action": "next"}))
     assert text.startswith("Skipped to the next track. (Spotify's sign-in ends around")
