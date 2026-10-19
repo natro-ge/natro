@@ -61,6 +61,7 @@ PERSONAL_REQUESTS = [
     "what are you watching for", "convert the newest PDF in my Downloads to Word",
     "what was that restaurant I asked about on Tuesday", "what did you tell me yesterday about the flight",
     "how long does it take to get to the airport", "when should I leave for the dentist",
+    "how do I get to Vake Park from here", "open it in Maps", "where am I",
 ]
 
 # Plain requests that are fine on the free tier.
@@ -129,7 +130,8 @@ def test_screen_and_message_tools_are_personal(tmp):
             "phone_search_files", "pc_run_command", "pc_run_command_risky", "pc_screen", "pc_find", "pc_act",
             "pc_act_risky", "pc_switch_window", "pc_wait_for", "pc_screenshot", "phone_screenshot",
             "queue_for_device", "remind", "reminders_list", "reminders_cancel", "briefing", "start_job",
-            "jobs_list", "jobs_cancel", "watch", "watchers_list", "watchers_cancel", "convert_file", "history_search", "travel_time", "pc_browser_open",
+            "jobs_list", "jobs_cancel", "watch", "watchers_list", "watchers_cancel", "convert_file", "history_search", "travel_time", "travel_routes", "travel_plan", "phone_location",
+            "phone_open_maps", "pc_browser_open",
             "pc_browser_page", "pc_browser_act", "pc_browser_act_risky", "pc_browser_tabs"} <= personal
 
 
@@ -311,6 +313,13 @@ WATCH_NINO = ("watch", {"kind": "email", "from": "Nino"})
 
 NEWEST_PDF = ("pc_search_files", {"query": "ext:pdf"})
 AIRPORT_BY_BUS = ("travel_time", {"destination": "Tbilisi airport", "mode": "transit"})
+AIRPORT_OPTIONS = ("travel_routes", {"destination": "Tbilisi airport", "prefer": "fewer_changes"})
+METRO_THEN_BUS = ("travel_plan", {"legs": [{"to": "Station Square metro station, Tbilisi", "use": ["metro"]},
+                                           {"to": "Tbilisi airport", "use": ["bus"]}]})
+HERE = ("phone_location", {})
+VAKE_FROM_HERE = ("travel_routes", {"destination": "Vake Park", "origin": "41.69339,44.80153"})
+NAVIGATE = ("phone_open_maps", {"link": "https://www.google.com/maps/dir/?api=1&destination=Vake+Park&travelmode=transit",
+                                "navigate": True})
 RESTAURANT = ("history_search", {"words": "restaurant", "start": "2026-10-13", "end": "2026-10-13"})
 PDF_TO_WORD = ("convert_file", {"from_device": "pc", "path": "C:/Users/Tuxa/Downloads/report.pdf", "to": "docx"})
 
@@ -336,6 +345,10 @@ JOURNEYS = [
     ("make my newest PDF a Word file", [NEWEST_PDF, PDF_TO_WORD], [NEWEST_PDF, PDF_TO_WORD], "claude"),
     ("what was that restaurant I asked about on Tuesday", [RESTAURANT], [RESTAURANT], "claude"),
     ("how long to the airport by bus", [AIRPORT_BY_BUS], [AIRPORT_BY_BUS], "claude"),
+    ("what are my options to get to the airport with fewer changes", [AIRPORT_OPTIONS], [AIRPORT_OPTIONS], "claude"),
+    ("plan my trip to the airport, first metro then bus", [METRO_THEN_BUS], [METRO_THEN_BUS], "claude"),
+    ("how do I get to Vake Park from here", [HERE, VAKE_FROM_HERE], [HERE, VAKE_FROM_HERE], "claude"),
+    ("navigate me there", [NAVIGATE], [NAVIGATE], "claude"),
 ]
 
 

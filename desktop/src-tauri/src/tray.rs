@@ -1,10 +1,10 @@
 //! Natro's icon by the clock: whether she's online, this month's spending,
-//! "Speak replies", "Show replies as text", her last reply, open the dock or the
-//! chat, send files to the phone, Exit.
+//! "Speak replies", "Show replies as text", her last reply, "Verbose", open the
+//! dock or the chat, send files to the phone, Settings (settings.rs), Exit. The
+//! switches are the Settings window's too, and remembered there.
 //! A click on the icon shows or hides her last reply (or opens the dock if there's none yet).
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use serde_json::Value;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
@@ -15,14 +15,26 @@ use tauri_plugin_dialog::DialogExt;
 use crate::chat::Chat;
 use crate::dock::Dock;
 use crate::files::Files;
-use crate::helper::Helper;
 use crate::reply::Reply;
-use crate::verbose::Verbose;
+use crate::settings::{self, Keybinds, Settings, Switches};
 
 /// The menu's lines that change.
 struct Lines {
     connection: MenuItem<Wry>,
     spending: MenuItem<Wry>,
+    speak: CheckMenuItem<Wry>,
+    replies: CheckMenuItem<Wry>,
+    verbose: CheckMenuItem<Wry>,
+    open: MenuItem<Wry>,
+    chat: MenuItem<Wry>,
+}
+
+/// The dock's and the chat's lines, with their keybinds: "Talk to Natro (Ctrl+Alt+Space)".
+fn key_lines(keybinds: &Keybinds) -> (String, String) {
+    (
+        format!("Talk to Natro ({})", settings::label(keybinds.talk)),
+        format!("Chat with Natro ({})", settings::label(keybinds.chat)),
+    )
 }
 
 pub fn create(app: &App) -> tauri::Result<()> {
@@ -40,15 +52,15 @@ pub fn create(app: &App) -> tauri::Result<()> {
         false,
         None::<&str>,
     )?;
-    let speaking = app.state::<Arc<Helper>>().speaking.load(Ordering::SeqCst);
+    let switches = app.state::<Settings>().switches();
     let speak =
-        CheckMenuItem::with_id(app, "speak", "Speak replies", true, speaking, None::<&str>)?;
+        CheckMenuItem::with_id(app, "speak", "Speak replies", true, switches.speak, None::<&str>)?;
     let replies = CheckMenuItem::with_id(
         app,
         "replies",
         "Show replies as text",
         true,
-        app.state::<Reply>().is_on(),
+        switches.replies,
         None::<&str>,
     )?;
     let last = MenuItem::with_id(app, "last", "Show last reply", true, None::<&str>)?;
@@ -57,18 +69,14 @@ pub fn create(app: &App) -> tauri::Result<()> {
         "verbose",
         "Verbose (keep recordings and logs)",
         true,
-        app.state::<Arc<Verbose>>().is_on(),
+        switches.verbose,
         None::<&str>,
     )?;
-    let open = MenuItem::with_id(
-        app,
-        "open",
-        "Talk to Natro (Ctrl+Alt+Space)",
-        true,
-        None::<&str>,
-    )?;
-    let chat = MenuItem::with_id(app, "chat", "Chat with Natro (Ctrl+Space)", true, None::<&str>)?;
+    let (talk_line, chat_line) = key_lines(&app.state::<Settings>().keybinds());
+    let open = MenuItem::with_id(app, "open", talk_line, true, None::<&str>)?;
+    let chat = MenuItem::with_id(app, "chat", chat_line, true, None::<&str>)?;
     let send = MenuItem::with_id(app, "send", "Send files to the phone…", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let exit = MenuItem::with_id(app, "exit", "Exit", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(
@@ -85,12 +93,18 @@ pub fn create(app: &App) -> tauri::Result<()> {
             &chat,
             &send,
             &separator,
+            &settings,
             &exit,
         ],
     )?;
     app.manage(Lines {
         connection,
         spending,
+        speak: speak.clone(),
+        replies: replies.clone(),
+        verbose: verbose.clone(),
+        open: open.clone(),
+        chat: chat.clone(),
     });
 
     TrayIconBuilder::with_id("natro")
@@ -105,21 +119,14 @@ pub fn create(app: &App) -> tauri::Result<()> {
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "open" => app.state::<Dock>().toggle(app),
             "chat" => app.state::<Chat>().toggle(app),
-            "speak" => {
-                let on = speak.is_checked().unwrap_or(true);
-                app.state::<Arc<Helper>>()
-                    .speaking
-                    .store(on, Ordering::SeqCst);
-            }
-            "replies" => app
-                .state::<Reply>()
-                .set_on(app, replies.is_checked().unwrap_or(true)),
+            // A click has checked or unchecked it already.
+            "speak" => app.state::<Settings>().set(app, "speak", speak.is_checked().unwrap_or(true)),
+            "replies" => app.state::<Settings>().set(app, "replies", replies.is_checked().unwrap_or(true)),
             "last" => {
                 app.state::<Reply>().show_last(app);
             }
-            "verbose" => app
-                .state::<Arc<Verbose>>()
-                .set(verbose.is_checked().unwrap_or(false)),
+            "verbose" => app.state::<Settings>().set(app, "verbose", verbose.is_checked().unwrap_or(false)),
+            "settings" => settings::open(app),
             "send" => {
                 let app = app.clone();
                 app.dialog()
@@ -154,6 +161,24 @@ pub fn create(app: &App) -> tauri::Result<()> {
         })
         .build(app)?;
     Ok(())
+}
+
+/// The switches, as changed in the Settings window (or here).
+pub fn show_switches(app: &AppHandle, switches: &Switches) {
+    if let Some(lines) = app.try_state::<Lines>() {
+        let _ = lines.speak.set_checked(switches.speak);
+        let _ = lines.replies.set_checked(switches.replies);
+        let _ = lines.verbose.set_checked(switches.verbose);
+    }
+}
+
+/// The keybinds, as changed in the Settings window.
+pub fn show_keys(app: &AppHandle, keybinds: &Keybinds) {
+    if let Some(lines) = app.try_state::<Lines>() {
+        let (talk_line, chat_line) = key_lines(keybinds);
+        let _ = lines.open.set_text(talk_line);
+        let _ = lines.chat.set_text(chat_line);
+    }
 }
 
 pub fn show_connection(app: &AppHandle, online: bool) {

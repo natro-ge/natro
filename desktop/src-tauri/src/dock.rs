@@ -7,7 +7,8 @@
 //! and slides back up; Natro speaks her reply. When she asks before something
 //! risky it shows her question: click it for yes (its ✕ or Esc for no), or
 //! Ctrl+Alt+Y or Ctrl+Alt+N, or the talk key and say yes or no. Esc closes it
-//! without sending. (Typing to Natro is the chat's, Ctrl+Space: chat.rs.)
+//! without sending. (Typing to Natro is the chat's, Ctrl+Space: chat.rs.) These
+//! keys are the first ones; Settings changes them (settings.rs's keybinds).
 //!
 //! The dock never takes the keyboard from the app you're in, and clicks go
 //! through it, except on the pill: while Natro asks a click answers, otherwise
@@ -21,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut};
 use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::Graphics::Dwm::{
     DWM_WINDOW_CORNER_PREFERENCE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
@@ -41,6 +42,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::audio::{MIN_SAMPLES, has_speech};
 use crate::brain::Brain;
 use crate::recorder::Recorder;
+use crate::settings::{Keybinds, Settings};
 use crate::talk_key::{PressAndHold, TalkEvent};
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Debug)]
@@ -220,12 +222,24 @@ impl Dock {
         if let Some(question) = question {
             log::info!("answered no (Esc or the dock's ✕)");
             app.state::<Brain>().send_answer(&question, false);
-            self.keys.answering(false);
+            self.keys.answering(app, false);
         }
         self.close(app);
     }
 
-    /// Yes or no while Natro asks: Ctrl+Alt+Y or Ctrl+Alt+N, or a click on the dock.
+    /// The yes or no keybind changed (Settings): while Natro asks, the new keys are taken instead.
+    pub fn answer_keys_changed(&self, app: &AppHandle, old: Keybinds) {
+        let new = app.state::<Settings>().keybinds();
+        if (old.yes, old.no) == (new.yes, new.no) || self.state.lock().unwrap().question.is_none() {
+            return;
+        }
+        for key in [old.yes, old.no] {
+            let _ = self.keys.0.send((key, "dock", false));
+        }
+        self.keys.answering(app, true);
+    }
+
+    /// Yes or no while Natro asks: the yes and no keybinds, or a click on the dock.
     pub fn answer(&self, app: &AppHandle, yes: bool, how: &str) {
         let question = {
             let mut state = self.state.lock().unwrap();
@@ -240,7 +254,7 @@ impl Dock {
         app.state::<std::sync::Arc<crate::verbose::Verbose>>()
             .event(&question, "answered", serde_json::json!({"yes": yes, "how": how}));
         app.state::<Brain>().send_answer(&question, yes);
-        self.keys.answering(false);
+        self.keys.answering(app, false);
         self.show_status(app, Status::Thinking);
     }
 
@@ -307,7 +321,7 @@ impl Dock {
                     if brain.send_audio(&pcm, Some(&question)).is_some() {
                         state.question = None;
                         drop(state);
-                        self.keys.answering(false);
+                        self.keys.answering(app, false);
                         self.show_status(app, Status::Thinking);
                     } else {
                         drop(state);
@@ -377,7 +391,7 @@ impl Dock {
         }
         state.question = None;
         drop(state);
-        self.keys.answering(false);
+        self.keys.answering(app, false);
         self.show_status(app, Status::Thinking);
     }
 
@@ -392,7 +406,7 @@ impl Dock {
         }
         self.turn.fetch_add(1, Ordering::SeqCst); // no closing while she asks
         drop(state);
-        self.keys.answering(true);
+        self.keys.answering(app, true);
         if !shown {
             self.show_window(app);
         }
@@ -734,17 +748,10 @@ pub(crate) fn hide(window: &WebviewWindow) {
     }
 }
 
-pub fn yes_key() -> Shortcut {
-    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyY)
-}
-
-pub fn no_key() -> Shortcut {
-    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyN)
-}
-
 /// Keys taken from other apps only while one of Natro's windows needs them: Esc
-/// while the dock or the reply box is open, Ctrl+Alt+Y and Ctrl+Alt+N while
-/// Natro asks. A key is held while anyone wants it (the dock, "reply").
+/// while the dock or the reply box is open, the yes and no keybinds (Ctrl+Alt+Y
+/// and Ctrl+Alt+N at first) while Natro asks. A key is held while anyone wants it
+/// (the dock, "reply").
 ///
 /// Registering a key from inside the shortcut handler would deadlock (the plugin
 /// holds its lock while calling it), so a worker thread does it, in order.
@@ -778,9 +785,11 @@ impl TemporaryKeys {
         let _ = self.0.send((Shortcut::new(None, Code::Escape), holder, take));
     }
 
-    fn answering(&self, take: bool) {
-        let _ = self.0.send((yes_key(), "dock", take));
-        let _ = self.0.send((no_key(), "dock", take));
+    /// Yes and no, while Natro asks: the keybinds' keys (settings.rs).
+    fn answering(&self, app: &AppHandle, take: bool) {
+        let keybinds = app.state::<Settings>().keybinds();
+        let _ = self.0.send((keybinds.yes, "dock", take));
+        let _ = self.0.send((keybinds.no, "dock", take));
     }
 }
 
@@ -835,7 +844,7 @@ mod tests {
         assert_eq!(holders.want(esc, "reply", false), Some(false)); // given back
         assert_eq!(holders.want(esc, "reply", false), None);
         // Other keys are their own.
-        assert_eq!(holders.want(yes_key(), "dock", true), Some(true));
+        assert_eq!(holders.want(Keybinds::default().yes, "dock", true), Some(true));
         assert_eq!(holders.want(esc, "reply", true), Some(true));
     }
 

@@ -1,6 +1,10 @@
 package dev.natro
 
-/** Plain functions for the phone's tools: matching spoken names, reading times and levels. */
+import java.net.URI
+import java.net.URISyntaxException
+import java.util.Locale
+
+/** Plain functions for the phone's tools: matching spoken names, reading times and levels, places and Maps links. */
 object Names {
     const val GOOD_MATCH = 0.6
 
@@ -70,6 +74,46 @@ object Names {
         else -> value.removeSuffix("%").toIntOrNull()
             ?: throw ToolFailure("The level is 0 to 100, or up, down, max or mute.")
     }.coerceIn(0, 100)
+
+    /** Where the phone is, for the brain: "41.69339,44.80153 (within 12 m, just now)". The first part is a place the
+     *  travel tools take; the dot is a dot in every language. */
+    fun location(latitude: Double, longitude: Double, meters: Float?, ageSeconds: Long): String {
+        val minutes = (ageSeconds / 60).toInt()
+        val age = when {
+            minutes < 1 -> "just now"
+            minutes < 60 -> "${duration(minutes * 60)} ago"
+            else -> "${duration(minutes / 60 * 3600)} ago"
+        }
+        val within = if (meters != null) "within ${Math.round(meters)} m, " else ""
+        return String.format(Locale.US, "%.5f,%.5f (%s%s)", latitude, longitude, within, age)
+    }
+
+    /**
+     * A Google Maps link to open on the phone, as given; with navigate, a directions link made to start navigating
+     * from where he is (Google's dir_action=navigate, and no origin). Anything but a Google Maps link is refused.
+     */
+    fun mapsLink(link: String, navigate: Boolean): String {
+        val given = link.trim().replace(" ", "%20")
+        val uri = try {
+            URI(given)
+        } catch (e: URISyntaxException) {
+            null
+        }
+        val host = uri?.host.orEmpty().lowercase()
+        val path = uri?.rawPath.orEmpty()
+        val maps = uri?.scheme?.lowercase() in setOf("https", "http") && (host == "maps.app.goo.gl" ||
+            GOOGLE.matches(host) && (host.startsWith("maps.") || path.startsWith("/maps")))
+        if (!maps) throw ToolFailure("That isn't a Google Maps link (https://www.google.com/maps/...).")
+        if (!navigate) return given
+        if (!path.startsWith("/maps/dir")) {
+            throw ToolFailure("To navigate, give a directions link (https://www.google.com/maps/dir/?api=1&...).")
+        }
+        val kept = uri!!.rawQuery.orEmpty().split("&")
+            .filter { it.isNotEmpty() && it.substringBefore("=") !in setOf("origin", "origin_place_id", "dir_action") }
+        return "${uri.scheme}://${uri.rawAuthority}$path?" + (kept + "dir_action=navigate").joinToString("&")
+    }
+
+    private val GOOGLE = Regex("(www\\.|maps\\.)?google\\.[a-z]{2,3}(\\.[a-z]{2})?")
 }
 
 class ToolFailure(message: String) : Exception(message)

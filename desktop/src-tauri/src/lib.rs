@@ -9,8 +9,11 @@ mod dock;
 mod files;
 mod helper;
 mod icons;
+mod keys;
 mod recorder;
 mod reply;
+mod settings;
+mod startup;
 mod talk_key;
 mod tray;
 mod verbose;
@@ -18,7 +21,7 @@ mod verbose;
 use std::sync::Arc;
 
 use tauri::Manager;
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::{Code, ShortcutState};
 
 use brain::Brain;
 use chat::Chat;
@@ -27,18 +30,10 @@ use dock::Dock;
 use files::Files;
 use helper::Helper;
 use icons::Icons;
+use keys::Keys;
 use reply::Reply;
+use settings::Settings;
 use verbose::Verbose;
-
-/// Opens the dock and listens; see talk_key.rs for hold and tap.
-fn talk_key() -> Shortcut {
-    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space)
-}
-
-/// Opens the chat, or closes it.
-fn chat_key() -> Shortcut {
-    Shortcut::new(Some(Modifiers::CONTROL), Code::Space)
-}
 
 pub fn run() {
     tauri::Builder::default()
@@ -49,13 +44,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
+                // The keys are the keybinds (settings.rs), which Settings changes.
                 .with_handler(|app, shortcut, event| {
                     let dock = app.state::<Dock>();
+                    let keys = app.state::<Settings>().keybinds();
                     let pressed = event.state == ShortcutState::Pressed;
-                    if *shortcut == talk_key() {
+                    if *shortcut == keys.talk {
                         dock.talk_key(app, pressed);
                     } else if !pressed {
-                    } else if *shortcut == chat_key() {
+                    } else if *shortcut == keys.chat {
                         app.state::<Chat>().toggle(app);
                     } else if shortcut.key == Code::Escape {
                         // The dock first; once it's gone, the reply box.
@@ -64,10 +61,10 @@ pub fn run() {
                         } else {
                             app.state::<Reply>().close(app);
                         }
-                    } else if *shortcut == dock::yes_key() {
-                        dock.answer(app, true, "Ctrl+Alt+Y");
-                    } else if *shortcut == dock::no_key() {
-                        dock.answer(app, false, "Ctrl+Alt+N");
+                    } else if *shortcut == keys.yes {
+                        dock.answer(app, true, &settings::label(keys.yes));
+                    } else if *shortcut == keys.no {
+                        dock.answer(app, false, &settings::label(keys.no));
                     }
                 })
                 .build(),
@@ -91,7 +88,20 @@ pub fn run() {
             chat::chat_picture,
             chat::chat_open_picture,
             chat::chat_queue,
-            chat::chat_close
+            chat::chat_close,
+            settings::settings_state,
+            settings::settings_switch,
+            settings::settings_size,
+            settings::settings_open,
+            settings::settings_close,
+            settings::settings_capture,
+            settings::settings_keybind,
+            settings::settings_keybinds_reset,
+            keys::keys_status,
+            keys::keys_unlock,
+            keys::keys_save,
+            keys::keys_pin,
+            keys::keys_lock
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -108,33 +118,42 @@ pub fn run() {
             let test_clip = test("NATRO_TEST_CLIP").map(|clip| config.home.join(clip));
             let test_text = test("NATRO_TEST_TEXT");
             let test_ask = test("NATRO_TEST_ASK");
+            let settings = Settings::load(&config.home);
+            let switches = settings.switches();
+            // Again while it's on: the program may have moved since.
+            if switches.startup
+                && let Err(e) = startup::set(true)
+            {
+                log::warn!("couldn't keep starting with Windows: {e}");
+            }
             let helper = Arc::new(Helper::start(&config));
+            helper.speaking.store(switches.speak, std::sync::atomic::Ordering::SeqCst);
             let chat = Chat::new(test_clip.clone());
             let dock = Dock::new(app.handle(), test_clip, test_text, test_ask);
             dock.prepare(app.handle())?;
             let keys = dock.keys(); // Esc, shared with the reply box
             app.manage(dock);
-            let reply = Reply::new(&config.home, keys);
+            let reply = Reply::new(switches.replies, keys);
             reply.prepare(app.handle())?;
             app.manage(reply);
             chat.prepare(app.handle())?;
             app.manage(chat);
             app.manage(helper.clone());
             app.manage(Icons::new(helper.clone()));
-            let verbose = Arc::new(Verbose::new(&config.home));
+            let verbose = Arc::new(Verbose::new(&config.home, switches.verbose));
             app.manage(verbose.clone());
+            app.manage(settings);
+            app.manage(Keys::new(&config.home));
             app.manage(Arc::new(Files::new()));
             app.manage(Brain::start(app.handle().clone(), &config, helper, verbose));
             tray::create(app)?;
+            if test("NATRO_TEST_SETTINGS").is_some() {
+                settings::open(app.handle());
+            }
             files::add_to_send_to();
             // Started by "Send to" (no Natro was running): these go once she's connected.
             files::from_command_line(app.handle(), &std::env::args().collect::<Vec<_>>());
-            if let Err(e) = app.global_shortcut().register(talk_key()) {
-                log::error!("Ctrl+Alt+Space is taken by another program: {e}");
-            }
-            if let Err(e) = app.global_shortcut().register(chat_key()) {
-                log::error!("Ctrl+Space is taken by another program: {e}");
-            }
+            settings::hold_keys(app.handle(), true);
             Ok(())
         })
         .run(tauri::generate_context!())

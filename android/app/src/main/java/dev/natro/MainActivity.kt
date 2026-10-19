@@ -140,6 +140,10 @@ class MainActivity : ComponentActivity() {
                 PHONE_PERMISSIONS.all(::granted), essential = false, button = "Allow") {
                 askPermissions.launch(PHONE_PERMISSIONS)
             },
+            SetupStep("Location", "For trips from where you are (\"how do I get there from here?\").",
+                granted(Manifest.permission.ACCESS_FINE_LOCATION), essential = false, button = "Allow") {
+                askPermissions.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+            },
             SetupStep("Notification access", "For \"what did I miss?\".",
                 packageName in NotificationManagerCompat.getEnabledListenerPackages(this), essential = false, button = "Open") {
                 startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS).putExtra(

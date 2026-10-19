@@ -23,6 +23,11 @@ results/
 models/
 # Requests kept for a device that is offline (agent/natro_agent/pending.py).
 pending.json
+# The PC app's switches (desktop/src-tauri/src/settings.rs).
+/settings.json
+# The old .env after a change from the Settings window (keys.py, keys.rs).
+.env.bak
+.env.new
 # His reminders (agent/natro_agent/reminders.py) and when his last briefing was (briefing.py).
 reminders.json
 briefing.json

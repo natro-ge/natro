@@ -29,7 +29,9 @@ use crate::dock::Dock;
 use crate::files::Files;
 use crate::helper::Helper;
 use crate::icons::Icons;
+use crate::keys::Keys;
 use crate::reply::Reply;
+use crate::settings;
 use crate::tray;
 use crate::verbose::Verbose;
 
@@ -73,6 +75,7 @@ impl Brain {
                     connect(&app, &url, &token, &helper, &flag, &replies, &mut to_send).await;
                 flag.store(false, Ordering::SeqCst);
                 tray::show_connection(&app, false);
+                settings::show_connection(&app, false);
                 app.state::<Arc<Files>>().lost();
                 app.state::<Chat>().lost(&app);
                 app.state::<Reply>().lost(&app);
@@ -220,6 +223,7 @@ async fn connect(
             online.store(true, Ordering::SeqCst);
             log::info!("connected to Natro at {url} with {} PC tools", tools.len());
             tray::show_connection(app, true);
+            settings::show_connection(app, true);
             tray::show_spending(app, &welcome);
             app.state::<Arc<Files>>().online(app);
         }
@@ -454,6 +458,8 @@ fn handle(
         }
         // Requests he made on the phone while the PC was off.
         "queued" => chat.queued(app, message["items"].as_array().map(Vec::as_slice).unwrap_or_default()),
+        // The Settings window's keys (keys.rs): the server's answers.
+        "keys" => app.state::<Keys>().answered(&message),
         kind if kind.starts_with("file_") => app.state::<Arc<Files>>().handle(app, &message),
         _ => {}
     }

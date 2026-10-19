@@ -32,14 +32,26 @@ tokio = { version = "1.53.2", features = ["sync", "time", "macros"] }
 # App icons for the dock's steps.
 png = "0.17"
 base64 = "0.23"
+# The Settings window's PIN: kept as a salted hash, as on the server (agent/natro_agent/keys.py).
+scrypt = { version = "0.11", default-features = false }
+getrandom = "0.3"
 
 # The same version Tauri and cpal use, so it's compiled once.
+# Checking the PIN takes 50 ms optimized; unoptimized, seconds.
+[profile.dev.package.scrypt]
+opt-level = 3
+[profile.dev.package.salsa20]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_System_Com",
+    "Win32_System_Registry",
     "Win32_UI_HiDpi",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",

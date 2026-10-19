@@ -22,8 +22,6 @@
 //! closes it, from any app (the dock's Esc first, if the dock is open too): Esc is
 //! taken from other apps meanwhile, and given back when it closes.
 
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
@@ -60,9 +58,8 @@ pub struct ReplyEvent {
 
 pub struct Reply {
     state: Mutex<State>,
-    /// The tray's "Show replies as text".
+    /// "Show replies as text" (settings.rs remembers it).
     on: AtomicBool,
-    off_marker: PathBuf,
     /// Moves on each time the box opens or closes; a late hide from before does nothing.
     turn: AtomicU64,
     /// Esc, shared with the dock: taken while the box is open.
@@ -122,12 +119,10 @@ impl State {
 }
 
 impl Reply {
-    pub fn new(home: &Path, keys: TemporaryKeys) -> Reply {
-        let off_marker = home.join("logs").join("reply-text.off");
+    pub fn new(on: bool, keys: TemporaryKeys) -> Reply {
         Reply {
             state: Mutex::default(),
-            on: AtomicBool::new(!off_marker.is_file()),
-            off_marker,
+            on: AtomicBool::new(on),
             turn: AtomicU64::new(0),
             keys,
         }
@@ -145,23 +140,9 @@ impl Reply {
         self.on.load(Ordering::SeqCst)
     }
 
-    /// The tray's "Show replies as text". Off, the box closes and stays closed (until asked for).
+    /// "Show replies as text" (settings.rs). Off, the box closes and stays closed (until asked for).
     pub fn set_on(&self, app: &AppHandle, on: bool) {
         self.on.store(on, Ordering::SeqCst);
-        let result = if on {
-            fs::remove_file(&self.off_marker).or_else(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => Ok(()),
-                _ => Err(e),
-            })
-        } else {
-            self.off_marker
-                .parent()
-                .map_or(Ok(()), fs::create_dir_all)
-                .and_then(|_| fs::write(&self.off_marker, b"off\n"))
-        };
-        if let Err(e) = result {
-            log::warn!("couldn't remember \"Show replies as text\": {e}");
-        }
         if !on {
             self.close(app);
         }

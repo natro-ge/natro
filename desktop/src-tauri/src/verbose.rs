@@ -1,4 +1,4 @@
-//! The tray's "Verbose" switch: while it's on, every request is kept for later testing.
+//! The "Verbose" switch (the tray, Settings): while it's on, every request is kept for later testing.
 //!
 //! Each request leaves two files in `logs/verbose/` (git-ignored, like all logs): the
 //! recording (`<time>_<id>.wav`, 16 kHz mono, as it was sent) and `<time>_<id>.json`
@@ -8,7 +8,7 @@
 //! was sent. The JSON is rewritten at every event, so a request that never finishes
 //! is still there. Typed requests (no recording) are kept the same way.
 //!
-//! The setting is the file `logs/verbose.on`, so it survives a restart.
+//! settings.rs remembers whether it's on.
 
 use std::collections::HashMap;
 use std::fs;
@@ -31,7 +31,6 @@ struct Entry {
 pub struct Verbose {
     on: AtomicBool,
     dir: PathBuf,
-    marker: PathBuf,
     open: Mutex<Open>,
 }
 
@@ -44,13 +43,10 @@ struct Open {
 }
 
 impl Verbose {
-    pub fn new(home: &std::path::Path) -> Verbose {
-        let logs = home.join("logs");
-        let marker = logs.join("verbose.on");
+    pub fn new(home: &std::path::Path, on: bool) -> Verbose {
         Verbose {
-            on: AtomicBool::new(marker.is_file()),
-            dir: logs.join("verbose"),
-            marker,
+            on: AtomicBool::new(on),
+            dir: home.join("logs").join("verbose"),
             open: Mutex::default(),
         }
     }
@@ -61,17 +57,6 @@ impl Verbose {
 
     pub fn set(&self, on: bool) {
         self.on.store(on, Ordering::SeqCst);
-        let result = if on {
-            fs::create_dir_all(&self.dir).and_then(|_| fs::write(&self.marker, b"on\n"))
-        } else {
-            fs::remove_file(&self.marker).or_else(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => Ok(()),
-                _ => Err(e),
-            })
-        };
-        if let Err(e) = result {
-            log::warn!("couldn't save the verbose setting: {e}");
-        }
         log::info!("verbose {}", if on { "on" } else { "off" });
     }
 
@@ -212,7 +197,7 @@ mod tests {
     #[test]
     fn off_keeps_nothing() {
         let home = temp("off_keeps_nothing");
-        let verbose = Verbose::new(&home);
+        let verbose = Verbose::new(&home, false);
         verbose.sent("r1", Some(&[1, 2, 3]), None, None);
         verbose.event("r1", "reply", json!({"text": "Hi"}));
         assert!(!home.join("logs").exists());
@@ -221,9 +206,8 @@ mod tests {
     #[test]
     fn a_request_is_kept_from_recording_to_reply() {
         let home = temp("a_request_is_kept_from_recording_to_reply");
-        let verbose = Verbose::new(&home);
+        let verbose = Verbose::new(&home, false);
         verbose.set(true);
-        assert!(Verbose::new(&home).is_on(), "the setting survives a restart");
         verbose.sent("r1", Some(&[100, -100, 7]), None, None);
         verbose.event("r1", "heard", json!({"georgian": "გამარჯობა", "english": "hello"}));
         verbose.event("r1", "step", json!({"text": "Opening Spotify"}));
@@ -242,7 +226,8 @@ mod tests {
         assert_eq!(record["events"].as_array().unwrap().len(), 4);
         assert_eq!(record["events"][2]["question"], "I'll force close Spotify.");
         verbose.set(false);
-        assert!(!Verbose::new(&home).is_on());
+        verbose.sent("r2", None, Some("hi"), None);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2, "off, nothing more is kept");
         let _ = fs::remove_dir_all(&home);
     }
 

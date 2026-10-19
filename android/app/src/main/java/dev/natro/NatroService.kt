@@ -29,7 +29,8 @@ import kotlinx.coroutines.launch
  * Android lets a service in the background use the microphone only as a "microphone" foreground
  * service, and lets it become one only while Natro may use the microphone (the app on screen, or
  * the assistant gesture). So it is one while the wake word is on or tested, or a request is being
- * recorded, and not otherwise.
+ * recorded, and not otherwise. The location is the same: the service holds it (for "how do I get
+ * there from here?" with the screen off) once he allows it, from when it starts on screen.
  */
 class NatroService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -53,7 +54,7 @@ class NatroService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == TURN_OFF || !Prefs.power.value) {
-            foreground(false)  // every start must be answered so, even one that stops it
+            foreground(false, location = false)  // every start must be answered so, even one that stops it
             Power.set(this, false)
             return START_NOT_STICKY
         }
@@ -67,6 +68,7 @@ class NatroService : Service() {
     override fun onDestroy() {
         instance = null
         mic.value = false
+        location.value = false
         wakePaused.value = false
         scope.cancel()
         ears?.stop()
@@ -75,10 +77,12 @@ class NatroService : Service() {
         super.onDestroy()
     }
 
-    /** Match the microphone, the wake word and the notification to what's wanted now. */
+    /** Match the microphone, the location, the wake word and the notification to what's wanted now. */
     fun refresh() {
         val wanted = wantMic()
-        if (wanted != hasMic) foreground(wanted)
+        // The location once he allows it, on screen (where Android hands it over).
+        val addLocation = !location.value && locationAllowed(this) && Natro.onScreen.value
+        if (wanted != hasMic || addLocation) foreground(wanted)
         val listen = (Prefs.wakeWord.value || WakeTest.running.value) && hasMic
         if (listen && ears == null) {
             ears = WakeListener(assets).also { it.start() }
@@ -92,18 +96,26 @@ class NatroService : Service() {
 
     private fun wantMic() = micAllowed(this) && (Prefs.wakeWord.value || WakeTest.running.value || Natro.recording.value)
 
-    private fun foreground(mic: Boolean) {
-        hasMic = mic && try {
-            ServiceCompat.startForeground(this, NOTIFICATION, notification(),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-            true
-        } catch (e: Exception) {  // Android won't hand over the microphone from the background right now
-            false
-        }
-        if (!hasMic) {
+    /** A foreground service with the microphone and the location if wanted, or as much of that as Android allows now. */
+    private fun foreground(mic: Boolean, location: Boolean = locationAllowed(this)) {
+        val microphone = if (mic) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
+        val place = if (location) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
+        // Both, else the microphone alone, else neither.
+        val held = listOf(microphone or place, microphone).filter { it != 0 }.distinct().firstOrNull { types ->
+            try {
+                ServiceCompat.startForeground(this, NOTIFICATION, notification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or types)
+                true
+            } catch (e: Exception) {  // Android won't hand them over from the background right now
+                false
+            }
+        } ?: 0
+        if (held == 0) {
             ServiceCompat.startForeground(this, NOTIFICATION, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         }
+        hasMic = held and ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE != 0
         Companion.mic.value = hasMic
+        Companion.location.value = held and ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION != 0
     }
 
     private fun notification(): Notification {
@@ -136,6 +148,9 @@ class NatroService : Service() {
         /** Whether the service holds the microphone (as a microphone foreground service). */
         val mic = MutableStateFlow(false)
 
+        /** Whether the service holds the location (as a location foreground service), so tools can read it in the background. */
+        val location = MutableStateFlow(false)
+
         /** "OK Natro" is on, but Android didn't let the microphone start in the background: it will once the app opens. */
         val wakePaused = MutableStateFlow(false)
 
@@ -153,5 +168,9 @@ class NatroService : Service() {
 
         fun micAllowed(context: Context) =
             context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+        /** The location allowed, precise or approximate. */
+        fun locationAllowed(context: Context) = listOf(Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION).any { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
     }
 }

@@ -71,7 +71,8 @@ Natro to device:
   The shared chat (chats.py): chat_entry, chat_all, chat_picture + bytes, chat_cleared. Requests kept
   for this device while it was offline (pending.py): queued. Reminders (reminders.py): reminder, and
   reminder_snoozed after the device's reminder_snooze. Background jobs (jobs.py): job_done. Watchers
-  (watchers.py): alert, watch_rules; from the device, notification_matched.
+  (watchers.py): alert, watch_rules; from the device, notification_matched. The Settings window's keys
+  (keys.py): keys, both ways.
   {"type": "error", "id": "r2", "message": "..."}
   {"type": "cancelled", "id": "r2"}                                 the request is stopped: any tool_call
                                                                     before this was still for it
@@ -124,6 +125,7 @@ from natro_agent.convert import Converter, available as converters
 from natro_agent.config import ROOT, load_env, timezone
 from natro_agent.files import Transfers
 from natro_agent.jobs import MAX_STEPS as JOB_STEPS, RUNNING, Jobs, lead, short
+from natro_agent.keys import RESTART_CODE, Keys
 from natro_agent.mcp_client import MCPServers
 from natro_agent.pending import PendingRequests
 from natro_agent.reminders import Reminders
@@ -142,6 +144,8 @@ JOB_NOTE_CHARS = 1500
 # Recordings are sent whole: 16 MB is over 8 minutes of audio.
 MAX_MESSAGE_BYTES = 16 * 2**20
 HELLO_SECONDS = 10
+# After saving new keys, Natro ends this long after her answer is sent, and systemd starts her again.
+RESTART_SECONDS = 1.5
 
 # The request Natro is handling in this task (his, or a background job's): its chat entry, and the device it
 # came from. Each request and job is a task of its own, so several can be under way at once.
@@ -282,10 +286,11 @@ class Server:
     pending.PendingRequests, for requests kept for an offline device (None: none kept). reminders: a
     reminders.Reminders (None: no reminders), whose clock (its run) the caller runs. jobs: a jobs.Jobs, for
     background jobs (None: none). watchers: a watchers.Watchers (None: none), whose checks (its run) the caller
-    runs. converter: a convert.Converter, for converting his files (None: none)."""
+    runs. converter: a convert.Converter, for converting his files (None: none). keys: a keys.Keys, for the
+    Settings window's keys (None: none)."""
 
     def __init__(self, agent, voice=None, token=None, transfers=None, pending=None, reminders=None, jobs=None,
-                 watchers=None, converter=None):
+                 watchers=None, converter=None, keys=None):
         self.agent = agent
         self.voice = voice
         self.token = token
@@ -314,6 +319,7 @@ class Server:
         if converter:
             agent.own_tools += converter.tools()
             converter.tell = self._tell
+        self.keys = keys
         self._used = {}  # device name -> when (monotonic) he last made a request on it
         self._questions = {}  # (device name, question id) -> its question_elsewhere, while Natro waits for an answer
         self._tasks = set()
@@ -390,6 +396,8 @@ class Server:
                                           str(data.get("title") or ""), str(data.get("text") or ""))
                 elif kind == "reminder_snooze" and self.reminders:
                     self._snooze(device, str(data.get("id", "")), data.get("minutes"))
+                elif kind == "keys" and self.keys:
+                    self._start(self._keys(device, data), running, None)
                 elif kind in ("queue_run", "queue_skip") and self.pending:
                     self._queued(device, kind, str(data.get("id", "")), running)
                 elif kind == "text":
@@ -685,6 +693,12 @@ class Server:
         else:
             device.post(type="reminder_snoozed", id=id, ok=True, text=f"Snoozed until {at:%H:%M}.")
 
+    async def _keys(self, device, data):
+        answer = await self.keys.handle(device.name, data)
+        device.post(type="keys", id=data.get("id"), **answer)
+        if answer.get("restarting"):
+            self.keys.restart()
+
     def _month(self):
         """This month's spending, for devices to show."""
         return {"spent": round(self.agent.ledger.spent, 4), "budget": self.agent.ledger.budget}
@@ -727,6 +741,7 @@ def make_voice():
 
 
 async def run():
+    """Natro, until she's stopped. True if she's to start again (her keys changed)."""
     load_env()
     servers = MCPServers()
     devices = {}  # the agent's, while connected
@@ -741,14 +756,23 @@ async def run():
         print("NATRO_DEVICE_TOKEN is not set: any device that can reach this address may connect.")
     transfers = Transfers(ROOT / "transfers", agent.devices)
     server = Server(agent, make_voice(), token, transfers, PendingRequests(ROOT / "pending.json", agent.devices),
-                    reminders, Jobs(), watchers, Converter(transfers))
+                    reminders, Jobs(), watchers, Converter(transfers),
+                    Keys(ROOT / ".env", ROOT / "tokens" / "settings-pin.json"))
     print(f"Converters: {', '.join(name for name, there in converters().items() if there) or 'none'}")
     host, port = os.environ.get("NATRO_LISTEN", DEFAULT_LISTEN).rsplit(":", 1)
+    restarting = False
     try:
         async with serve(server.handle, host, int(port), process_request=health,
                          max_size=MAX_MESSAGE_BYTES) as listener:
             if sys.platform != "win32":  # systemd stops the service with SIGTERM
                 asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, listener.close)
+
+            def restart():
+                nonlocal restarting
+                restarting = True
+                asyncio.get_running_loop().call_later(RESTART_SECONDS, listener.close)
+
+            server.keys.restart = restart
             print(f"Natro is listening on {host}:{port}")
             clocks = [asyncio.create_task(server.reminders.run()), asyncio.create_task(server.watchers.run())]
             try:
@@ -760,12 +784,15 @@ async def run():
                     clock.cancel()
     finally:
         await servers.close()
+    return restarting
 
 
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     try:
-        asyncio.run(run())
+        if asyncio.run(run()):
+            print(f"Natro's keys changed: she ends with {RESTART_CODE} for systemd to start her again.")
+            sys.exit(RESTART_CODE)
     except KeyboardInterrupt:
         pass
 

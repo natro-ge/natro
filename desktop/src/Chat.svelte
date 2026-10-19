@@ -8,6 +8,7 @@
   import { invoke } from '@tauri-apps/api/core'
   import { listen } from '@tauri-apps/api/event'
   import { onMount, tick } from 'svelte'
+  import { cubicIn } from 'svelte/easing'
   import { fade, scale } from 'svelte/transition'
   import { format } from './format'
   import { GLYPHS } from './glyphs'
@@ -64,18 +65,25 @@
 
   // Solid icons, on a 20 × 20 grid in the text's color.
   const ICONS = {
+    more: '<path class="line thick" d="M10 4.5v11M4.5 10h11"/>',
     newChat:
       '<path fill-rule="evenodd" d="M10 2.5c-4.7 0-8.5 3.1-8.5 7 0 2.1 1.1 4 2.9 5.3-.2 1.1-.8 2.1-1.6 2.8 1.8 0 3.4-.6 4.6-1.5.8.2 1.7.3 2.6.3 4.7 0 8.5-3.1 8.5-7s-3.8-6.9-8.5-6.9zm-.8 3.7h1.6v2.5h2.5v1.6h-2.5v2.5H9.2v-2.5H6.7V8.7h2.5z"/>',
     attach:
       '<path class="line" d="M13.5 6.5 8 12a1.8 1.8 0 0 0 2.5 2.5l6-6a3.5 3.5 0 0 0-5-5l-6.2 6.2a5.2 5.2 0 0 0 7.4 7.4L17 12.8"/>',
     picture:
       '<path fill-rule="evenodd" d="M4.5 3h11A2.5 2.5 0 0 1 18 5.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 2 14.5v-9A2.5 2.5 0 0 1 4.5 3zm9 4.2a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zM3.8 14.6l3.6-4.4a1 1 0 0 1 1.5 0l2.2 2.5 1.3-1.4a1 1 0 0 1 1.5 0l2.3 2.6v.6c0 .6-.4 1-1 1H4.8a1 1 0 0 1-1-.9z"/>',
+    settings:
+      '<path fill-rule="evenodd" d="M8.3 1.5h3.4l.5 2.4c.6.2 1.1.5 1.6.9l2.3-.8 1.7 2.9-1.8 1.6c.1.6.1 1.2 0 1.8l1.8 1.6-1.7 2.9-2.3-.8c-.5.4-1 .7-1.6.9l-.5 2.4H8.3l-.5-2.4c-.6-.2-1.1-.5-1.6-.9l-2.3.8-1.7-2.9 1.8-1.6a6 6 0 0 1 0-1.8L2.2 6.9l1.7-2.9 2.3.8c.5-.4 1-.7 1.6-.9zM10 12.8a2.8 2.8 0 1 0 0-5.6 2.8 2.8 0 0 0 0 5.6z"/>',
     mic: '<rect x="7" y="1.5" width="6" height="10.5" rx="3"/><path class="line" d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v3"/>',
     stop: '<rect x="5" y="5" width="10" height="10" rx="2.6"/>',
     send: '<path class="line thick" d="M10 15.5V5M5.6 9.2 10 4.8l4.4 4.4"/>',
   }
 
   let open = $state(false)
+  // The + menu: a new chat, files to the phone, a picture, Settings.
+  let menu = $state(false)
+  let menuBox: HTMLElement | undefined = $state()
+  let moreButton: HTMLButtonElement | undefined = $state()
   let exchanges = $state<Exchange[]>([])
   // Picture id -> data URL.
   let pictures = $state<Record<string, string>>({})
@@ -213,10 +221,47 @@
     noticeTimer = setTimeout(() => (notice = ''), NOTICE_MILLIS)
   }
 
+  /** The + opens the menu over it; opened from the keyboard, its first line takes the focus. */
+  async function toggleMenu(event: MouseEvent) {
+    menu = !menu
+    if (!menu) return focusField()
+    await tick()
+    if (event.detail === 0) menuBox?.querySelector('button')?.focus()
+  }
+
+  function closeMenu(refocus = true) {
+    if (!menu) return
+    menu = false
+    if (refocus) focusField()
+  }
+
+  /** A line of the menu: it closes, then does its thing. */
+  function choose(action: () => void) {
+    closeMenu(false)
+    action()
+  }
+
+  /** Up and down move between the menu's lines. */
+  function menuKeydown(event: KeyboardEvent) {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+    event.preventDefault()
+    const lines = [...(menuBox?.querySelectorAll('button') ?? [])]
+    const at = lines.indexOf(document.activeElement as HTMLButtonElement)
+    const step = event.key === 'ArrowDown' ? 1 : -1
+    lines[(at + step + lines.length) % lines.length]?.focus()
+  }
+
+  /** A press anywhere but the menu and its + closes the menu. */
+  function pointerdown(event: PointerEvent) {
+    const target = event.target as Node
+    if (menu && !menuBox?.contains(target) && !moreButton?.contains(target)) closeMenu(false)
+  }
+
   function keydown(event: KeyboardEvent) {
     if (event.key === 'Escape') {
       event.preventDefault()
-      invoke('chat_close')
+      if (menu) closeMenu()
+      else invoke('chat_close')
     }
   }
 
@@ -287,6 +332,7 @@
             return show(payload)
           case 'hide':
             open = false
+            menu = false
             listening = false
             notice = ''
             return
@@ -329,7 +375,12 @@
   })
 </script>
 
-<svelte:window onkeydown={keydown} onfocus={() => open && !listening && focusField()} />
+<svelte:window
+  onkeydown={keydown}
+  onpointerdown={pointerdown}
+  onfocus={() => open && !listening && !menu && focusField()}
+  onblur={() => closeMenu(false)}
+/>
 
 <main class="stage" class:open class:listening bind:this={stage}>
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
@@ -425,6 +476,14 @@
     {/each}
   </div>
 
+  {#snippet line(at: number, label: string, hint: string, icon: string, action: () => void)}
+    <button class="item" role="menuitem" style:--at={at} onclick={() => choose(action)}>
+      <svg viewBox="0 0 20 20" aria-hidden="true">{@html icon}</svg>
+      <span>{label}</span>
+      {#if hint}<span class="hint">{hint}</span>{/if}
+    </button>
+  {/snippet}
+
   {#snippet shot(id: string)}
     {#if pictures[id]}
       <button class="shot" title="Open full size" onclick={() => invoke('chat_open_picture', { id })}>
@@ -439,18 +498,40 @@
     {#if notice}
       <div class="notice" transition:fade={{ duration: 180 }}>{notice}</div>
     {/if}
+    {#if menu}
+      <!-- svelte-ignore a11y_interactive_supports_focus -->
+      <div
+        class="menu"
+        role="menu"
+        tabindex="-1"
+        data-hit
+        bind:this={menuBox}
+        onkeydown={menuKeydown}
+        out:scale={{ start: 0.94, duration: 140, easing: cubicIn }}
+      >
+        <div class="sheen"></div>
+        {@render line(0, 'New chat', '', ICONS.newChat, newChat)}
+        {@render line(1, 'Send files to the phone', '', ICONS.attach, () => invoke('chat_attach'))}
+        {@render line(2, 'Send a picture', 'or paste one', ICONS.picture, () => picker?.click())}
+        <span class="divider" style:--at={3}></span>
+        {@render line(3, 'Settings', '', ICONS.settings, () => invoke('settings_open'))}
+      </div>
+    {/if}
     <div class="bar" data-hit>
       <div class="sheen"></div>
       <span class="blob-dot"></span>
       <div class="row">
-        <button class="tool" title="New chat" aria-label="New chat" onclick={newChat}>
-          <svg viewBox="0 0 20 20" aria-hidden="true">{@html ICONS.newChat}</svg>
-        </button>
-        <button class="tool" title="Send files to the phone" aria-label="Send files to the phone" onclick={() => invoke('chat_attach')}>
-          <svg viewBox="0 0 20 20" aria-hidden="true">{@html ICONS.attach}</svg>
-        </button>
-        <button class="tool" title="Send a picture into the chat (or paste one)" aria-label="Send a picture" onclick={() => picker?.click()}>
-          <svg viewBox="0 0 20 20" aria-hidden="true">{@html ICONS.picture}</svg>
+        <button
+          class="tool more"
+          class:on={menu}
+          title={menu ? 'Close' : 'More'}
+          aria-label="More: new chat, files, a picture, settings"
+          aria-haspopup="menu"
+          aria-expanded={menu}
+          bind:this={moreButton}
+          onclick={toggleMenu}
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true">{@html ICONS.more}</svg>
         </button>
         <input class="picker" type="file" accept="image/*" multiple bind:this={picker} onchange={picked} />
         {#if listening}
@@ -1056,6 +1137,100 @@
     outline-offset: 1px;
   }
 
+  /* The +: turns into a ✕ while its menu is open. */
+  .tool svg :global(.thick) {
+    stroke-width: 2.2;
+  }
+  .more svg {
+    transition: rotate 360ms var(--spring);
+  }
+  .more.on {
+    background: var(--decline);
+    opacity: 1;
+  }
+  .more.on svg {
+    rotate: 45deg;
+  }
+
+  /* Its menu: the box's glass, over the box's left end, growing out of the + with a little spring.
+     Its corner sits over the + (the box's padding 8, the button 36, the 2 + 6 above the box). */
+  .menu {
+    position: absolute;
+    z-index: 1; /* over the bubbles */
+    left: 0;
+    bottom: calc(100% + 2px);
+    display: flex;
+    flex-direction: column;
+    min-width: 240px;
+    padding: 6px;
+    border-radius: 18px;
+    box-shadow: var(--shadow);
+    outline: none;
+    transform-origin: 26px calc(100% + 34px);
+    animation: menu-in 420ms var(--spring) both;
+  }
+  .item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    height: 38px;
+    margin: 0;
+    padding: 0 12px 0 10px;
+    border: none;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 13.5px;
+    font-weight: 500;
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+    animation: item-in 340ms var(--spring) both;
+    animation-delay: calc(50ms + var(--at) * 35ms);
+    transition:
+      background 120ms ease,
+      scale 120ms ease;
+  }
+  .item:hover,
+  .item:focus-visible {
+    background: var(--decline);
+    outline: none;
+  }
+  .item:active {
+    scale: 0.98;
+  }
+  .item svg {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    fill: currentColor;
+    opacity: 0.78;
+  }
+  .item svg :global(.line) {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.9;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .item .hint {
+    margin-left: auto;
+    padding-left: 14px;
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--text-dim);
+  }
+  .divider {
+    position: relative;
+    height: 1px;
+    margin: 4px 10px;
+    background: var(--decline);
+    animation: item-in 340ms var(--spring) both;
+    animation-delay: calc(50ms + var(--at) * 35ms);
+  }
+
   /* A word over the box for a moment ("Natro is offline"). */
   .notice {
     position: absolute;
@@ -1076,6 +1251,21 @@
     from {
       opacity: 0;
       transform: translateY(10px) scale(0.92);
+    }
+  }
+  @keyframes menu-in {
+    from {
+      opacity: 0;
+      transform: scale(0.6);
+    }
+    40% {
+      opacity: 1;
+    }
+  }
+  @keyframes item-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
     }
   }
   @keyframes bounce {
@@ -1129,7 +1319,10 @@
     .live::before,
     .question.waiting .orb::before,
     .shimmer,
-    .text :global(.caret) {
+    .text :global(.caret),
+    .menu,
+    .item,
+    .divider {
       animation: none;
     }
   }

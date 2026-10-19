@@ -1,13 +1,20 @@
 package dev.natro
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.AlarmManager
+import android.app.KeyguardManager
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationManager
+import android.location.LocationRequest
 import android.net.Uri
+import android.os.CancellationSignal
 import android.os.Environment
+import android.os.SystemClock
 import android.provider.ContactsContract.CommonDataKinds.Phone
 import android.provider.MediaStore
 import android.provider.Telephony
@@ -23,12 +30,15 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * The phone's tools, as Natro's brain sees them (sent in the hello; see agent/natro_agent/server.py).
  *
  * Apps, alarms, media, flashlight and volume are neither personal nor risky, so the free Gemini
- * tier may use them too. Notifications, contacts, texts, files and the screen are personal (Claude only);
+ * tier may use them too. Notifications, contacts, texts, files, the screen, where the phone is and
+ * the routes it opens in Maps are personal (Claude only);
  * calling, texting and risky taps need the owner's yes. Android lets an app open other apps (and
  * the clock app, calls...) from the background only while it is the phone's assistant or its
  * accessibility service is on; otherwise only while it is on screen.
@@ -107,6 +117,16 @@ class PhoneTools(private val context: Context) {
         ), listOf(), personal = true) {
             searchFiles(it.optString("words"), it.optString("kind", "any"), it.optInt("count", 10))
         },
+
+        Tool("location", "Where the phone is now, as \"lat,lng\" with how near and how fresh that is: where he is, when " +
+            "he asks from the phone \"from here\" (give it as the origin of travel_time, travel_routes or travel_plan).",
+            props(), listOf(), personal = true) { location() },
+        Tool("open_maps", "Open a Google Maps link in the Maps app on the phone: the directions that travel_routes and " +
+            "travel_plan end with, when he wants to follow them (\"open it in Maps\"). navigate: start navigating to " +
+            "its destination from where he is (\"navigate me there\", \"take me there\").", props(
+            "link" to string("The Google Maps link (https://www.google.com/maps/...)."),
+            "navigate" to JSONObject().put("type", "boolean").put("description", "Start navigation (default false)."),
+        ), listOf("link"), personal = true, final = true) { openMaps(it.getString("link"), it.optBoolean("navigate")) },
 
         Tool("screen", "Read what's on the phone's screen now: numbered elements to tap, type into or scroll.",
             props(), listOf(), personal = true) { screen().describe() },
@@ -285,6 +305,64 @@ class PhoneTools(private val context: Context) {
         return ifAllowed("Opened $name.")
     }
 
+    private fun location(): String {
+        if (!NatroService.locationAllowed(context)) {
+            throw ToolFailure("Natro isn't allowed to see the phone's location yet: he can allow it in the Natro app.")
+        }
+        val places = context.getSystemService(LocationManager::class.java)
+        if (!places.isLocationEnabled) throw ToolFailure("The phone's location is off: he can turn it on in quick settings.")
+        val found = currentPlace(places) ?: lastPlace(places) ?: throw ToolFailure(
+            if (NatroService.location.value || Natro.onScreen.value) "The phone couldn't find where it is just now."
+            else "Android doesn't let Natro see the location in the background until the Natro app has been opened " +
+                "since the phone started: he can open it and ask again.")
+        val age = (SystemClock.elapsedRealtimeNanos() - found.elapsedRealtimeNanos) / 1_000_000_000
+        return Names.location(found.latitude, found.longitude, if (found.hasAccuracy()) found.accuracy else null, age)
+    }
+
+    /** Providers to ask, best first (GPS only with the precise location allowed). */
+    private fun providers(places: LocationManager): List<String> {
+        val precise = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        return listOfNotNull(LocationManager.FUSED_PROVIDER, LocationManager.GPS_PROVIDER.takeIf { precise },
+            LocationManager.NETWORK_PROVIDER).filter { places.isProviderEnabled(it) }
+    }
+
+    /** A fresh fix from the best provider that's on; null if none comes in time (or Android holds it back). */
+    @SuppressLint("MissingPermission")  // location() checks it
+    private fun currentPlace(places: LocationManager): Location? {
+        val provider = providers(places).firstOrNull() ?: return null
+        val request = LocationRequest.Builder(0).setQuality(LocationRequest.QUALITY_HIGH_ACCURACY)
+            .setDurationMillis(LOCATION_MILLIS).build()
+        val cancel = CancellationSignal()
+        val done = CountDownLatch(1)
+        var found: Location? = null
+        places.getCurrentLocation(provider, request, cancel, context.mainExecutor) {
+            found = it
+            done.countDown()
+        }
+        if (!done.await(LOCATION_MILLIS + 1000, TimeUnit.MILLISECONDS)) cancel.cancel()
+        return found
+    }
+
+    /** The newest fix any provider still has, if it's recent. */
+    @SuppressLint("MissingPermission")  // location() checks it
+    private fun lastPlace(places: LocationManager): Location? = providers(places)
+        .mapNotNull { runCatching { places.getLastKnownLocation(it) }.getOrNull() }
+        .maxByOrNull { it.elapsedRealtimeNanos }
+        ?.takeIf { SystemClock.elapsedRealtimeNanos() - it.elapsedRealtimeNanos < LAST_PLACE_MILLIS * 1_000_000 }
+
+    private fun openMaps(link: String, navigate: Boolean): String {
+        val view = Intent(Intent.ACTION_VIEW, Uri.parse(Names.mapsLink(link, navigate)))
+        try {
+            context.startActivity(Intent(view).setPackage(MAPS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (e: ActivityNotFoundException) {  // no Maps app: the browser shows it
+            start(view, "open Google Maps links")
+        }
+        val done = ifAllowed(if (navigate) "Started the way there in Google Maps." else "Opened it in Google Maps.")
+        // Behind the lock screen Maps waits, and doesn't navigate.
+        val locked = context.getSystemService(KeyguardManager::class.java).isKeyguardLocked
+        return if (locked) "$done The phone is locked: Maps is behind the lock screen until he unlocks it." else done
+    }
+
     private fun setAlarm(time: String, label: String, days: JSONArray?): String {
         val (hour, minute) = Names.time(time)
         val intent = Intent(AlarmClock.ACTION_SET_ALARM)
@@ -350,6 +428,10 @@ class PhoneTools(private val context: Context) {
     }
 
     private companion object {
+        const val MAPS = "com.google.android.apps.maps"
+        // How long to wait for a fresh fix, and how old a fix may be when none comes.
+        const val LOCATION_MILLIS = 12_000L
+        const val LAST_PLACE_MILLIS = 10 * 60_000L
         val DAYS = mapOf(
             "mon" to Calendar.MONDAY, "tue" to Calendar.TUESDAY, "wed" to Calendar.WEDNESDAY,
             "thu" to Calendar.THURSDAY, "fri" to Calendar.FRIDAY, "sat" to Calendar.SATURDAY, "sun" to Calendar.SUNDAY,

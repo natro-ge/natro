@@ -58,7 +58,12 @@ and your online accounts, and answers on screen and out loud, in English.
   bank and payment sites are read only.
 - **Getting places:** "how long to the airport?", "when should I leave for the
   dentist?", by car with traffic or by public transport with its lines
-  (Google's Routes API).
+  (Google's Routes API). "What are my options?" compares up to five ways,
+  each step by step: the walks, lines, stops, times, changes and fare;
+  fewer changes, less walking, or there by a set time. Your own route, leg by
+  leg: "the metro to Station Square, then the bus to the airport", each leg
+  leaving when you get there. With Google Maps links to follow it on the
+  phone.
 - **File conversion:** "make the newest PDF in my Downloads a Word file",
   "this video as an MP3". The server converts it (LibreOffice, pandoc,
   Pillow, ffmpeg) and the result lands in Downloads; nothing is kept, and no
@@ -172,10 +177,11 @@ Natro is in daily use and grows a piece at a time. Where it stands
   to answer her questions; the chat (Ctrl+Space), a glass box rising from the
   bottom with the conversation above it as bubbles, typed or spoken, answered
   as text; files to and from the phone (Explorer's Send to, the tray); a
-  Verbose switch that keeps each request for testing.
-- Next: the PC tools and Kokoro in Rust (no Python helper), the wake word, a
-  better end-of-speech detector (Silero VAD) and starting at login. Then it
-  replaces `pc/`.
+  Verbose switch that keeps each request for testing; a Settings window with
+  the switches (Start with Windows among them), the keybinds and the API
+  keys behind a PIN, to change them without opening the server.
+- Next: the PC tools and Kokoro in Rust (no Python helper), the wake word and
+  a better end-of-speech detector (Silero VAD). Then it replaces `pc/`.
 
 **Later:** a Georgian voice for her replies, a more playful persona, and
 deeper app control (the browser through Playwright, for one).
@@ -217,7 +223,7 @@ model, the time and the cost.
 no personal data to Gemini's free tier; `TAVILY_API_KEY`
 ([tavily.com](https://tavily.com), 1,000 free searches a month) turns on web
 search. `GOOGLE_MAPS_API_KEY` (a Google Cloud key for the Routes API) turns on
-travel time, from `NATRO_HOME_ADDRESS` by `NATRO_TRAVEL_MODE` (drive, transit,
+travel time and routes, from `NATRO_HOME_ADDRESS` by `NATRO_TRAVEL_MODE` (drive, transit,
 walk or bicycle). The weather needs no key; `NATRO_WEATHER_PLACE` is where you live
 (default Tbilisi).
 

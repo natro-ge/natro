@@ -150,6 +150,9 @@ def _natro_step(tool, args):
         "watch": ("Watching for it", "notifications"),
         "travel_time": (f"Route to {short(args.get('destination'), 16)}" if args.get("destination") else
                         "Checking the route", "web"),
+        "travel_routes": (f"Ways to {short(args.get('destination'), 16)}" if args.get("destination") else
+                          "Comparing routes", "web"),
+        "travel_plan": ("Planning the trip", "web"),
         "history_search": (f"Looking back for {words}" if words else "Looking back", "memory"),
         "web_page": (f"Reading {short(domain, 18)}" if domain else "Reading a page", "web"),
         "watchers_list": ("Checking watchers", "notifications"),

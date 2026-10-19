@@ -13,6 +13,10 @@
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-permission android:name="android.permission.READ_SMS" />
+    <!-- Where the phone is, for trips "from here"; the service holds it as it holds the microphone. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <!-- The bubble, over other apps. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- Connecting again after the phone restarts, if Natro is on. -->
@@ -32,6 +36,8 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <!-- Google Maps, for the routes Natro opens in it. -->
+        <package android:name="com.google.android.apps.maps" />
         <!-- Text-to-speech engines, for spoken replies. -->
         <intent>
             <action android:name="android.intent.action.TTS_SERVICE" />
@@ -81,7 +87,7 @@
         <service
             android:name=".NatroService"
             android:exported="false"
-            android:foregroundServiceType="specialUse|microphone">
+            android:foregroundServiceType="specialUse|microphone|location">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Keeps the connection to the owner's personal assistant server open." />

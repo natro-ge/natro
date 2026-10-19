@@ -3,9 +3,10 @@
 //!
 //! Ctrl+Space opens it: a blob rises from the bottom of the screen and widens
 //! into the box. Enter sends (Shift+Enter starts a new line), and her reply is
-//! written into a bubble as it comes, not spoken. Beside the text: a new chat
-//! (the bubbles go), files to the phone, the microphone (tap it and talk; it
-//! sends when you stop, or tap it again), send. What's asked of the dock
+//! written into a bubble as it comes, not spoken. Beside the text: a + whose
+//! menu has a new chat (the bubbles go), files to the phone, a picture and
+//! Settings; the microphone (tap it and talk; it sends when you stop, or tap
+//! it again); send. What's asked of the dock
 //! (Ctrl+Alt+Space) shows here too, as she speaks it. The bubbles stay until a
 //! new chat or Natro ends.
 //!
