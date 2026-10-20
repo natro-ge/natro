@@ -9,7 +9,7 @@ import pytest
 from conftest import run
 from natro_agent.config import timezone
 from natro_agent.google_tools import CALENDAR
-from natro_agent.tools import ToolError
+from natro_agent.tools import Tool, ToolError
 from natro_agent.travel import URL, Travel, minutes_words
 from test_watchers import Shown, event, make as make_watchers
 
@@ -327,22 +327,73 @@ def watching(tmp_path, events, travel, now=NOW):
     return watchers
 
 
-def test_a_meeting_further_away_says_when_to_leave_instead(tmp_path):
-    start = NOW + timedelta(minutes=40)
+def test_a_meeting_further_away_gives_the_heads_up_before_he_has_to_leave(tmp_path):
+    start = NOW + timedelta(minutes=60)
     travel, routes = make(DRIVE)  # 25 minutes
     watchers = watching(tmp_path, [event("e1", start, location="City clinic")], travel)
     run(watchers.check())
-    assert watchers.deliver.alerts == []  # leave at 15:10 (25 minutes and 5 to spare before 15:40)
-    watchers.now = lambda: NOW + timedelta(minutes=10)
+    assert watchers.deliver.alerts == []  # leave at 15:30 (25 minutes and 5 to spare before 16:00)
+    watchers.now = lambda: NOW + timedelta(minutes=20)  # the heads-up's 10 minutes before that
     run(watchers.check())
     alert, = watchers.deliver.alerts
-    assert alert["text"] == ("Time to leave for Dentist at City clinic: about 25 minutes by car from home; it starts "
-                             "at 15:40.")
+    assert alert["text"] == ("Leave in 10 minutes for Dentist at City clinic: about 25 minutes by car from home; it "
+                             "starts at 16:00.")
     assert alert["urgent"]
-    watchers.now = lambda: NOW + timedelta(minutes=31)  # 9 minutes before: no heads-up as well
+    watchers.now = lambda: NOW + timedelta(minutes=51)  # 9 minutes before: no heads-up as well
     run(watchers.check())
     assert len(watchers.deliver.alerts) == 1
-    assert len(routes.requests) == 1  # looked up once (again only after half an hour)
+    assert len(routes.requests) == 1  # looked up once (again only after a while)
+
+
+def test_seen_after_the_time_to_leave_it_says_so(tmp_path):
+    travel, _ = make(DRIVE)
+    watchers = watching(tmp_path, [event("e1", NOW + timedelta(minutes=25), location="City clinic")], travel)
+    run(watchers.check())
+    assert [alert["text"] for alert in watchers.deliver.alerts] == [
+        "Time to leave for Dentist at City clinic: about 25 minutes by car from home; it starts at 15:25."]
+
+
+class Phone:
+    """His phone, connected, as the watchers see it: its location tool says where it is (or fails)."""
+
+    name = "phone"
+
+    def __init__(self, where="41.71520,44.76900 (within 12 m, just now)"):
+        self.where = where
+        self.asked = 0
+
+    def tools(self):
+        async def location(args):
+            self.asked += 1
+            if isinstance(self.where, Exception):
+                raise self.where
+            return self.where
+        return [Tool("phone_location", "Where the phone is.", {"type": "object"}, location, "phone", personal=True)]
+
+
+def test_the_trip_starts_where_his_phone_is(tmp_path):
+    travel, routes = make(DRIVE, home="")  # no home address needed
+    phone = Phone()
+    watchers = watching(tmp_path, [event("e1", NOW + timedelta(minutes=40), location="City clinic"),
+                                   event("e2", NOW + timedelta(minutes=50), summary="Padel", location="Vake")],
+                        travel)
+    watchers.devices["phone"] = phone
+    run(watchers.check())
+    assert [alert["text"] for alert in watchers.deliver.alerts] == [
+        "Leave in 10 minutes for Dentist at City clinic: about 25 minutes by car from where you are; it starts at "
+        "15:40."]
+    assert all(body["origin"] == {"location": {"latLng": {"latitude": 41.7152, "longitude": 44.769}}}
+               for _, body, _ in routes.requests)
+    assert phone.asked == 1  # once for both meetings
+
+
+def test_without_the_phones_location_the_trip_starts_at_home(tmp_path):
+    travel, routes = make(DRIVE)
+    watchers = watching(tmp_path, [event("e1", NOW + timedelta(minutes=40), location="City clinic")], travel)
+    watchers.devices["phone"] = Phone(ToolError("The phone's location is off."))
+    run(watchers.check())
+    assert watchers.deliver.alerts[0]["text"].endswith("by car from home; it starts at 15:40.")
+    assert routes.requests[0][1]["origin"] == {"address": HOME}
 
 
 def test_online_close_or_unknown_places_get_the_heads_up(tmp_path):
@@ -366,3 +417,11 @@ def test_without_a_home_address_only_the_heads_up(tmp_path):
     run(watchers.check())
     assert [alert["text"] for alert in watchers.deliver.alerts] == ["Dentist at City clinic in 9 minutes."]
     assert routes.requests == []
+
+
+def test_home_is_his_home_address():
+    travel, routes = make(DRIVE)
+    ask(travel, destination="home", origin="Didube metro station, Tbilisi")
+    ask(travel, destination="Tbilisi airport", origin="My home")
+    assert routes.requests[0][1]["destination"] == {"address": HOME}
+    assert routes.requests[1][1]["origin"] == {"address": HOME}

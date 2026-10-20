@@ -293,6 +293,29 @@
     text-underline-offset: 2px;
     cursor: pointer;
   }
+  /* A message from the phone's Reply (reply.rs): a small button after its words. */
+  .body :global(a[href^='natro:reply/']) {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 12px;
+    line-height: 24px;
+    border-radius: 12px;
+    font-size: 12.5px;
+    font-weight: 600;
+    text-decoration: none;
+    background: var(--decline);
+    color: var(--text);
+    transition:
+      background 150ms ease,
+      scale 120ms ease;
+  }
+  .body :global(a[href^='natro:reply/']:hover) {
+    background: var(--green);
+    color: #fff;
+  }
+  .body :global(a[href^='natro:reply/']:active) {
+    scale: 0.95;
+  }
   /* Yes and No to Natro's question on the phone (reply.rs): buttons, as in the chat. */
   .body :global(a[href^='natro:answer/']) {
     display: inline-block;

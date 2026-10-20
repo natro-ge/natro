@@ -76,3 +76,16 @@ Also: SSH keys only, automatic security updates (`unattended-upgrades`).
 In the PC's `.env`: `NATRO_SERVER=ws://<tailscale ip>:8700` and the token. Then
 `python -m natro_pc.app --wake`. Each reply shows the time from the end of your
 request to the English and to the reply, and its cost.
+
+## 8. The dashboard
+
+Natro serves a read-only dashboard beside the WebSocket: `http://<tailscale ip>:8700/`
+(it goes on to `/dashboard`) on any device in the tailnet, the phone too. It shows this
+month's spending against the budget, requests, models, tokens, tools, model switches and
+errors, the devices, the VPS's CPU, memory and disk, the reminders, routines, watchers,
+jobs and backups, and the log with search and a live tail. Nothing on it changes Natro,
+and it loads nothing from anywhere else (`agent/natro_agent/dashboard.py`, `web/`).
+
+It answers only requests addressed to Natro's own address or localhost, so another web
+page can't read it through a name of its own. To open it by another name (a MagicDNS
+name), add that name to `NATRO_DASHBOARD_HOSTS` in `.env`.

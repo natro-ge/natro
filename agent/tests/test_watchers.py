@@ -267,7 +267,7 @@ def test_an_alert_shows_everywhere_and_an_urgent_one_is_spoken_where_he_is(tmp_p
     assert entry["alert"] and not entry["reminder"] and entry["device"] == "natro" and entry["asked"] == ""
     # Claude hears of it with the next request, and answers that one.
     assert agent.private_notes == ["you told him: \"Bank of Georgia: Transfer: You received 500 GEL.\""]
-    assert agent.claude_next
+    assert agent.personal_next
 
 
 def test_a_meeting_heads_up_says_nothing_to_claude(tmp_path):
@@ -281,4 +281,4 @@ def test_a_meeting_heads_up_says_nothing_to_claude(tmp_path):
 
     shown = run(devices(server, alert_hello("phone", "phone"), play=play))
     assert shown["speak"] and shown["kind"] == "meetings"
-    assert agent.private_notes == [] and not agent.claude_next
+    assert agent.private_notes == [] and not agent.personal_next

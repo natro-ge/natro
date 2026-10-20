@@ -11,7 +11,6 @@ from natro_agent.config import timezone
 from natro_agent.reminders import LATE_HOURS, Reminders, from_ms, repeat_words
 from natro_agent.server import Server
 from natro_agent.tools import ToolError
-from test_routing import FakeGeminiClient, gemini_says
 from test_shared_chat import devices, hello
 
 # A Saturday afternoon where he is.
@@ -258,8 +257,8 @@ def test_the_clock_runs_by_itself(tmp_path):
 
 # --- Delivery, through the server ---------------------------------------------------------------
 
-def server_with_reminders(tmp_path, client=None, gemini=None):
-    agent = Agent(client=client or FakeClient(), gemini=gemini)
+def server_with_reminders(tmp_path, client=None):
+    agent = Agent(client=client or FakeClient())
     reminders = Reminders(tmp_path / "reminders.json", agent.devices)
     return Server(agent, reminders=reminders), reminders
 
@@ -353,22 +352,17 @@ def test_snooze_from_the_phone(tmp_path):
     assert item["text"] == "Time to call Nino." and item["from"] == "snooze"
 
 
-def test_only_claude_hears_what_the_reminder_said(tmp_path):
+def test_the_next_request_hears_what_the_reminder_said(tmp_path):
     claude = FakeClient(message(text("Sure.")))
-    gemini = FakeGeminiClient(gemini_says("Paris."))
-    from natro_agent.gemini import Gemini
-    server, reminders = server_with_reminders(tmp_path, claude, Gemini(client=gemini))
+    server, reminders = server_with_reminders(tmp_path, claude)
 
     async def play(phone):
         await due_now(reminders, "Take your pills.")
         await phone.next("reminder")
-        await phone.send(type="text", id="r1", text="what's the capital of France")
-        await phone.next("reply")
-        await phone.send(type="text", id="r2", text="remind me again in an hour")
+        await phone.send(type="text", id="r1", text="remind me again in an hour")
         return await phone.next("reply")
 
     run(devices(server, reminder_hello("phone", "phone"), play=play))
-    assert gemini.requests and "pills" not in repr(gemini.requests)
     header = claude.requests[0]["messages"][-1]["content"].splitlines()[0]
     assert "you reminded him at" in header and "\"Take your pills.\"" in header
     assert server.agent.private_notes == []

@@ -1,14 +1,17 @@
 """The chat both devices show, pictures in it, and requests kept for a device that's offline."""
 import asyncio
 import base64
+import io
 import json
+import time
 
+from PIL import Image
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
-from conftest import FakeClient, message, run, text, tool_use
+from conftest import FakeClient, Owner, message, run, text, tool_use
 from natro_agent import chats
-from natro_agent.agent import Agent
+from natro_agent.agent import PICTURE_MINUTES, Agent
 from natro_agent.pending import PendingRequests
 from natro_agent.server import Server, health
 
@@ -103,10 +106,23 @@ def test_new_chat_clears_both_and_starts_a_new_conversation():
     assert server.chat.entries == {} and server.agent.session is None
 
 
-def test_a_picture_he_sends_shows_on_the_other_device_and_natro_only_hears_of_it():
-    client = FakeClient(message(text("Nice.")))
+def jpeg_of(width, height):
+    out = io.BytesIO()
+    Image.new("RGB", (width, height), "orange").save(out, "JPEG")
+    return out.getvalue()
+
+
+def picture_in(block):
+    assert block["type"] == "image" and block["source"]["type"] == "base64"
+    data = base64.b64decode(block["source"]["data"])
+    with Image.open(io.BytesIO(data)) as picture:
+        return block["source"]["media_type"], picture.size, data
+
+
+def test_a_picture_he_sends_shows_on_the_other_device_and_natro_sees_it_with_his_next_request():
+    client = FakeClient(message(text("An orange square.")), message(text("Yes.")))
     server = Server(Agent(client=client))
-    jpeg = b"\xff\xd8\xff\xe0" + b"x" * 1000
+    jpeg = jpeg_of(400, 300)
 
     async def play(pc, phone):
         await phone.send(type="picture", id="p1", mime="image/jpeg", name="cat.jpg")
@@ -114,17 +130,41 @@ def test_a_picture_he_sends_shows_on_the_other_device_and_natro_only_hears_of_it
         shown = await pc.next("chat_picture")
         data = await asyncio.wait_for(pc.ws.recv(), 5)
         entry = (await pc.next("chat_entry"))["entry"]
-        await phone.send(type="text", id="r2", text="do you like it?")
+        await phone.send(type="text", id="r2", text="what's this?")
+        await phone.next("reply")
+        await phone.send(type="text", id="r3", text="is it square?")
         await phone.next("reply")
         return shown, data, entry
 
     shown, data, entry = run(devices(server, hello("pc", "PC"), hello("phone", "phone"), play=play))
     assert shown["mime"] == "image/jpeg" and shown["name"] == "cat.jpg" and data == jpeg
     assert entry["sent"] and entry["device"] == "phone" and entry["pictures"] == [shown["id"]]
-    request = client.requests[0]["messages"][0]["content"]
-    request = request if isinstance(request, str) else json.dumps(request)
-    assert "he sent a picture into the chat from his phone" in request and "cat.jpg" not in request
-    assert "\\xff" not in request and "image" not in json.dumps(client.requests[0]["messages"])
+    # The picture first, then his words, whose first line says it's there.
+    picture, words = client.requests[0]["messages"][0]["content"]
+    assert picture_in(picture) == ("image/jpeg", (400, 300), jpeg)  # small enough: as it was
+    assert "he sent a picture into the chat from his phone just now" in words["text"].splitlines()[0]
+    assert words["text"].endswith("what's this?") and "cat.jpg" not in words["text"]
+    # The follow-up has it in the conversation, but doesn't send it again.
+    follow_up = client.requests[1]["messages"]
+    assert follow_up[0]["content"][0] == picture and isinstance(follow_up[-1]["content"], str)
+
+
+def test_a_big_picture_is_made_small_and_one_sent_long_ago_is_left_out(monkeypatch):
+    client = FakeClient(message(text("A big one.")), message(text("Hello.")))
+    agent = Agent(client=client)
+    out = io.BytesIO()
+    Image.new("RGBA", (4000, 1000), (0, 0, 255, 0)).save(out, "PNG")
+    assert agent.picture_sent("image/png", out.getvalue(), "PC")
+    assert not agent.picture_sent("image/png", b"not a picture", "PC")  # Claude would refuse the request
+    run(agent.respond("what's in it?", Owner()))
+    picture, words = client.requests[0]["messages"][0]["content"]
+    mime, size, _ = picture_in(picture)
+    assert mime == "image/jpeg" and size == (1568, 392) and "from his PC" in words["text"]
+    agent.picture_sent("image/jpeg", jpeg_of(10, 10), "PC")
+    later = time.monotonic() + PICTURE_MINUTES * 60 + 1
+    monkeypatch.setattr(time, "monotonic", lambda: later)
+    run(agent.respond("hello", Owner()))
+    assert isinstance(client.requests[1]["messages"][-1]["content"], str)
 
 
 def test_not_a_picture_is_refused():
@@ -138,10 +178,12 @@ def test_not_a_picture_is_refused():
     assert "can't be shown" in run(devices(server, hello("phone", "phone"), play=play))["message"]
 
 
-def test_a_screenshot_goes_into_the_chat_of_the_request_but_not_to_natro():
+def test_a_screenshot_goes_into_the_chat_of_the_request_and_natro_sees_it():
     client = FakeClient(message(tool_use("t1", "pc_screenshot"), stop="tool_use"), message(text("There it is.")))
     server = Server(Agent(client=client))
-    png = b"\x89PNG" + b"y" * 500
+    out = io.BytesIO()
+    Image.new("RGB", (2560, 1440), "white").save(out, "PNG")
+    png = out.getvalue()
 
     def shoot(call):
         assert call["name"] == "screenshot" and call["request"] == "phone:r1"
@@ -158,8 +200,10 @@ def test_a_screenshot_goes_into_the_chat_of_the_request_but_not_to_natro():
     run(devices(server, hello("pc", "PC", SCREENSHOT), hello("phone", "phone"), play=play))
     entry = server.chat.entries["phone:r1"]
     assert len(entry["pictures"]) == 1 and server.chat.pictures[entry["pictures"][0]].data == png
-    results = json.dumps(client.requests[1]["messages"][-1])
-    assert "The screenshot is in the chat." in results and base64.b64encode(png).decode() not in results
+    result = client.requests[1]["messages"][-1]["content"][0]
+    words, picture = result["content"]
+    assert words == {"type": "text", "text": "The screenshot is in the chat."} and not result["is_error"]
+    assert picture_in(picture)[:2] == ("image/jpeg", (1568, 882))  # a smaller copy
 
 
 def test_a_question_can_be_answered_on_the_other_device():

@@ -6,6 +6,7 @@ mod brain;
 mod chat;
 mod config;
 mod dock;
+mod double_tap;
 mod files;
 mod helper;
 mod icons;
@@ -81,6 +82,7 @@ pub fn run() {
             chat::chat_state,
             chat::chat_hits,
             chat::chat_send,
+            chat::chat_stop_replying,
             chat::chat_mic,
             chat::chat_answer,
             chat::chat_clear,
@@ -97,6 +99,7 @@ pub fn run() {
             settings::settings_capture,
             settings::settings_keybind,
             settings::settings_keybinds_reset,
+            settings::settings_twice,
             keys::keys_status,
             keys::keys_unlock,
             keys::keys_save,
@@ -147,6 +150,9 @@ pub fn run() {
             app.manage(Arc::new(Files::new()));
             app.manage(Brain::start(app.handle().clone(), &config, helper, verbose));
             tray::create(app)?;
+            if test("NATRO_TEST_TAPS").is_some() {
+                double_tap::count_simulated();
+            }
             if test("NATRO_TEST_SETTINGS").is_some() {
                 settings::open(app.handle());
             }

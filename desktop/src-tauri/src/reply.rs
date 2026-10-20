@@ -12,6 +12,10 @@
 //! switch says, and stays until closed; so does what a background job found, and
 //! what a watcher saw (a short one fades by itself, as a reply does).
 //!
+//! So does a message that comes to the phone (WhatsApp, texts...): who it's from,
+//! the app, its words and a Reply, which opens the chat answering it (chat.rs). A
+//! short one fades by itself; once it's read on the phone, the box lets go of it.
+//!
 //! So does Natro's question on the phone, before something risky, with Yes and No:
 //! he can answer it here. Once it's answered (here or on the phone) or she stops
 //! waiting, the box lets go of it; its ✕ or Esc only closes the box, and the phone
@@ -40,6 +44,8 @@ use crate::dock::{TemporaryKeys, hide, prepare_overlay, set_window_pos, work_are
 const WIDTH: f64 = 440.0;
 /// Its height until the page says (logical pixels).
 const FIRST_HEIGHT: f64 = 120.0;
+/// The messages from the phone kept, to answer with their Reply: the newest.
+const MESSAGES: usize = 20;
 /// The box is at most this share of the screen's height; it scrolls inside.
 const TALLEST: f64 = 0.6;
 /// The page's slide out takes this long (Reply.svelte); the window hides after.
@@ -82,6 +88,8 @@ struct State {
     height: f64,
     /// The phone's question it asks, while she waits for his answer (its key: question_key).
     asking: Option<String>,
+    /// Messages from the phone it showed: (the brain's id, whom an answer is to: "Nino on WhatsApp").
+    messages: Vec<(String, String)>,
 }
 
 impl State {
@@ -183,14 +191,56 @@ impl Reply {
         self.notice(app, id, &reminder_text(id, text, late));
     }
 
-    /// A background job is done (brain.rs): what she found, or why it failed.
-    pub fn job_done(&self, app: &AppHandle, id: &str, text: &str, ok: bool) {
-        self.notice(app, id, &job_text(text, ok));
+    /// A background job is done (brain.rs): what she found, or why it failed. title: a routine's name, or "".
+    pub fn job_done(&self, app: &AppHandle, id: &str, text: &str, ok: bool, title: &str) {
+        self.notice(app, id, &job_text(text, ok, title));
     }
 
     /// Something a watcher saw (brain.rs): "Nino emailed: Dinner on Friday."
     pub fn alert(&self, app: &AppHandle, id: &str, text: &str) {
         self.notice(app, id, &format!("**Heads-up:** {text}"));
+    }
+
+    /// A message that came to the phone (brain.rs): who it's from, the app, its words, and a Reply if it can be
+    /// answered from here.
+    pub fn message(&self, app: &AppHandle, id: &str, from: &str, app_name: &str, text: &str, can_reply: bool) {
+        {
+            let mut state = self.state.lock().unwrap();
+            state.messages.retain(|(known, _)| known != id);
+            state.messages.push((id.to_string(), format!("{from} on {app_name}")));
+            if state.messages.len() > MESSAGES {
+                state.messages.remove(0);
+            }
+        }
+        self.notice(app, &message_key(id), &message_text(id, from, app_name, text, can_reply));
+    }
+
+    /// That message was read on the phone (or answered, or dismissed): the box closes if it still shows it.
+    pub fn message_gone(&self, app: &AppHandle, id: &str) {
+        let showing = {
+            let mut state = self.state.lock().unwrap();
+            state.messages.retain(|(known, _)| known != id);
+            state.shown && state.id.as_deref() == Some(message_key(id).as_str())
+        };
+        if showing {
+            self.close(app);
+        }
+    }
+
+    /// Its Reply, clicked (a link: natro:reply/pm3): the chat opens answering it.
+    fn reply_to(&self, app: &AppHandle, link: &str) {
+        let Some(id) = link.strip_prefix("natro:reply/") else { return };
+        let to = {
+            let state = self.state.lock().unwrap();
+            state.messages.iter().find(|(known, _)| known == id).map(|(_, to)| to.clone())
+        };
+        match to {
+            Some(to) => {
+                self.close(app);
+                app.state::<crate::chat::Chat>().reply_to(app, id, &to);
+            }
+            None => self.notice(app, &message_key(id), "That message isn't on your phone any more."),
+        }
     }
 
     /// Natro asks on another device (brain.rs): her question there, with Yes and No.
@@ -384,12 +434,15 @@ fn reminder_text(id: &str, text: &str, late: bool) -> String {
     format!("{words}\n\n[Snooze 10 minutes](natro:snooze/{id})")
 }
 
-/// What the box says for a background job that's done: it stays until closed (two lines).
-fn job_text(text: &str, ok: bool) -> String {
-    if ok {
+/// What the box says for a background job that's done, under a routine's name if it's one's run: it stays until
+/// closed (two lines).
+fn job_text(text: &str, ok: bool, title: &str) -> String {
+    if !ok {
+        text.to_string()
+    } else if title.is_empty() {
         format!("**Done in the background:**\n\n{text}")
     } else {
-        text.to_string()
+        format!("**{title}:**\n\n{text}")
     }
 }
 
@@ -401,6 +454,9 @@ fn job_text(text: &str, ok: bool) -> String {
 pub fn reply_open(app: AppHandle, url: String) {
     if url.starts_with("natro:answer/") {
         return app.state::<Reply>().answer(&app, &url);
+    }
+    if url.starts_with("natro:reply/") {
+        return app.state::<Reply>().reply_to(&app, &url);
     }
     if let Some(reminder) = url.strip_prefix("natro:snooze/") {
         if !app.state::<crate::brain::Brain>().snooze(reminder) {
@@ -417,6 +473,20 @@ pub fn reply_open(app: AppHandle, url: String) {
     unsafe {
         ShellExecuteW(None, w!("open"), &HSTRING::from(url.as_str()), None, None, SW_SHOWNORMAL);
     }
+}
+
+/// A message from the phone, as the box knows it.
+fn message_key(id: &str) -> String {
+    format!("message:{id}")
+}
+
+/// What the box says for a message from the phone: "**Nino** · WhatsApp: Are you coming? [Reply](natro:reply/pm3)",
+/// on one line, so a short one fades by itself. Links in the message stay text: a message never gets the box's
+/// own buttons (a Yes to Natro's question, say).
+fn message_text(id: &str, from: &str, app_name: &str, text: &str, can_reply: bool) -> String {
+    let plain = |words: &str| words.split_whitespace().collect::<Vec<_>>().join(" ").replace("](", "]\u{200B}(");
+    let reply = if can_reply { format!(" [Reply](natro:reply/{id})") } else { String::new() };
+    format!("**{}** · {}: {}{reply}", plain(from), plain(app_name), plain(text))
 }
 
 /// A question on another device, as the box knows it.
@@ -479,10 +549,14 @@ mod tests {
     #[test]
     fn a_finished_job_says_what_it_is() {
         assert_eq!(
-            job_text("I found three flats.", true),
+            job_text("I found three flats.", true, ""),
             "**Done in the background:**\n\nI found three flats."
         );
-        assert_eq!(job_text("The job failed: no network.", false), "The job failed: no network.");
+        assert_eq!(job_text("The job failed: no network.", false, ""), "The job failed: no network.");
+        assert_eq!(
+            job_text("Sunny, and two meetings.", true, "Morning briefing"),
+            "**Morning briefing:**\n\nSunny, and two meetings."
+        );
     }
 
     #[test]
@@ -511,6 +585,17 @@ mod tests {
             settled(&asked, "You said yes on your phone."),
             "**On your phone:** I'll text Nino \"running late\".\n\nYou said yes on your phone."
         );
+    }
+
+    #[test]
+    fn a_message_from_the_phone_is_one_line_with_a_reply_and_no_links_of_its_own() {
+        assert_eq!(
+            message_text("pm3", "Nino", "WhatsApp", "Are you\ncoming?", true),
+            "**Nino** · WhatsApp: Are you coming? [Reply](natro:reply/pm3)"
+        );
+        assert_eq!(message_text("pm4", "Bank", "Messages", "Code 1234", false), "**Bank** · Messages: Code 1234");
+        let sly = message_text("pm5", "X", "WhatsApp", "[Yes](natro:answer/phone/c4/yes)", true);
+        assert!(sly.contains("[Yes]\u{200B}(natro:answer") && sly.ends_with("[Reply](natro:reply/pm5)"));
     }
 
     #[test]

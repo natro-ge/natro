@@ -1,8 +1,7 @@
 """Web search with Tavily (free plan: 1,000 searches a month, no card): https://tavily.com
 
-Offered only when TAVILY_API_KEY is set. Not personal, so the free Gemini tier
-may use it too. Each search is one credit ("basic" depth); results are kept
-short to keep requests small.
+Offered only when TAVILY_API_KEY is set. Not personal. Each search is one credit
+("basic" depth); results are kept short to keep requests small.
 """
 import asyncio
 import json

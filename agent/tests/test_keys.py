@@ -5,15 +5,15 @@ import pytest
 from conftest import FakeClient, run
 from natro_agent import keys as keys_module
 from natro_agent.agent import Agent
-from natro_agent.keys import (FIELDS, Field, Keys, Refused, check_anthropic, check_budget, check_gemini,
-                              check_project, check_timezone, hint, rewrite_env)
+from natro_agent.keys import (FIELDS, Field, Keys, Refused, check_anthropic, check_budget, check_project,
+                              check_tavily, check_timezone, hint, rewrite_env)
 from natro_agent.server import Server
 from test_server import HELLO, session
 
 ENV = """# Server
 ANTHROPIC_API_KEY=sk-ant-old-0000000000001111
-# Optional: Gemini's free tier (aistudio.google.com/apikey).
-# GEMINI_API_KEY=
+# Optional: web search with Tavily's free plan (tavily.com).
+# TAVILY_API_KEY=
 NATRO_LISTEN=100.1.2.3:8700
 NATRO_DEVICE_TOKEN=device-secret
 NATRO_MONTHLY_BUDGET=15
@@ -49,16 +49,16 @@ def unlock(keys, pin="2468", device="pc"):
 
 
 def test_lines_are_changed_in_place_and_comments_stay():
-    text = rewrite_env(ENV, {"ANTHROPIC_API_KEY": "sk-new", "GEMINI_API_KEY": "AIza-new", "TAVILY_API_KEY": "tvly"})
+    text = rewrite_env(ENV, {"ANTHROPIC_API_KEY": "sk-new", "TAVILY_API_KEY": "tvly-new", "GOOGLE_MAPS_API_KEY": "maps"})
     assert text.splitlines() == [
         "# Server",
         "ANTHROPIC_API_KEY=sk-new",
-        "# Optional: Gemini's free tier (aistudio.google.com/apikey).",
-        "GEMINI_API_KEY=AIza-new",  # it was commented out
+        "# Optional: web search with Tavily's free plan (tavily.com).",
+        "TAVILY_API_KEY=tvly-new",  # it was commented out
         "NATRO_LISTEN=100.1.2.3:8700",
         "NATRO_DEVICE_TOKEN=device-secret",
         "NATRO_MONTHLY_BUDGET=15",
-        "TAVILY_API_KEY=tvly",  # it wasn't there
+        "GOOGLE_MAPS_API_KEY=maps",  # it wasn't there
     ]
 
 
@@ -74,7 +74,7 @@ def test_the_first_unlock_chooses_the_pin_and_keys_show_only_their_end(tmp_path)
     assert fields["ANTHROPIC_API_KEY"] == {
         "key": "ANTHROPIC_API_KEY", "label": "Anthropic API key", "secret": True, "set": True, "value": "",
         "hint": "••••1111", "note": fields["ANTHROPIC_API_KEY"]["note"]}
-    assert fields["GEMINI_API_KEY"]["set"] is False
+    assert fields["TAVILY_API_KEY"]["set"] is False
     assert fields["NATRO_MONTHLY_BUDGET"]["value"] == "15"
     # What the devices connect with isn't there at all.
     assert "NATRO_LISTEN" not in fields and "NATRO_DEVICE_TOKEN" not in fields
@@ -180,10 +180,10 @@ def test_a_providers_answer_to_the_check(monkeypatch, status, problem):
     assert asked[0][1]["x-api-key"] == "sk-ant-x"
 
 
-def test_gemini_says_a_bad_key_is_a_bad_request(monkeypatch):
+def test_a_bad_request_means_a_bad_key(monkeypatch):
     monkeypatch.setattr(keys_module, "_status", lambda url, headers: 400)
-    with pytest.raises(Refused, match="Google doesn't accept"):
-        check_gemini("AIza-x")
+    with pytest.raises(Refused, match="Tavily doesn't accept"):
+        check_tavily("tvly-x")
 
 
 def test_over_the_connection_natro_restarts_after_answering(tmp_path):

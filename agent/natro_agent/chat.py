@@ -1,8 +1,7 @@
 """Type to Natro in English and read her reply: the agent without voice.
 
-Natro's own tools (memory, notes, web search if TAVILY_API_KEY is set), MCP
-servers from config/mcp.json, and the free Gemini tier for non-personal requests
-(if GEMINI_API_KEY is set) are all on, as in the service. --dry-run-pc adds a pretend PC
+Natro's own tools (memory, notes, web search if TAVILY_API_KEY is set) and MCP
+servers from config/mcp.json are all on, as in the service. --dry-run-pc adds a pretend PC
 whose tools (open, close, force-close an app) only record what they would do.
 Confirmations are asked here. Each reply ends with the model, time and cost.
 

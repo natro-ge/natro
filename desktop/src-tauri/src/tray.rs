@@ -33,7 +33,10 @@ struct Lines {
 fn key_lines(keybinds: &Keybinds) -> (String, String) {
     (
         format!("Talk to Natro ({})", settings::label(keybinds.talk)),
-        format!("Chat with Natro ({})", settings::label(keybinds.chat)),
+        match keybinds.chat_twice {
+            Some(tap) => format!("Chat with Natro ({} or {} twice)", settings::label(keybinds.chat), tap.label()),
+            None => format!("Chat with Natro ({})", settings::label(keybinds.chat)),
+        },
     )
 }
 

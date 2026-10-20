@@ -36,9 +36,9 @@ import java.util.concurrent.TimeUnit
 /**
  * The phone's tools, as Natro's brain sees them (sent in the hello; see agent/natro_agent/server.py).
  *
- * Apps, alarms, media, flashlight and volume are neither personal nor risky, so the free Gemini
- * tier may use them too. Notifications, contacts, texts, files, the screen, where the phone is and
- * the routes it opens in Maps are personal (Claude only);
+ * Apps, alarms, media, flashlight and volume are neither personal nor risky. Notifications,
+ * contacts, texts, files, the screen, where the phone is and the routes it opens in Maps are
+ * personal;
  * calling, texting and risky taps need the owner's yes. Android lets an app open other apps (and
  * the clock app, calls...) from the background only while it is the phone's assistant or its
  * accessibility service is on; otherwise only while it is on screen.
@@ -90,6 +90,17 @@ class PhoneTools(private val context: Context) {
 
         Tool("notifications", "The phone's notifications right now, newest first (messages, missed calls, apps).",
             props(), listOf(), personal = true) { notifications() },
+        Tool("reply_message", "Answer a message on the phone in its own app (WhatsApp, Messenger, Telegram, texts...) " +
+            "through its notification's reply box, as if he answered there: to is who it's from as its notification " +
+            "shows it (a name, or a group's name; see notifications), app if he said which. Only a message whose " +
+            "notification is still there can be answered this way.", props(
+            "to" to string("Who the message is from, as its notification shows it."),
+            "text" to string("The answer, as he'd write it."),
+            "app" to string("The app (optional)."),
+            "key" to string("Leave it out."),
+        ), listOf("text"), personal = true, confirm = true, final = true) {
+            Messages.reply(context, it.optString("key"), it.optString("to"), it.optString("app"), it.getString("text"))
+        },
         Tool("contacts", "Find people in the phone's contacts by name (saved in Georgian or Latin letters): their " +
             "numbers.", props("name" to string("The name, as he says it.")), listOf("name"), personal = true) {
             contacts(it.getString("name"))
@@ -152,10 +163,10 @@ class PhoneTools(private val context: Context) {
             "key" to JSONObject().put("type", "string")
                 .put("enum", JSONArray(listOf("back", "home", "recents", "notifications", "quick_settings"))),
         ), listOf("key"), personal = true) { screen().press(it.getString("key")) },
-        Tool("screenshot", "Take a picture of the phone's screen and put it in the chat on his devices, for him to see " +
-            "(\"show me my phone screen\"). You don't see it yourself: to read the screen, use screen.", props(), listOf(),
-            personal = true) {
-            ToolPicture("The screenshot of his phone's screen is in the chat, where he can see it (you can't).",
+        Tool("screenshot", "Take a picture of the phone's screen: you see it, and it goes into the chat on his devices " +
+            "for him (\"show me my phone screen\", \"what's this on my phone?\"). To act on the screen, read it with screen.",
+            props(), listOf(), personal = true) {
+            ToolPicture("The screenshot of his phone's screen is here, and in the chat, where he can see it too.",
                 screen().screenshot(), "image/jpeg", "Phone screen ${SimpleDateFormat("HH.mm", Locale.US).format(Date())}.jpg")
         },
     )

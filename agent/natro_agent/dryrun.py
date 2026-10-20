@@ -34,7 +34,8 @@ PC_TOOLS = [
           personal=True, confirm=True),
     _spec("switch_window", "Bring an open window to the front.", {"name": "string"}, personal=True),
     _spec("wait_for", "Wait until some text shows on the PC's screen.", {"text": "string"}, personal=True),
-    _spec("screenshot", "A picture of the PC's screen, into the chat for him to see.", {}, personal=True),
+    _spec("screenshot", "A picture of the PC's screen: you see it, and it goes into the chat for him.", {},
+          personal=True),
 ]
 
 

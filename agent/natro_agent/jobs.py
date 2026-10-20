@@ -8,13 +8,15 @@ The server runs it (Server._job): it shows in the shared chat as it works (its s
 that needs his yes asks on the device he used last, and when it's done the result goes to his devices
 (job_done: shown on every device that said "jobs" in its hello, its first paragraph spoken on one), and the
 next request is answered by Claude, who is told it. jobs_list ("what are you working on?") and jobs_cancel ("cancel that")
-work on them. Kept in memory only: a restart of the server ends the jobs running then.
+work on them. A routine's run (routines.py) is a job too, titled with the routine's name. Kept in memory only: a
+restart of the server ends the jobs running then.
 
 Natro to device:
   {"type": "job_done", "id": "jb3", "task": "Find three flats...", "text": "I found three...",
-   "say": "I found three...", "ok": true, "speak": true}
+   "say": "I found three...", "ok": true, "speak": true, "title": ""}
                                         text: all of it, to show; say: what to say out loud (its first
-                                        paragraph); ok: false when it failed (text says so); speak: on this device
+                                        paragraph); ok: false when it failed (text says so); speak: on this device;
+                                        title: a routine's name ("Morning briefing"), or "" for a job he asked for
 """
 import itertools
 import time
@@ -49,6 +51,9 @@ class Job:
     result: str = ""
     finished: float = 0.0
     task_handle: object = None  # the asyncio task running it
+    title: str = ""  # a routine's run: the routine's name
+    routine: str = ""  # and its id
+    quiet: bool = False  # a routine that says only routines.QUIET_REPLY when there's nothing to report
 
     def minutes(self, now=None):
         return max(0, round(((self.finished or now or time.time()) - self.started) / 60))
@@ -63,6 +68,11 @@ def lead(text):
     """What's said out loud of a job's result: its first paragraph (the answer); the rest is for reading."""
     first = next((part for part in str(text or "").split("\n\n") if part.strip()), "")
     return short(first, SAY_CHARS)
+
+
+def routine_of(job):
+    """How jobs_list names a routine's run, before the rest of its line."""
+    return f"the routine \"{job.title}\", " if job.routine else ""
 
 
 class Jobs:
@@ -114,10 +124,7 @@ class Jobs:
             raise ToolError(f"You're already working on {MOST_AT_ONCE} jobs ({names}). Tell him; he can wait or "
                             "cancel one.")
         asked_on = getattr(self.asking(), "name", "")
-        job = Job(f"jb{next(self._ids)}", task, asked_on if asked_on in KNOWN_DEVICES else "")
-        self.items.append(job)
-        self._forget_old()
-        job.task_handle = self.run(job)
+        job = self.add(task, asked_on if asked_on in KNOWN_DEVICES else "")
         return f"OK, I'm on it. I'll tell you when it's done.\nStarted job {job.id}: \"{task}\""
 
     async def list(self, args):
@@ -126,14 +133,15 @@ class Jobs:
         lines = []
         for job in self.running():
             doing = f", now: {job.step}" if job.step else ""
-            lines.append(f"- {job.id} (started {job.minutes(now)} min ago{doing}): \"{job.task}\"")
+            lines.append(f"- {job.id} ({routine_of(job)}started {job.minutes(now)} min ago{doing}): \"{job.task}\"")
         lines = ["Working on:", *lines] if lines else ["Nothing in the background right now."]
         finished = [job for job in self.items if job.state != "running"]
         if finished:
             lines.append("Finished in the last day:")
             for job in reversed(finished):
                 ago = max(0, round((now - job.finished) / 60))
-                lines.append(f"- {job.id}, {job.state} {ago} min ago, took {job.minutes()} min: \"{job.task}\"\n"
+                lines.append(f"- {job.id}, {routine_of(job)}{job.state} {ago} min ago, took {job.minutes()} min: "
+                             f"\"{job.task}\"\n"
                              f"  {short(job.result) or '(nothing said)'}")
         return "\n".join(lines)
 
@@ -150,6 +158,14 @@ class Jobs:
         return f"Cancelled: \"{job.task}\""
 
     # From the server
+
+    def add(self, task, asked_on="", title="", routine="", quiet=False):
+        """Start a job: start_job's, or a routine's run (which MOST_AT_ONCE doesn't hold back)."""
+        job = Job(f"jb{next(self._ids)}", task, asked_on, title=title, routine=routine, quiet=quiet)
+        self.items.append(job)
+        self._forget_old()
+        job.task_handle = self.run(job)
+        return job
 
     def ended(self, job, state, result):
         if job.state == "running":

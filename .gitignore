@@ -28,8 +28,10 @@ pending.json
 # The old .env after a change from the Settings window (keys.py, keys.rs).
 .env.bak
 .env.new
-# His reminders (agent/natro_agent/reminders.py) and when his last briefing was (briefing.py).
+# His reminders (agent/natro_agent/reminders.py), when his last briefing was (briefing.py), and his routines
+# (routines.py).
 reminders.json
 briefing.json
+routines.json
 # What he asked Natro to watch for, and what she told him (watchers.py).
 watchers.json

@@ -18,6 +18,7 @@ object Prefs {
     private val _speakReplies = MutableStateFlow(true)
     private val _showReplies = MutableStateFlow(true)
     private val _parked = MutableStateFlow<Parked?>(null)
+    private val _messagesToPc = MutableStateFlow(true)
 
     /** Natro on at all. Off: no connection, no listening, no bubble, no notification. */
     val power: StateFlow<Boolean> = _power
@@ -28,6 +29,8 @@ object Prefs {
     val showReplies: StateFlow<Boolean> = _showReplies
     /** The bubble's place on an edge, or null: then it shows only while Natro is busy. */
     val parked: StateFlow<Parked?> = _parked
+    /** Messages that come to the phone show on the PC, to answer there (Messages). */
+    val messagesToPc: StateFlow<Boolean> = _messagesToPc
 
     fun init(context: Context) {
         if (::store.isInitialized) return
@@ -36,6 +39,7 @@ object Prefs {
         _wakeWord.value = store.getBoolean(WAKE_WORD, false)
         _speakReplies.value = store.getBoolean(SPEAK, true)
         _showReplies.value = store.getBoolean(SHOW, true)
+        _messagesToPc.value = store.getBoolean(MESSAGES_TO_PC, true)
         _parked.value = if (store.contains(PARKED_Y)) Parked(store.getBoolean(PARKED_RIGHT, true), store.getFloat(PARKED_Y, 0.5f)) else null
     }
 
@@ -59,6 +63,11 @@ object Prefs {
         store.edit { putBoolean(SHOW, on) }
     }
 
+    fun setMessagesToPc(on: Boolean) {
+        _messagesToPc.value = on
+        store.edit { putBoolean(MESSAGES_TO_PC, on) }
+    }
+
     fun setParked(place: Parked?) {
         _parked.value = place
         store.edit {
@@ -73,4 +82,5 @@ object Prefs {
     private const val SHOW = "show-replies"
     private const val PARKED_Y = "bubble-y"
     private const val PARKED_RIGHT = "bubble-right"
+    private const val MESSAGES_TO_PC = "messages-to-pc"
 }

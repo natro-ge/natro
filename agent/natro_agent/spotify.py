@@ -6,9 +6,8 @@ VPS, which refreshes it and saves it back. The tools are offered only when that
 file exists. Spotify ends a sign-in six months after it was made (refreshing
 doesn't extend it), so Natro mentions it in the last two weeks.
 
-Playing, controlling and liking music is not personal (the free Gemini tier may
-do it), nor is making a playlist and filling it; the list of his playlists and his
-listening history are. Nothing here deletes, so nothing asks first.
+Playing, controlling and liking music is not personal, nor is making a playlist
+and filling it; the list of his playlists and his listening history are. Nothing here deletes, so nothing asks first.
 
 Filling a playlist never touches playback: songs are found by search (studio
 versions before live ones), many in one call, and added without playing them.

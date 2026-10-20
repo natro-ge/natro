@@ -11,17 +11,19 @@ background job, or an alert:
    "asked": "...", "heard": "...", "spoken": false, "reply": "...", "step": "...", "done": false,
    "problem": "", "pictures": ["pic3"],
    "question": {"id": "c4", "text": "...", "answer": "", "device": "phone"} or null,
-   "queued": "PC" or null, "sent": false, "reminder": false, "job": "", "alert": false}
+   "queued": "PC" or null, "sent": false, "reminder": false, "job": "", "routine": "", "alert": false}
 request is the id the device gave it, so the device can tell its own requests (it shows those as they
 happen) from the other's. queued: the device it was asked from while this one was offline (pending.py).
 sent: a picture he sent, not a request. reminder: a reminder (reminders.py), as Natro's words alone, from
 the device "natro" (reply is what she said; asked is empty). job: a background job's task (jobs.py), from
-the device "natro": its steps, question and reply as a request's, with asked empty. A question's device is
+the device "natro": its steps, question and reply as a request's, with asked empty. routine: a routine's name, on
+the job that is its run (routines.py). A question's device is
 the one it was asked on: for a job's, a device answering it elsewhere names "natro" and the server finds it.
 alert: something a watcher saw (watchers.py), as Natro's words alone, from the device "natro", like a reminder.
 
 Pictures (screenshots, or ones he sends) go to devices as chat_picture with their bytes after it; entries
-name them. Natro never sees them: they are for him.
+name them. Claude sees them too: a screenshot with its tool's result, one he sends with his next request
+(agent.py).
 """
 import asyncio
 import itertools
@@ -98,7 +100,7 @@ class SharedChat:
             "id": entry_id, "device": device.name, "label": device.label, "request": request,
             "time": int(time.time() * 1000), "asked": asked, "heard": heard, "spoken": spoken, "reply": "",
             "step": "", "done": False, "problem": "", "pictures": [], "question": None, "queued": queued,
-            "sent": sent, "reminder": False, "job": "", "alert": False}
+            "sent": sent, "reminder": False, "job": "", "routine": "", "alert": False}
         self._trim()
         self._changed(entry_id)
         return entry_id
@@ -126,20 +128,21 @@ class SharedChat:
             "id": entry_id, "device": "natro", "label": "Natro", "request": reminder_id,
             "time": int(time.time() * 1000), "asked": "", "heard": "", "spoken": False, "reply": text, "step": "",
             "done": True, "problem": "", "pictures": [], "question": None, "queued": None, "sent": False,
-            "reminder": not alert, "job": "", "alert": alert}
+            "reminder": not alert, "job": "", "routine": "", "alert": alert}
         self._trim()
         self._changed(entry_id)
         return entry_id
 
-    def job(self, job_id, task):
-        """A background job starting: Natro's work on task, as it goes, then what she found."""
+    def job(self, job_id, task, routine=""):
+        """A background job starting (routine: a routine's run, its name): Natro's work on task, as it goes, then
+        what she found."""
         entry_id = f"natro:{job_id}"
         self.entries.pop(entry_id, None)
         self.entries[entry_id] = {
             "id": entry_id, "device": "natro", "label": "Natro", "request": job_id,
             "time": int(time.time() * 1000), "asked": "", "heard": "", "spoken": False, "reply": "", "step": "",
             "done": False, "problem": "", "pictures": [], "question": None, "queued": None, "sent": False,
-            "reminder": False, "job": task, "alert": False}
+            "reminder": False, "job": task, "routine": routine, "alert": False}
         self._trim()
         self._changed(entry_id)
         return entry_id

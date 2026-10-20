@@ -33,7 +33,8 @@ class Tool:
     input_schema: dict
     run: Callable[[dict], Awaitable[Any]]  # returns text, or anything JSON can show
     source: str  # "natro", an MCP server's name, or a device's name
-    # Its results hold personal data (emails, notes, files...), so only Claude may see them.
+    # Its results hold personal data (emails, notes, files...). Nothing routes on it since the free Gemini tier,
+    # which was offered only the tools without it, went (2026-10-20); the devices still send it.
     personal: bool = False
     # Ask the owner before running it (deleting, sending, calling, force-closing...).
     confirm: bool = False
@@ -52,10 +53,19 @@ class Tool:
         return {"name": self.name, "description": description, "input_schema": self.input_schema}
 
 
+@dataclass
+class WithPictures:
+    """A tool's result with pictures Claude sees too (a screenshot): its text, and (mime, bytes) pairs."""
+    text: str
+    pictures: list
+
+
 def result_text(result):
     """A tool's return value as the text Claude gets."""
     if isinstance(result, str):
         return result
+    if isinstance(result, WithPictures):
+        return result.text
     return json.dumps(result, ensure_ascii=False, default=str)
 
 

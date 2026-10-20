@@ -4,8 +4,10 @@
 //! either shows in both, and they're remembered in settings.json (git-ignored) beside .env,
 //! with its own, Start with Windows (startup.rs).
 //! So are the keybinds, the keys that work from any window (talk, chat, yes and no): a click
-//! on one, then the new keys, changes it at once (Esc keeps it). Below them are the keys,
-//! behind a PIN (keys.rs).
+//! on one, then the new keys, changes it at once (Esc keeps it). The chat also opens with a
+//! modifier tapped twice (double_tap.rs): a click on that one, then the modifier tapped twice,
+//! changes it (Backspace turns it off; the page sees the taps). Below them are the keys, behind
+//! a PIN (keys.rs).
 //!
 //! Unlike the dock, the reply box and the chat, it's an ordinary window, made when it opens
 //! and gone when it closes: it stays put while he copies a new key from the browser, and
@@ -27,6 +29,7 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut}
 
 use crate::chat::Chat;
 use crate::dock::Dock;
+use crate::double_tap::{self, Tap};
 use crate::helper::Helper;
 use crate::keys::Keys;
 use crate::reply::Reply;
@@ -68,7 +71,8 @@ impl Default for Switches {
 }
 
 /// The keys that work from any window (lib.rs), remembered in settings.json under "keybinds"
-/// as the shortcut plugin writes them ("control+alt+Space").
+/// as the shortcut plugin writes them ("control+alt+Space"), and the double tap ("alt", or null
+/// when it's off).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(default)]
 pub struct Keybinds {
@@ -79,6 +83,8 @@ pub struct Keybinds {
     /// Yes and no while Natro asks: taken from other apps only then (dock.rs).
     pub yes: Shortcut,
     pub no: Shortcut,
+    /// A modifier tapped twice opens the chat too, or closes it (double_tap.rs).
+    pub chat_twice: Option<Tap>,
 }
 
 impl Default for Keybinds {
@@ -89,11 +95,13 @@ impl Default for Keybinds {
             chat: Shortcut::new(Some(Modifiers::CONTROL), Code::Space),
             yes: Shortcut::new(ctrl_alt, Code::KeyY),
             no: Shortcut::new(ctrl_alt, Code::KeyN),
+            chat_twice: Some(Tap::Alt),
         }
     }
 }
 
-/// The keybinds by name, as the window and settings.json say them, and what each does.
+/// The keybinds by name, as the window and settings.json say them, and what each does; the
+/// double tap, "chat_twice", comes after the chat's.
 const KEYBINDS: [(&str, &str); 4] = [
     ("talk", "talks to Natro"),
     ("chat", "opens the chat"),
@@ -258,7 +266,7 @@ impl Settings {
     fn shown_keybinds(&self) -> Vec<Keybind> {
         let (keybinds, first) = (self.keybinds(), Keybinds::default());
         let taken = self.taken.lock().unwrap();
-        KEYBINDS
+        let mut shown: Vec<Keybind> = KEYBINDS
             .iter()
             .map(|&(name, _)| Keybind {
                 name,
@@ -266,7 +274,18 @@ impl Settings {
                 default: keybinds.get(name) == first.get(name),
                 taken: taken.contains(&name),
             })
-            .collect()
+            .collect();
+        // Its keys are the modifier tapped twice, or none when it's off.
+        shown.insert(
+            2,
+            Keybind {
+                name: "chat_twice",
+                keys: keybinds.chat_twice.map_or("", Tap::label).to_string(),
+                default: keybinds.chat_twice == first.chat_twice,
+                taken: taken.contains(&"chat_twice"),
+            },
+        );
+        shown
     }
 
     /// A switch changed, in the tray or the window: it takes effect, is remembered, and both show it.
@@ -328,10 +347,11 @@ fn part<T: DeserializeOwned + Default>(value: &Value, what: &str) -> T {
     })
 }
 
-/// Takes the talk and chat keys from other apps (at the start, and once the window has the new
-/// keys), or lets them go (while it waits for new keys, so that pressing them reaches it).
-/// Never with a lock held: from another thread, registering waits for the main thread, where
-/// the keys' handler reads the keybinds. Yes and no are taken only while Natro asks (dock.rs).
+/// Takes the talk and chat keys from other apps and watches for the double tap (at the start,
+/// and once the window has the new keys), or lets them go (while it waits for new keys, so
+/// that pressing them reaches it). Never with a lock held: from another thread, registering
+/// waits for the main thread, where the keys' handler reads the keybinds. Yes and no are taken
+/// only while Natro asks (dock.rs).
 pub fn hold_keys(app: &AppHandle, hold: bool) {
     let settings = app.state::<Settings>();
     let keybinds = settings.keybinds();
@@ -348,6 +368,10 @@ pub fn hold_keys(app: &AppHandle, hold: bool) {
                 taken.push(name);
             }
         }
+    }
+    if let Err(e) = double_tap::watch(app, keybinds.chat_twice.filter(|_| hold)) {
+        log::error!("no double tap: {e}");
+        taken.push("chat_twice");
     }
     if hold {
         *settings.taken.lock().unwrap() = taken;
@@ -451,10 +475,24 @@ pub fn settings_capture(app: AppHandle, on: bool) -> Vec<Keybind> {
     app.state::<Settings>().shown_keybinds()
 }
 
-/// New keys for a keybind, as the page writes them ("control+alt+KeyT"): taken at once, or why not.
+/// New keys for a keybind, as the page writes them ("control+alt+KeyT"; for the double tap
+/// "alt", or "off"): taken at once, or why not.
 #[tauri::command]
 pub fn settings_keybind(app: AppHandle, name: String, keys: String) -> Result<Vec<Keybind>, String> {
     let settings = app.state::<Settings>();
+    if name == "chat_twice" {
+        let tap = match keys.as_str() {
+            "off" => None,
+            keys => Some(keys.parse::<Tap>().map_err(|_| "Tap Ctrl, Alt or Shift twice.".to_string())?),
+        };
+        let mut keybinds = settings.keybinds();
+        if keybinds.chat_twice != tap {
+            keybinds.chat_twice = tap;
+            log::info!("the chat's double tap is now {}", tap.map_or("off", Tap::label));
+            change(&app, keybinds);
+        }
+        return Ok(settings.shown_keybinds());
+    }
     let key = keys
         .parse::<Shortcut>()
         .map_err(|_| "Natro can't use that key: choose another.".to_string())?;
@@ -478,6 +516,13 @@ pub fn settings_keybind(app: AppHandle, name: String, keys: String) -> Result<Ve
         change(&app, keybinds);
     }
     Ok(settings.shown_keybinds())
+}
+
+/// The modifier tapped twice that opens the chat ("alt"), or null: the chat's page closes it
+/// with that (twice.ts).
+#[tauri::command]
+pub fn settings_twice(app: AppHandle) -> Option<Tap> {
+    app.state::<Settings>().keybinds().chat_twice
 }
 
 /// The keybinds back to the first ones.
@@ -589,10 +634,19 @@ mod tests {
         let text = fs::read_to_string(home.join("settings.json")).unwrap();
         assert!(text.contains(r#""speak": false"#), "the switches stay at the top: {text}");
         assert!(text.contains(r#""talk": "shift+control+KeyT""#), "{text}");
+        assert!(text.contains(r#""chat_twice": "alt""#), "{text}");
         let again = Settings::load(&home);
         assert_eq!(again.keybinds().talk, talk);
         assert_eq!(again.keybinds().chat, Keybinds::default().chat);
         assert!(!again.switches().speak);
+
+        // The double tap: off is null; a settings.json from before it has it on, with Alt.
+        settings.keybinds.lock().unwrap().chat_twice = None;
+        assert!(settings.save());
+        assert!(fs::read_to_string(home.join("settings.json")).unwrap().contains(r#""chat_twice": null"#));
+        assert_eq!(Settings::load(&home).keybinds().chat_twice, None);
+        fs::write(home.join("settings.json"), r#"{"keybinds": {"chat": "alt+KeyC"}}"#).unwrap();
+        assert_eq!(Settings::load(&home).keybinds().chat_twice, Some(Tap::Alt));
 
         // Keybinds that aren't readable don't cost the switches.
         let broken = r#"{"speak": false, "keybinds": {"talk": "control+Nonsense"}}"#;
@@ -621,6 +675,20 @@ mod tests {
             keybinds.check("no", keybinds.yes),
             Err("Ctrl+Alt+Y already answers yes.".to_string())
         );
+    }
+
+    #[test]
+    fn the_double_tap_shows_after_the_chats_keys() {
+        let home = temp("shown");
+        let settings = Settings::load(&home);
+        let names = |settings: &Settings| settings.shown_keybinds().iter().map(|k| k.name).collect::<Vec<_>>();
+        assert_eq!(names(&settings), ["talk", "chat", "chat_twice", "yes", "no"]);
+        let twice = &settings.shown_keybinds()[2];
+        assert_eq!((twice.keys.as_str(), twice.default), ("Alt", true));
+        settings.keybinds.lock().unwrap().chat_twice = None;
+        let twice = &settings.shown_keybinds()[2];
+        assert_eq!((twice.keys.as_str(), twice.default), ("", false));
+        let _ = fs::remove_dir_all(&home);
     }
 
     #[test]

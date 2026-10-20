@@ -104,7 +104,7 @@ def test_spoken_request_counts_voice_cost():
     assert [m["type"] for m in seen[:2]] == ["english", "heard"]
     assert seen[1]["georgian"] == "ქრომი გახსენი"
     assert voice.recordings == [b"\x01\x00" * 1600]
-    assert seen[-1]["cost"] == round(0.002 + 0.0025, 5)
+    assert abs(seen[-1]["cost"] - (0.002 + 0.000125)) < 1e-5  # the voice and Haiku
 
 
 def test_spoken_no_to_a_question():

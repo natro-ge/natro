@@ -115,6 +115,6 @@ def test_a_redirect_inside_is_refused():
         Redirects().redirect_request(request, None, 302, "Found", {}, "http://127.0.0.1:8384/rest/config")
 
 
-def test_the_tool_is_free_for_gemini():
+def test_the_tool_is_not_personal():
     tool, = WebPage().tools()
     assert tool.name == "web_page" and not tool.personal and not tool.confirm

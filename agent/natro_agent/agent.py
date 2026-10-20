@@ -1,20 +1,17 @@
-"""Natro's brain: the conversation loop with Claude (and the free Gemini tier), tools, confirmations and costs.
+"""Natro's brain: the conversation loop with Claude, tools, confirmations and costs.
 
 There is one conversation at a time for all devices: a follow-up within
 SESSION_MINUTES continues it, from any device; after that a new one starts.
 
-Privacy routing: a new conversation starts on the free Gemini tier (if
-configured), which only gets tools that are neither personal nor risky. When a
-request needs more, Gemini hands it over, and Claude answers it with the
-conversation so far; from then on the conversation stays on Claude. Requests
-that plainly involve personal data (see needs_claude) go straight to Claude, so
-they never reach the free tier. Memory only ever goes to Claude.
-
-Claude's model is picked per request: Sonnet, or the much cheaper Haiku for
-requests about the PC or a screen (see pc_task), with Sonnet taking over the rest
-of a request when Haiku gets stuck. A request that turns out to use the PC's
-screen ("join the voice channel in Discord") moves to Haiku once it does, unless
-Sonnet has already taken over. The conversation stays one, whichever answers.
+Claude's model is picked per request. The much cheaper Haiku answers plain
+requests and those about the PC or a screen (see pc_task). Sonnet answers
+requests that plainly involve personal data or a risky action (see
+personal_or_risky), a picture he sent, the request after a background job or
+an alert, and, once one of those came up, the rest of the conversation except
+PC requests. Sonnet takes over the rest of a request when Haiku gets stuck. A
+request that turns out to use the PC's screen ("join the voice channel in
+Discord") moves to Haiku once it does, unless Sonnet has already taken over.
+The conversation stays one, whichever answers.
 
 Claude's prompt cache and its thinking blocks are tied to the exact
 conversation, so within a Claude conversation the instructions and the tool list
@@ -35,14 +32,13 @@ from datetime import datetime
 
 import anthropic
 
-from natro_agent import costs, identity, log, quick, steps
+from natro_agent import costs, identity, log, pictures, quick, steps
 from natro_agent.config import monthly_budget, timezone
-from natro_agent.gemini import HAND_OVER_RULES
-from natro_agent.models import DEFAULT_MODEL, FALLBACK_MODEL, PC_MODEL, STRONGER, cost, options
-from natro_agent.tools import ToolError, result_text
+from natro_agent.models import CHEAP_MODEL, DEFAULT_MODEL, FALLBACK_MODEL, STRONGER, cost, options
+from natro_agent.tools import ToolError, WithPictures, result_text
 
 # A follow-up within this time continues the conversation (it matches how long
-# Claude keeps its prompt cache).
+# Claude keeps the conversation in its prompt cache; the instructions and tools stay an hour).
 SESSION_MINUTES = 5
 # Model calls per request, so a confused tool loop can't run up costs. Using an app on the phone by its
 # screen takes a step per tap.
@@ -52,7 +48,7 @@ MAX_STEPS = 20
 STUCK_FAILURES = 2
 STUCK_STEPS = 10
 # The PC's screen tools (pc/natro_pc/control.py): clicking through an app takes many steps, each with a whole
-# screen in it, so a request that uses them goes on with the cheaper PC model.
+# screen in it, so a request that uses them goes on with the cheaper model.
 PC_SCREEN_TOOLS = {"screen", "find", "act", "act_risky", "switch_window", "wait_for", "browser_open", "browser_page",
                    "browser_act", "browser_act_risky", "browser_tabs"}
 MAX_TOKENS = 16000
@@ -62,35 +58,40 @@ CONFIRM_SECONDS = 60
 MANY_CHANGES = 5
 # Longer tool results are cut, to keep requests small.
 RESULT_CHARS = 20000
+# A picture he sends goes with his next request if it comes within this time (he sent it to ask about it).
+PICTURE_MINUTES = 10
+MOST_PICTURES = 4
 # NATRO_CHECK_HISTORY=1 makes Claude reject any edit to a past conversation (see models.options).
 CHECK_HISTORY = os.environ.get("NATRO_CHECK_HISTORY") == "1"
 TOKEN_KINDS = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens")
 
-# Words that mark a request as personal or risky: it goes straight to Claude.
+# Words that mark a request as personal or risky: it goes to Sonnet (unless it's about the PC or a screen).
 # Broad on purpose: a wrong guess here only costs a little money.
 PERSONAL_HINTS = re.compile(
     r"\b(remember|forget|remind|reminder|memory|note|notes|to-?do|tasks?|shopping|groceries|grocery|my lists?|e-?mails?|gmail|inbox|mail|calendar|"
     r"brief|briefing|my day|background|jobs?|working on|watchers?|watching|alerts?|heads-?up|keep an eye|"
+    r"routines?|every (?:morning|evening|night|day|weekday|weekend|week|month|monday|tuesday|wednesday|thursday|"
+    r"friday|saturday|sunday)s?|"
     r"convert|conversion|i asked|did i ask|told me|did you (?:tell|say)|you said|we talked|last time|history|"
     r"travel|how long to|how long does it take|leave for|drive to|by bus|by metro|routes?|directions|navigat\w*|"
     r"get to|metro|bus|buses|in (?:google )?maps|on (?:the )?map|location|where am i|where i am|from here|"
     r"schedule|meeting|appointment|events?|files?|documents?|docs?|drive|sheets?|spreadsheets?|folders?|photos?|"
-    r"messages?|sms|texts?|whatsapp|"
+    r"messages?|sms|texts?|whatsapp|messenger|telegram|viber|repl(?:y|ies)|"
     r"notifications?|contacts?|call|delete|remove|send|share|pay|password|bank|address|about me|my name|"
-    # What's on a screen and what a command says are personal too, and the free tier can't use either.
+    # What's on a screen and what a command says are personal too.
     r"screens?|screenshot|click|scroll|commands?|powershell|terminal|ipconfig|dark mode|light mode|brightness|"
     r"bluetooth|wi-?fi|ip address|disk space|battery)\b",
     re.IGNORECASE)
 
-# Words that mark a request as using the PC or a screen: commands, settings, apps, windows, clicking. On
-# Claude, these start on the cheaper PC_MODEL.
+# Words that mark a request as using the PC or a screen: commands, settings, apps, windows, clicking. These
+# start on the CHEAP_MODEL, even when they're personal.
 PC_TASK_HINTS = re.compile(
     r"\b(pc|computer|laptop|desktop|screens?|screenshot|windows?|apps?|application|programs?|commands?|"
     r"powershell|terminal|ipconfig|click|scroll|browser|tabs?|settings|dark mode|light mode|brightness|"
     r"bluetooth|wi-?fi|ip address|disk space|battery)\b", re.IGNORECASE)
 
 
-def needs_claude(text):
+def personal_or_risky(text):
     """Whether a request plainly involves personal data or a risky action."""
     return bool(PERSONAL_HINTS.search(text))
 
@@ -152,51 +153,29 @@ class Changes:
     allowed: bool = False
 
 
-class Conversation:
-    def __init__(self):
+class Session:
+    """A conversation with Claude: fixed instructions and tools, and messages that only grow."""
+
+    def __init__(self, model, tools, devices, memory=None):
         self.last_used = time.monotonic()
+        self.model = model  # the model answering the request now
+        self.failed = set()  # models whose API failed in this conversation: their fallback answers instead
+        # A request in it was personal or risky (or came with a picture or a job's or alert's note): Sonnet
+        # answers the rest of it, but for PC requests.
+        self.personal = False
+        self.tools = {tool.name: tool for tool in tools}
+        self.tool_definitions = [tool.definition() for tool in sorted(tools, key=lambda tool: tool.name)]
+        # The cache marker lets the next conversation reuse the cached instructions and tools, for an hour: most
+        # conversations start within an hour of the one before, and writing the ~25,000 tokens again each time
+        # was most of the spending (2026-10-20). An hour's write costs 2x the input price (5 minutes': 1.25x);
+        # a read 0.1x. The conversation itself is cached for 5 minutes (_stream), after this.
+        self.system = [{"type": "text", "text": identity.system_prompt(tools, devices, memory=memory),
+                        "cache_control": {"type": "ephemeral", "ttl": "1h"}}]
+        self.messages = []
 
     @property
     def expired(self):
         return time.monotonic() - self.last_used > SESSION_MINUTES * 60
-
-
-class Session(Conversation):
-    """A conversation with Claude: fixed instructions and tools, and messages that only grow.
-
-    earlier: (request, reply, tools used) turns handed over from Gemini, as plain
-    text. The tools used are noted with each reply, so Claude doesn't take an
-    answer that was looked up for a guess and look it up again.
-    """
-
-    def __init__(self, model, tools, devices, memory=None, earlier=()):
-        super().__init__()
-        self.model = model  # the model answering the request now
-        self.failed = set()  # models whose API failed in this conversation: their fallback answers instead
-        self.tools = {tool.name: tool for tool in tools}
-        self.tool_definitions = [tool.definition() for tool in sorted(tools, key=lambda tool: tool.name)]
-        # The cache marker lets the next conversation reuse the cached instructions and tools.
-        self.system = [{"type": "text", "text": identity.system_prompt(tools, devices, memory=memory),
-                        "cache_control": {"type": "ephemeral"}}]
-        self.messages = []
-        for request, reply, tools_used in earlier:
-            if tools_used:
-                reply = f"{reply}\n[Tools used for this answer: {'; '.join(tools_used)}]"
-            self.messages += [{"role": "user", "content": request}, {"role": "assistant", "content": reply}]
-
-
-class GeminiSession(Conversation):
-    """A conversation on the free Gemini tier: no personal or risky tools, no memory."""
-
-    def __init__(self, tools, devices):
-        super().__init__()
-        self.tool_list = sorted((tool for tool in tools if not tool.personal and not tool.confirm),
-                                key=lambda tool: tool.name)
-        self.tools = {tool.name: tool for tool in self.tool_list}
-        self.system = identity.system_prompt(self.tool_list, devices, hand_over_rules=HAND_OVER_RULES)
-        self.model = None  # the free model answering this conversation, once one has
-        self.contents = []  # Gemini's own history, with its thought signatures
-        self.turns = []  # (request, reply, tools used), for Claude if it takes over
 
 
 def echo_content(content):
@@ -214,6 +193,45 @@ def echo_content(content):
     return [block for block in content[:boundary] if block.type == "text"] + list(content[boundary + 1:])
 
 
+def call_key(block):
+    """A tool call's name and arguments, to find the same call twice."""
+    return block.name, json.dumps(block.input, sort_keys=True, default=str)
+
+
+async def repeated(block):
+    """The tool_result for a call made twice in one step: the first one ran."""
+    return {"type": "tool_result", "tool_use_id": block.id, "is_error": False,
+            "content": "Not done again: the very same call is in this step already, and that one ran."}
+
+
+def quick_turn(request, name, args, result, said, offered):
+    """A quick command (run with no model) as Claude's conversation keeps it: the call and its result, then her
+    words. Her words alone ("Paused.", with no call before them) read to Claude as a claim she never acted on,
+    and she'd "correct" it later by doing it again (2026-10-20). offered: the tool is in the conversation's list
+    (a call to one that isn't would be refused)."""
+    if not offered:
+        return [{"role": "user", "content": request},
+                {"role": "assistant", "content": f"{said} [ran {name} {json.dumps(args)}]"}]
+    call = f"toolu_quick_{int(time.time() * 1000):x}"
+    return [{"role": "user", "content": request},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": call, "name": name, "input": args}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call, "content": result}]},
+            {"role": "assistant", "content": said}]
+
+
+def with_pictures(request, sent):
+    """A request with the pictures he sent for it: the pictures first, then his words, whose first line says
+    they're there."""
+    if not sent:
+        return request
+    devices = sorted({label for _, label in sent})
+    note = (f"he sent {'a picture' if len(sent) == 1 else f'{len(sent)} pictures'} into the chat from his "
+            f"{' and '.join(devices)} just now, for this request: {'it is' if len(sent) == 1 else 'they are'} here")
+    header, _, rest = request.partition("\n")
+    words = f"{header.removesuffix(']')} · {note}]\n{rest}" if header.startswith("[") else f"[{note}]\n{request}"
+    return [*(block for block, _ in sent), {"type": "text", "text": words}]
+
+
 def first_line(text):
     return text.strip().splitlines()[0] if text.strip() else text
 
@@ -223,29 +241,33 @@ def text_of(content):
 
 
 class Agent:
-    """memory: a Memory (its contents go into Claude's instructions). gemini: a Gemini, or None for Claude only.
+    """memory: a Memory (its contents go into Claude's instructions).
 
-    model answers on Claude; pc_model answers requests about the PC or a screen (pc_task).
+    model answers personal or risky requests (personal_or_risky); cheap_model answers plain ones and those about
+    the PC or a screen (pc_task).
     """
 
-    def __init__(self, tools=(), model=DEFAULT_MODEL, client=None, budget=None, memory=None, gemini=None,
-                 pc_model=PC_MODEL):
+    def __init__(self, tools=(), model=DEFAULT_MODEL, client=None, budget=None, memory=None,
+                 cheap_model=CHEAP_MODEL):
         self.client = client or anthropic.AsyncAnthropic()
         self.model = model
-        self.pc_model = pc_model
+        self.cheap_model = cheap_model
         self.own_tools = list(tools)  # Natro's own and the MCP servers'
         self.memory = memory
-        self.gemini = gemini
         self.devices = {}  # name -> Device, while connected
         # What happened since the last request that Natro should know (a picture he sent): told with the next one.
         self.notes = []
-        # The same, but personal (a reminder that went off): told with the next request Claude answers, never
-        # to the free tier.
+        # The same, but personal (a reminder that went off): told with the next request a model answers (a quick
+        # command doesn't take them).
         self.private_notes = []
+        # Pictures he sent into the chat, for his next request: (when, Claude's image block, the device's label).
+        self.pictures = []
         self._on_step = lambda step: None  # the request being handled's (one at a time: _busy)
         self._asked = []  # the questions asked so far in the request being handled
-        # A background job finished: the next request goes to Claude, who is told what it found (private_notes).
-        self.claude_next = False
+        self._done = []  # what its tools did so far (told to Claude if it's cancelled)
+        # A background job finished or an alert was shown: the next request counts as personal (Sonnet answers it),
+        # and is told what it found (private_notes).
+        self.personal_next = False
         self.max_steps = MAX_STEPS
         self.session = None
         self.ledger = costs.Ledger(monthly_budget() if budget is None else budget)
@@ -257,16 +279,33 @@ class Agent:
 
     def worker(self, max_steps=MAX_STEPS):
         """An agent for a background job (jobs.py): the same tools, devices, memory, models and spending, with a
-        conversation of its own, so it runs beside his requests. On Claude only: a job is long work, often with
-        his data. Its questions wait their turn with those of his requests (one question at a time)."""
+        conversation of its own, so it runs beside his requests. Its request counts as personal (Sonnet, or Haiku
+        for a PC task): a job is long work, often with his data. Its questions wait their turn with those of his
+        requests (one question at a time)."""
         worker = copy.copy(self)
-        worker.gemini = None
         worker.session = None
-        worker.notes, worker.private_notes = [], []
+        worker.personal_next = True
+        worker.notes, worker.private_notes, worker.pictures = [], [], []
         worker._busy = asyncio.Lock()
-        worker._on_step, worker._asked = (lambda step: None), []
+        worker._on_step, worker._asked, worker._done = (lambda step: None), [], []
         worker.max_steps = max_steps
         return worker
+
+    def picture_sent(self, mime, data, label):
+        """He sent a picture into the chat (from his device with that label): Claude sees it with his next
+        request. False if it isn't a picture that can be read."""
+        block = pictures.for_model(mime, data)
+        if block is None:
+            return False
+        self.pictures = (self.pictures + [(time.monotonic(), block, label)])[-MOST_PICTURES:]
+        return True
+
+    def _take_pictures(self):
+        """The pictures he sent lately, for this request (they go with it, and no further)."""
+        fresh = [(block, label) for when, block, label in self.pictures
+                 if time.monotonic() - when <= PICTURE_MINUTES * 60]
+        self.pictures = []
+        return fresh
 
     def new_conversation(self):
         """New chat on a device: the next request starts a new conversation (one under way finishes)."""
@@ -316,13 +355,19 @@ class Agent:
             if on_start:
                 on_start()
             self._on_step = on_step or (lambda step: None)
-            self._asked = []
+            self._asked, self._done = [], []
             started = time.monotonic()
             before = self._mark()
             try:
                 reply = await self._respond(text, device, on_text, context)
             except asyncio.CancelledError:
                 self._rewind(before)
+                if self._done:
+                    # The conversation forgets the request, but what it did is done: Claude hears of it, so a
+                    # "go on" or "try again" doesn't do it twice (personal: only Claude hears it).
+                    self.private_notes.append(f"he stopped his request \"{text[:200]}\" partway, so it isn't in "
+                                              f"the conversation; before that it had already done: "
+                                              f"{'; '.join(self._done)}")
                 self.ledger.add(voice_cost)
                 log.write("request", device=device.name, text=text, cancelled=True, voice_cost=round(voice_cost, 6),
                           seconds=round(time.monotonic() - started, 2))
@@ -351,24 +396,15 @@ class Agent:
         request = "\n".join(line for line in (self._header(device), context, text) if line)
         if (reply := await self._quick(text, request, device, on_text)) is not None:
             return reply
-        to_gemini = not needs_claude(text) and not self.claude_next
+        sent = self._take_pictures()
         if self.session is None or self.session.expired:
-            if self.gemini and to_gemini:
-                self.session = GeminiSession(self.offered_tools(), list(self.devices.values()))
-            else:
-                self.session = self._claude_session()
-        simple = quick.simple(text)
-        if isinstance(self.session, GeminiSession):
-            if to_gemini:
-                reply = await self._gemini_turn(self.session, request, device, on_text, simple)
-                if reply is not None:
-                    return reply
-            # Claude takes over, with the conversation so far, and keeps it.
-            self.session = self._claude_session(earlier=self.session.turns)
-        model = self.pc_model if pc_task(text) else self.model
-        self.claude_next = False
-        return await self._claude_turn(self.session, self._with_private_notes(request), device, on_text, simple,
-                                       model)
+            self.session = self._claude_session()
+        if personal_or_risky(text) or self.personal_next or sent:
+            self.session.personal = True  # Sonnet keeps the rest of the conversation, as it knows it
+        self.personal_next = False
+        model = self.cheap_model if pc_task(text) or not self.session.personal else self.model
+        return await self._claude_turn(self.session, with_pictures(self._with_private_notes(request), sent), device,
+                                       on_text, quick.simple(text), model)
 
     async def _quick(self, text, request, device, on_text):
         """A common short command run without a model (see quick.py), or None if it isn't one or didn't work."""
@@ -379,65 +415,32 @@ class Agent:
             return None
         name, args = found
         reply = Reply("", "none (quick)")
-        content, failed = await self._call_tool(tools, name, args, device, "", reply)
+        content, failed, _ = await self._call_tool(tools, name, args, device, "", reply)
         if failed:
             return None  # a model may know better (say, the phone's media rather than Spotify)
         reply.text = first_line(content)
         on_text(reply.text)
         # Keep the conversation whole, for follow-ups.
-        if isinstance(self.session, GeminiSession) and in_conversation:
-            self.session.turns.append((request, reply.text, [f"{name} {json.dumps(args)}"]))
-            self.session.last_used = time.monotonic()
-        elif isinstance(self.session, Session) and in_conversation:
-            self.session.messages += [{"role": "user", "content": request},
-                                      {"role": "assistant", "content": f"{reply.text} [ran {name} {json.dumps(args)}]"}]
+        if self.session is not None and in_conversation:
+            self.session.messages += quick_turn(request, name, args, content, reply.text, name in self.session.tools)
             self.session.last_used = time.monotonic()
         return reply
 
     def _mark(self):
         """Where the conversation stands now, to go back to if a request is cancelled."""
         session = self.session
-        if isinstance(session, GeminiSession):
-            return session, (len(session.contents), len(session.turns))
-        if isinstance(session, Session):
-            return session, (len(session.messages),)
-        return session, ()
+        return session, len(session.messages) if session else 0
 
     def _rewind(self, mark):
         """The conversation as it was at mark: a cancelled request's turns taken off its end."""
-        session, lengths = mark
+        session, length = mark
         self.session = session
-        if isinstance(session, GeminiSession):
-            del session.contents[lengths[0]:]
-            del session.turns[lengths[1]:]
-        elif isinstance(session, Session):
-            del session.messages[lengths[0]:]
+        if session is not None:
+            del session.messages[length:]
 
-    def _claude_session(self, earlier=()):
+    def _claude_session(self):
         memory = self.memory.prompt_section() if self.memory else None
-        return Session(self.model, self.offered_tools(), list(self.devices.values()), memory, earlier)
-
-    async def _gemini_turn(self, session, request, device, on_text, simple=False):
-        """Gemini's reply, or None when Claude should answer instead."""
-        reply = Reply("", self.gemini.model)
-
-        async def run_tool(name, args):
-            return await self._call_tool(session.tools, name, args, device, "", reply)
-
-        try:
-            outcome = await self.gemini.respond(session, request, run_tool, shortcut=simple)
-        except Exception as e:  # rate limit, outage, odd response: Claude answers instead
-            log.write("model_error", model=self.gemini.model, error=repr(e), switched_to=self.model)
-            return None
-        if outcome.handed_over:
-            log.write("hand_over", reason=outcome.reason)
-            return None
-        used = [f"{call['tool']} {json.dumps(call['args'], ensure_ascii=False)}" for call in reply.tool_calls]
-        session.turns.append((request, outcome.text, used))
-        session.last_used = time.monotonic()
-        reply.text, reply.model = outcome.text, outcome.model
-        on_text(outcome.text)
-        return reply
+        return Session(self.model, self.offered_tools(), list(self.devices.values()), memory)
 
     async def _claude_turn(self, session, request, device, on_text, simple=False, model=None):
         if self.ledger.over_budget and not await self._ask(
@@ -484,14 +487,19 @@ class Agent:
                 break
             # Natro's sentence before a risky tool (or before many changes) is the confirmation question.
             declined = await self._many_changes(changes, session.tools, tool_uses, device, text_of(content))
+            # The same call twice in one step runs once: two taps on the same element at once would tap twice.
+            first = {}
+            for block in tool_uses:
+                first.setdefault(call_key(block), block.id)
             results = await asyncio.gather(*(self._use_tool(session, block, device, text_of(content), reply,
                                                             declined=block.id in declined)
+                                             if first[call_key(block)] == block.id else repeated(block)
                                              for block in tool_uses))
             session.messages.append({"role": "user", "content": list(results)})
             last = len(said)
             failing = failing + 1 if all(result["is_error"] for result in results) else 0
-            if not taken_over and session.model == self.model != self.pc_model and                     self._uses_pc_screen(session, tool_uses):
-                cheaper = self._usable(session, self.pc_model)
+            if not taken_over and session.model == self.model != self.cheap_model and                     self._uses_pc_screen(session, tool_uses):
+                cheaper = self._usable(session, self.cheap_model)
                 log.write("cheaper_model", model=session.model, switched_to=cheaper, reason="the PC's screen")
                 session.model = cheaper
             if simple and step == 0 and not said and len(results) == 1 and not results[0]["is_error"] \
@@ -613,11 +621,16 @@ class Agent:
     async def _use_tool(self, session, block, device, question, reply, declined=False):
         """Run one of Claude's tool calls and return its tool_result."""
         args = block.input if isinstance(block.input, dict) else {}
-        content, is_error = await self._call_tool(session.tools, block.name, args, device, question, reply, declined)
+        content, is_error, shown = await self._call_tool(session.tools, block.name, args, device, question, reply,
+                                                         declined)
+        seen = [image for image in (pictures.for_model(mime, data) for mime, data in shown) if image]
+        if seen:  # a screenshot: she sees it with the tool's words
+            content = [{"type": "text", "text": content}, *seen]
         return {"type": "tool_result", "tool_use_id": block.id, "content": content, "is_error": is_error}
 
     async def _call_tool(self, tools, name, args, device, question, reply, declined=False):
-        """Run one tool call, asking first if it needs a yes. Returns (text for the model, whether it failed).
+        """Run one tool call, asking first if it needs a yes. Returns (text for the model, whether it failed, the
+        pictures it gave as (mime, bytes) pairs).
 
         declined: the owner already said no to it (as one of many changes).
         """
@@ -626,6 +639,7 @@ class Agent:
             # Models sometimes get the letter case of a name wrong.
             tool = next((t for known, t in tools.items() if known.lower() == name.lower()), None)
         call = {"tool": name, "args": args}
+        shown = []
         if tool is None:
             content, is_error = f"There is no tool named {name!r}.", True
         elif declined or tool.confirm and not await self._ask(device, question or plain_question(tool.name, args),
@@ -634,13 +648,16 @@ class Agent:
             call["declined"] = True
         else:
             self._show_step(tool.name, args)
-            content, is_error = await self._run(tool, args)
+            content, is_error, shown = await self._run(tool, args)
+            if not is_error:
+                self._done.append(f"{tool.name} {json.dumps(args, ensure_ascii=False)[:160]}: "
+                                  f"{first_line(content)[:160]}")
         call.update(ok=not is_error, result=content[:500])
         log.write("tool", device=device.name, **call)
         reply.tool_calls.append(call)
         if len(content) > RESULT_CHARS:
             content = f"{content[:RESULT_CHARS]}\n[cut here: the whole result was {len(content)} characters]"
-        return content, is_error
+        return content, is_error, shown
 
     def _show_step(self, name, args):
         try:
@@ -649,15 +666,16 @@ class Agent:
             log.write("error", step="describe", tool=name, error=repr(e))
 
     async def _run(self, tool, args):
-        """Returns (text for the model, whether it failed)."""
+        """Returns (text for the model, whether it failed, its pictures)."""
         try:
-            return result_text(await asyncio.wait_for(tool.run(args), TOOL_SECONDS)), False
+            result = await asyncio.wait_for(tool.run(args), TOOL_SECONDS)
         except ToolError as e:
-            return str(e), True
+            return str(e), True, []
         except asyncio.TimeoutError:
-            return f"{tool.name} took longer than {TOOL_SECONDS} seconds and was stopped.", True
+            return f"{tool.name} took longer than {TOOL_SECONDS} seconds and was stopped.", True, []
         except Exception as e:
-            return f"{tool.name} failed: {type(e).__name__}: {e}", True
+            return f"{tool.name} failed: {type(e).__name__}: {e}", True, []
+        return result_text(result), False, list(result.pictures) if isinstance(result, WithPictures) else []
 
     async def _ask(self, device, question, details):
         """Ask the owner on the device; no answer within CONFIRM_SECONDS counts as no."""

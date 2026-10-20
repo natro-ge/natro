@@ -6,11 +6,9 @@ import pytest
 from conftest import FakeClient, Owner, message, run, text, tool_use
 from natro_agent import chats
 from natro_agent.agent import Agent
-from natro_agent.gemini import Gemini
 from natro_agent.jobs import MAX_STEPS, MOST_AT_ONCE, RUNNING, Jobs, lead
 from natro_agent.server import Server
 from natro_agent.tools import ToolError
-from test_routing import FakeGeminiClient
 from test_shared_chat import CLOSE, SCREENSHOT, devices, hello
 
 TASK = "Find three flats in Tbilisi under 600 dollars a month and put them in a note called Flats."
@@ -119,22 +117,30 @@ def test_the_tools_are_personal_and_start_job_is_a_reply_by_itself():
 
 # --- The agent ----------------------------------------------------------------------------------
 
-def test_a_worker_has_a_conversation_of_its_own_on_claude():
-    agent = Agent(client=FakeClient(), gemini=Gemini(client=FakeGeminiClient()))
+def test_a_worker_has_a_conversation_of_its_own():
+    agent = Agent(client=FakeClient())
     agent.notes.append("he sent a picture")
     worker = agent.worker(MAX_STEPS)
     assert worker.devices is agent.devices and worker.ledger is agent.ledger and worker.own_tools is agent.own_tools
-    assert worker.gemini is None and worker.session is None and worker.notes == [] and worker.max_steps == 30
+    assert worker.session is None and worker.notes == [] and worker.max_steps == 30
     assert worker._busy is not agent._busy and worker._asking is agent._asking
     assert agent.notes == ["he sent a picture"] and agent.max_steps == 20
 
 
-def test_after_a_job_the_next_request_goes_to_claude():
-    gemini = FakeGeminiClient()  # nothing scripted: a call would fail the test
-    agent = Agent(client=FakeClient(message(text("Three flats, in your note."))), gemini=Gemini(client=gemini))
-    agent.claude_next = True
+def test_a_job_runs_on_sonnet_even_when_its_words_are_plain():
+    client = FakeClient(message(text("Flights to Berlin from 180 dollars.")))
+    worker = Agent(client=client).worker(MAX_STEPS)
+    run(worker.respond("compare flights to Berlin next weekend", Owner()))
+    assert client.requests[0]["model"] == "claude-sonnet-5-5"
+
+
+def test_after_a_job_the_next_request_goes_to_sonnet():
+    client = FakeClient(message(text("Three flats, in your note.")))
+    agent = Agent(client=client)
+    agent.personal_next = True
     reply = run(agent.respond("what did you find", Owner()))
-    assert reply.text == "Three flats, in your note." and gemini.requests == [] and not agent.claude_next
+    assert reply.text == "Three flats, in your note." and not agent.personal_next
+    assert client.requests[0]["model"] == "claude-sonnet-5-5"
 
 
 # --- Through the server -------------------------------------------------------------------------
@@ -166,7 +172,7 @@ def test_a_job_runs_then_is_shown_everywhere_and_spoken_where_he_is(monkeypatch)
     request = server.agent.client.requests[1]["messages"][0]["content"]
     assert "[A background job: he asked for this on his PC at " in request and request.endswith(TASK)
     # Claude hears what it found with the next request.
-    assert server.agent.claude_next and FOUND in server.agent.private_notes[0]
+    assert server.agent.personal_next and FOUND in server.agent.private_notes[0]
 
 
 def test_his_requests_go_on_while_a_job_works(monkeypatch):
@@ -247,7 +253,7 @@ def test_cancel_that(monkeypatch):
     assert job.state == "cancelled"
     entry = server.chat.entries["natro:jb1"]
     assert entry["problem"] == "Cancelled" and entry["done"]
-    assert not server.agent.claude_next  # nothing to tell
+    assert not server.agent.personal_next  # nothing to tell
 
 
 def test_apps_that_dont_show_jobs_only_see_it_in_the_chat(monkeypatch):

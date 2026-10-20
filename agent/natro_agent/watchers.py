@@ -8,15 +8,17 @@ Kinds:
                  notifications (it's sent the rules: watch_rules) and sends only those that match
                  (notification_matched): "Bank of Georgia: You received 500 GEL."
   meetings       a heads-up before each timed event in his calendar: "Dentist at City clinic in 10 minutes."
-                 There's one from the start; cancelling it stops them. With travel time (travel.py) and his home
-                 address, an event at a place that's further away than that says when to leave instead: "Time
-                 to leave for Dentist at City clinic: about 25 minutes by car from home; it starts at 15:00."
+                 There's one from the start; cancelling it stops them. With travel time (travel.py), an event at a
+                 place further away than that gives the heads-up as long before he has to leave instead: "Leave
+                 in 10 minutes for Dentist at City clinic: about 25 minutes by car from where you are; it starts
+                 at 15:00." The trip starts where his phone is (its location tool, while it's online and
+                 allowed), else at his home address.
 
 A watcher goes after its first match (once) or stays. An urgent one (meetings always) is said out loud where he
 is; the rest only show. An alert goes to every device that says "alerts" in its hello and into the chat; one
 that no device could show waits for one until it's stale (an email's or a notification's after STALE_HOURS, a
-meeting's once it starts). The next request Claude answers hears of an email or a notification (Gemini never
-does). Kept in watchers.json.
+meeting's once it starts). The next request a model answers hears of an email or a notification (Sonnet answers
+it). Kept in watchers.json.
 
 Natro to device:
   {"type": "alert", "id": "al3", "text": "Nino emailed: Dinner on Friday.", "kind": "email", "urgent": false,
@@ -39,7 +41,7 @@ from natro_agent import log
 from natro_agent.config import timezone
 from natro_agent.google_tools import header_map
 from natro_agent.tools import Tool, ToolError
-from natro_agent.travel import MODE_WORDS, minutes_words
+from natro_agent.travel import COORDINATES, MODE_WORDS, minutes_words
 
 CHECK_SECONDS = 30
 EMAIL_SECONDS = 120
@@ -47,9 +49,13 @@ EMAIL_SECONDS = 120
 MEETINGS_AHEAD = timedelta(hours=2)
 MEETINGS_SECONDS = 300
 MEETING_MINUTES = 10
-# Time to spare when saying when to leave; the trip is looked up again this often while the meeting is ahead.
+# Time to spare when saying when to leave; the trip is looked up again this often while the meeting is ahead
+# (more often once it's near, as he may have moved), and where his phone is, at most this often.
 LEAVE_SPARE_MINUTES = 5
 TRIP_SECONDS = 1800
+TRIP_NEAR_SECONDS = 600
+NEAR = timedelta(minutes=45)
+PLACE_SECONDS = 300
 # A meeting's "place" that's a link or a call, not somewhere to go.
 ONLINE = re.compile(r"https?://|www\.|zoom|meet\.google|teams|skype|webex|online|discord|phone call", re.IGNORECASE)
 STALE_HOURS = 12
@@ -102,7 +108,8 @@ class Watchers:
         self.devices = devices
         self.google = google
         self.travel = travel
-        self._trips = {}  # a meeting's key -> (its trip from home, or None; when it was looked up)
+        self._trips = {}  # a meeting's key -> (its trip, or None; when it was looked up)
+        self._place = (None, 0.0)  # where his phone is ("lat,lng", or None), and when (monotonic) it was asked
         self.deliver = lambda alert: False
         self.now = lambda: datetime.now(timezone())
         self._ids = itertools.count(1)
@@ -117,7 +124,8 @@ class Watchers:
                  "Keep an eye out for something and tell him when it happens, with no need to ask again: an email "
                  "from someone (kind email: from, and about if he said what it's about), a notification on his "
                  "phone (kind notification: app and/or words in it), or heads-ups before his meetings (kind "
-                 "meetings: minutes). once: only the next time (\"tell me when Nino's email comes\"); otherwise "
+                 "meetings: minutes; for one at a place he has to travel to, the heads-up comes that long before "
+                 "he has to leave, with the trip from where his phone is). once: only the next time (\"tell me when Nino's email comes\"); otherwise "
                  "every time (\"always tell me when Nino emails\"). urgent: he wants it said out loud right away; "
                  "otherwise it's only shown.",
                  {"type": "object", "properties": {
@@ -259,14 +267,12 @@ class Watchers:
                 continue
             what = short(event.get("summary") or "A meeting", 80)
             where = f" at {event['location']}" if event.get("location") else ""
-            trip = await self._trip(event, key, start)
+            trip = await self._trip(event, key, start, now)
             if trip and trip["minutes"] + LEAVE_SPARE_MINUTES > watcher["minutes"]:
-                # Further than the heads-up gives time for: when to leave, instead of it.
+                # Further than the heads-up gives time for: the heads-up comes before he has to leave instead.
                 leave = start - timedelta(minutes=trip["minutes"] + LEAVE_SPARE_MINUTES)
-                if now >= leave:
-                    self._alert(watcher, f"Time to leave for {what}{where}: about {minutes_words(trip['minutes'])} "
-                                         f"{MODE_WORDS[trip['mode']]} from {trip['from']}; it starts at "
-                                         f"{start:%H:%M}.", now, until=start, key=key)
+                if now >= leave - timedelta(minutes=watcher["minutes"]):
+                    self._alert(watcher, leave_words(what, where, trip, start, leave, now), now, until=start, key=key)
                 continue
             if left > watcher["minutes"] * 60:
                 continue
@@ -274,23 +280,47 @@ class Watchers:
             text = f"{what}{where} in {minutes} minute{'s' if minutes > 1 else ''}."
             self._alert(watcher, text, now, until=start, key=key)
 
-    async def _trip(self, event, key, start):
-        """The trip from home to a meeting's place, looked up now and then; None if it has none, or can't be."""
+    async def _trip(self, event, key, start, now):
+        """The trip to a meeting's place from where he is (or home), looked up now and then; None if it has no
+        place, or no trip can be found."""
         place = (event.get("location") or "").strip()
         travel = self.travel
-        if not place or ONLINE.search(place) or not travel or not travel.available or not travel.home:
+        if not place or ONLINE.search(place) or not travel or not travel.available:
             return None
         known = self._trips.get(key)
-        if known and time.monotonic() - known[1] < TRIP_SECONDS:
+        again = TRIP_NEAR_SECONDS if start - now <= NEAR else TRIP_SECONDS
+        if known and time.monotonic() - known[1] < again:
             return known[0]
+        here = await self._where_he_is()
+        if not here and not travel.home:
+            return None
         try:
-            trip = await travel.trip(place)
+            trip = await travel.trip(place, origin=here)
+            trip["here"] = bool(here)
         except ToolError as e:
             if not known:  # once is enough
                 log.write("watcher", event="no_trip", place=place, error=str(e))
             trip = None
         self._trips[key] = (trip, time.monotonic())
         return trip
+
+    async def _where_he_is(self):
+        """Where his phone is, as "lat,lng" (asked at most every PLACE_SECONDS); None when it's offline, or
+        can't say."""
+        place, asked = self._place
+        if asked and time.monotonic() - asked < PLACE_SECONDS:
+            return place
+        phone = self.devices.get("phone")
+        tool = next((tool for tool in phone.tools() if tool.name == "phone_location"), None) if phone else None
+        place = None
+        if tool:
+            try:
+                found = COORDINATES.search(str(await asyncio.wait_for(tool.run({}), 30)))
+                place = f"{found.group(1)},{found.group(2)}" if found else None
+            except Exception as e:  # off, not allowed, no fix: from home
+                log.write("watcher", event="no_place", error=str(e)[:200])
+        self._place = (place, time.monotonic())
+        return place
 
     async def _email(self, now):
         for watcher in [item for item in self.items if item["kind"] == "email"]:
@@ -381,6 +411,16 @@ class Watchers:
         partial.write_text(json.dumps({"watchers": self.items, "waiting": self.waiting, "told": self.told},
                                       ensure_ascii=False, indent=1), encoding="utf-8")
         partial.replace(self.path)
+
+
+def leave_words(what, where, trip, start, leave, now):
+    """"Leave in 10 minutes for Dentist at City clinic: about 25 minutes by car from where you are; it starts at
+    15:00." ("Time to leave for ..." once it's time.)"""
+    minutes = round((leave - now).total_seconds() / 60)
+    when = f"Leave in {minutes} minute{'s' if minutes > 1 else ''} for" if minutes >= 1 else "Time to leave for"
+    start_from = "where you are" if trip.get("here") else trip["from"]
+    return (f"{when} {what}{where}: about {minutes_words(trip['minutes'])} {MODE_WORDS[trip['mode']]} from "
+            f"{start_from}; it starts at {start:%H:%M}.")
 
 
 def declined(event):

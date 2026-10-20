@@ -234,11 +234,11 @@ def test_switching_windows_and_waiting():
     assert fake.actions() == [("switch", "Notepad"), ("wait_for", "Messages", 20)]
 
 
-def test_a_screenshot_is_a_picture_for_the_chat():
+def test_a_screenshot_is_a_picture_for_natro_and_the_chat():
     pc, fake = make()
     shot = pc.screenshot()
     fields = result_fields(shot)
-    assert fields["result"].startswith("The screenshot of his PC's screen is in the chat")
+    assert fields["result"].startswith("The screenshot of his PC's screen is here, and in the chat")
     assert fields["picture"]["mime"] == "image/jpeg" and base64.b64decode(fields["picture"]["data"]) == JPEG
     assert result_fields("Opened Spotify.") == {"result": "Opened Spotify."}
 

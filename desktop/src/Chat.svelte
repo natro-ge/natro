@@ -12,6 +12,7 @@
   import { fade, scale } from 'svelte/transition'
   import { format } from './format'
   import { GLYPHS } from './glyphs'
+  import { DoubleTap } from './twice'
 
   type Step = { label: string; icon: string; image: string | null }
   // answer: empty while Natro waits; then "Yes", "No", or what was typed or said.
@@ -39,12 +40,22 @@
     reminder: boolean
     // A background job's task: her work on it as it goes, then what she found.
     job: string
+    // A routine's name, on the job that is its run (an older server leaves it out).
+    routine?: string
     // Something a watcher saw: her words alone, as a reminder's.
     alert: boolean
   }
   // A request he made on the phone while the PC was off, to run or skip.
   type Queued = { id: string; text: string; from: string; time: number }
-  type Shown = { exchanges: Exchange[]; listening: boolean; pictures: Record<string, string>; queued: Queued[] }
+  // A message from the phone that what's typed answers (the reply box's Reply).
+  type Replying = { id: string; to: string }
+  type Shown = {
+    exchanges: Exchange[]
+    listening: boolean
+    pictures: Record<string, string>
+    queued: Queued[]
+    replying?: Replying | null
+  }
   type ChatEvent =
     | ({ action: 'show' } & Shown)
     | { action: 'hide' }
@@ -55,6 +66,7 @@
     | { action: 'queued'; items: Queued[] }
     | { action: 'listening'; on: boolean }
     | { action: 'notice'; text: string }
+    | { action: 'replying'; replying: Replying | null }
 
   // The text grows to this tall (about five lines), then scrolls.
   const TALLEST_TEXT = 110
@@ -80,6 +92,9 @@
   }
 
   let open = $state(false)
+  // The modifier tapped twice that closes the chat too ("alt"), as the keybind says when it opens.
+  let twice: string | null = null
+  const taps = new DoubleTap()
   // The + menu: a new chat, files to the phone, a picture, Settings.
   let menu = $state(false)
   let menuBox: HTMLElement | undefined = $state()
@@ -92,6 +107,7 @@
   let listening = $state(false)
   let draft = $state('')
   let notice = $state('')
+  let replying = $state<Replying | null>(null)
   // The microphone's loudness, 0 to 1, smoothed for the eye.
   let level = $state(0)
   let stage: HTMLElement | undefined = $state()
@@ -111,10 +127,13 @@
   let lastHits = ''
 
   function show(event: Shown) {
+    taps.interrupt()
+    invoke<string | null>('settings_twice').then((key) => (twice = key))
     exchanges = event.exchanges
     listening = event.listening
     pictures = event.pictures
     queued = event.queued
+    replying = event.replying ?? null
     following = true
     if (!open) {
       // Let the closed blob be drawn once, so it rises from there.
@@ -154,6 +173,12 @@
     draft = ''
     following = true
     if (!(await invoke<boolean>('chat_send', { text }))) draft = text // offline: keep it
+    focusField()
+  }
+
+  function stopReplying() {
+    replying = null
+    invoke('chat_stop_replying')
     focusField()
   }
 
@@ -253,16 +278,28 @@
 
   /** A press anywhere but the menu and its + closes the menu. */
   function pointerdown(event: PointerEvent) {
+    taps.interrupt()
     const target = event.target as Node
     if (menu && !menuBox?.contains(target) && !moreButton?.contains(target)) closeMenu(false)
   }
 
   function keydown(event: KeyboardEvent) {
+    taps.press(event)
+    // Alt alone would put the window in menu mode, which swallows the second tap's press.
+    if (event.key === 'Alt' && twice === 'alt') event.preventDefault()
     if (event.key === 'Escape') {
       event.preventDefault()
       if (menu) closeMenu()
+      else if (replying) stopReplying()
       else invoke('chat_close')
     }
+  }
+
+  /** The double tap closes the chat, as it opened it (here, as the chat has the keyboard). */
+  function keyup(event: KeyboardEvent) {
+    if (event.key === 'Alt' && twice === 'alt') event.preventDefault()
+    const key = taps.release(event)
+    if (open && key && key === twice) invoke('chat_close', { keys: `${event.key} twice` })
   }
 
   function fieldKeydown(event: KeyboardEvent) {
@@ -333,6 +370,7 @@
           case 'hide':
             open = false
             menu = false
+            replying = null
             listening = false
             notice = ''
             return
@@ -358,6 +396,10 @@
             return
           case 'notice':
             return showNotice(payload.text)
+          case 'replying':
+            replying = payload.replying
+            if (replying) focusField()
+            return
         }
       }),
       listen<number>('level', ({ payload }) => (heard = loudness(payload))),
@@ -377,9 +419,13 @@
 
 <svelte:window
   onkeydown={keydown}
+  onkeyup={keyup}
   onpointerdown={pointerdown}
   onfocus={() => open && !listening && !menu && focusField()}
-  onblur={() => closeMenu(false)}
+  onblur={() => {
+    taps.interrupt()
+    closeMenu(false)
+  }}
 />
 
 <main class="stage" class:open class:listening bind:this={stage}>
@@ -391,7 +437,7 @@
       {:else if exchange.alert}
         <span class="from reminder">Heads-up</span>
       {:else if exchange.job}
-        <span class="from reminder job" title={exchange.job}>In the background: {exchange.job}</span>
+        <span class="from reminder job" title={exchange.job}>{exchange.routine ? `Routine: ${exchange.routine}` : `In the background: ${exchange.job}`}</span>
       {:else if exchange.from || exchange.queued}
         <span class="from">
           {exchange.queued ? `Asked on your ${exchange.queued} while the PC was off` : `On your ${exchange.from}`}
@@ -495,8 +541,16 @@
   {/snippet}
 
   <div class="bottom">
+    {#if replying}
+      <div class="replying" data-hit transition:fade={{ duration: 140 }}>
+        <span>Replying to <strong>{replying.to}</strong>, from your phone</span>
+        <button aria-label="Don't reply" title="Don't reply (Esc)" onclick={stopReplying}>
+          <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 2.5l5 5M7.5 2.5l-5 5" /></svg>
+        </button>
+      </div>
+    {/if}
     {#if notice}
-      <div class="notice" transition:fade={{ duration: 180 }}>{notice}</div>
+      <div class="notice" class:raised={replying} transition:fade={{ duration: 180 }}>{notice}</div>
     {/if}
     {#if menu}
       <!-- svelte-ignore a11y_interactive_supports_focus -->
@@ -541,7 +595,7 @@
             bind:this={field}
             bind:value={draft}
             rows="1"
-            placeholder={waiting ? 'Answer Natro: yes or no' : 'Ask Natro…'}
+            placeholder={replying ? `Your answer to ${replying.to}` : waiting ? 'Answer Natro: yes or no' : 'Ask Natro…'}
             aria-label="Message to Natro"
             onkeydown={fieldKeydown}
             onpaste={pasted}
@@ -1231,6 +1285,46 @@
     animation-delay: calc(50ms + var(--at) * 35ms);
   }
 
+  /* Answering a message from the phone: a pill over the box, as the notice is (which goes above it then). */
+  .replying {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    translate: -50% 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 4px 3px 14px;
+    border: 1px solid var(--border);
+    border-radius: 15px;
+    background: var(--glass-dense);
+    box-shadow: var(--shadow);
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  .replying button {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+  }
+  .replying button:hover {
+    background: rgba(127, 127, 127, 0.2);
+  }
+  .replying svg {
+    width: 10px;
+    height: 10px;
+    stroke: currentColor;
+    stroke-width: 1.4;
+    stroke-linecap: round;
+  }
+
   /* A word over the box for a moment ("Natro is offline"). */
   .notice {
     position: absolute;
@@ -1245,6 +1339,9 @@
     font-size: 13px;
     font-weight: 500;
     white-space: nowrap;
+  }
+  .notice.raised {
+    bottom: calc(100% + 44px);
   }
 
   @keyframes pop {

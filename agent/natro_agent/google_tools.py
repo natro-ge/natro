@@ -4,7 +4,7 @@ Signed in once on the PC with `python -m natro_agent.google_signin` (it needs a
 browser); the token it writes, tokens/google.json, goes to the same place on the
 VPS. The tools are offered only when that file exists, and only for what the
 token allows (Drive and Docs came later: a token from before offers neither).
-Everything here is personal, so it never goes to the free Gemini tier. Deleting
+Everything here is personal, so a request about it goes to Sonnet. Deleting
 an event or a task, sending an email and replacing text in a document ask the
 owner first.
 

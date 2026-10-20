@@ -104,7 +104,7 @@ def test_likely_hours():
     assert likely_hours(hours, chances, day, after=datetime(2026, 10, 18, 9)) == ["around 12:00", "22:00-23:00"]
 
 
-def test_the_weather_tool_is_free_for_gemini():
+def test_the_weather_tool_is_not_personal():
     tool, = Weather(home="Tbilisi", get=FakeOpenMeteo()).tools()
     assert tool.name == "weather" and not tool.personal and not tool.confirm
     assert "(Tbilisi)" in tool.description
@@ -149,7 +149,9 @@ def test_everything_at_once(tmp_path):
     assert ("Tasks:\nOverdue:\n- Pay rent (was due Thu 15 Oct)\nDue today:\n- Buy milk\nDue tomorrow:\n"
             "- Call the bank\nOther open tasks (no date, or due later): 2.") in text
     assert "Email, unread in Primary since Sat 17 Oct 09:00:\n- From Nino: Dinner (unread)" in text
-    rest, tomorrow = [params for method, url, params, _ in fake.requests if url == f"{CALENDAR}/events"]
+    # Both are asked at once: in whichever order they finish.
+    rest, tomorrow = sorted((params for method, url, params, _ in fake.requests if url == f"{CALENDAR}/events"),
+                            key=lambda params: params["timeMin"])
     assert rest["timeMin"] == "2026-10-18T09:00:00+04:00" and rest["timeMax"] == "2026-10-18T23:59:00+04:00"
     assert tomorrow["timeMin"] == "2026-10-19T00:00:00+04:00" and tomorrow["timeMax"] == "2026-10-20T00:00:00+04:00"
 

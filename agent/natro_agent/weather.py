@@ -3,7 +3,7 @@
 weather tells now and the days ahead for a place (his home, NATRO_WEATHER_PLACE, unless another is named):
 the conditions, the lowest and highest temperatures, and the chance of rain with the hours it's likeliest.
 A place's name is found with Open-Meteo's geocoding ("Batumi, Georgia" picks the Batumi in Georgia) and
-kept for the next time. Not personal, so the free Gemini tier may use it too.
+kept for the next time. Not personal.
 """
 import asyncio
 import json

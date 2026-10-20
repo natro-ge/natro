@@ -3,7 +3,7 @@
 Listens on NATRO_LISTEN (host:port). On the VPS that is its Tailscale address,
 never a public one; the default 127.0.0.1:8700 is for trying it on one machine.
 If NATRO_DEVICE_TOKEN is set in .env, devices must send it in their hello.
-GET /health answers "ok", so a device can show "Natro is online".
+GET /health answers "ok", so a device can show "Natro is online". /dashboard is the dashboard (dashboard.py).
 
 Usage: python -m natro_agent.server
 
@@ -13,7 +13,8 @@ recording, 16 kHz mono 16-bit PCM) and each "file_part" message (the next piece 
 Device to Natro:
   {"type": "hello", "device": "pc", "label": "PC", "token": "...", "tools": [...], "files": true,
    "chat": true, "queue": true, "reminders": true, "jobs": true,
-   "alerts": true, "watch_notifications": true, "questions": true}   first; tools as in tools.device_tools;
+   "alerts": true, "watch_notifications": true, "questions": true,
+   "phone_messages": true}                                          first; tools as in tools.device_tools;
                                                                     files: it can send and receive files;
                                                                     chat: it shows the shared chat (chats.py);
                                                                     queue: it asks about requests kept for
@@ -25,7 +26,9 @@ Device to Natro:
                                                                     matches its notifications to the rules
                                                                     it's sent (watchers.py); questions: it
                                                                     asks Natro's questions that are asked on
-                                                                    another device too, to answer them there
+                                                                    another device too, to answer them there;
+                                                                    phone_messages: it shows the messages that
+                                                                    come to the phone (below)
   {"type": "text", "id": "r1", "text": "open Chrome"}               a typed request, in English
   {"type": "audio", "id": "r2"} + recording                         a spoken request, in Georgian
   {"type": "audio", "id": "r3", "answer_to": "q1"} + recording      a spoken yes or no to a question
@@ -35,9 +38,11 @@ Device to Natro:
   {"type": "tool_result", "id": "c1", "ok": true, "result": "...",
    "picture": {"mime": "image/jpeg", "name": "...", "data": "<base64>"}}
                                                                     the result of a tool_call; picture
-                                                                    (optional): for the chat, not for Natro
+                                                                    (optional): for the chat, and Claude
+                                                                    sees it with the result
   {"type": "picture", "id": "p1", "mime": "image/jpeg", "name": "..."} + its bytes
-                                                                    a picture he sent, for the chat
+                                                                    a picture he sent, for the chat; Claude
+                                                                    sees it with his next request
   {"type": "chat_clear"}                                            New chat: on both devices, and Natro
                                                                     starts a new conversation
   {"type": "cancel", "id": "r2"}                                    stop a request: no more tool calls, no reply
@@ -70,9 +75,21 @@ Natro to device:
                                                                     or (yes: null) not, and given up on
   The shared chat (chats.py): chat_entry, chat_all, chat_picture + bytes, chat_cleared. Requests kept
   for this device while it was offline (pending.py): queued. Reminders (reminders.py): reminder, and
-  reminder_snoozed after the device's reminder_snooze. Background jobs (jobs.py): job_done. Watchers
+  reminder_snoozed after the device's reminder_snooze. Background jobs (jobs.py): job_done, titled for a
+  routine's run (routines.py), and kept for a device that shows jobs when none is online. Watchers
   (watchers.py): alert, watch_rules; from the device, notification_matched. The Settings window's keys
   (keys.py): keys, both ways.
+  Messages that come to the phone (WhatsApp, texts...), for the devices that show them, to answer there; the
+  phone answers in the message's own app (its reply_message tool):
+  {"type": "phone_message", "key": "...", "app": "WhatsApp", "title": "Nino", "text": "...", "reply": true}
+                                                                    (phone to Natro) a message came; reply: it
+                                                                    can be answered from its notification
+  {"type": "phone_message_gone", "key": "..."}                     (phone to Natro) its notification went
+  {"type": "phone_message", "id": "pm1", "app": "WhatsApp", "title": "Nino", "text": "...", "reply": true,
+   "device": "phone", "label": "phone"}                            (Natro to device) show it
+  {"type": "phone_message_gone", "id": "pm1"}                       (Natro to device) it's read or gone
+  {"type": "message_reply", "id": "r5", "to": "pm1", "text": "..."}  (device to Natro) his answer, typed: a
+                                                                    request answered with reply or error
   {"type": "error", "id": "r2", "message": "..."}
   {"type": "cancelled", "id": "r2"}                                 the request is stopped: any tool_call
                                                                     before this was still for it
@@ -123,14 +140,16 @@ from natro_agent import identity, log
 from natro_agent.chats import SharedChat
 from natro_agent.convert import Converter, available as converters
 from natro_agent.config import ROOT, load_env, timezone
+from natro_agent.dashboard import Dashboard
 from natro_agent.files import Transfers
 from natro_agent.jobs import MAX_STEPS as JOB_STEPS, RUNNING, Jobs, lead, short
 from natro_agent.keys import RESTART_CODE, Keys
 from natro_agent.mcp_client import MCPServers
 from natro_agent.pending import PendingRequests
 from natro_agent.reminders import Reminders
+from natro_agent.routines import QUIET_REPLY, Routines, is_quiet
 from natro_agent.setup import build_agent, google_account
-from natro_agent.tools import Device, ToolError, device_tools
+from natro_agent.tools import Device, ToolError, WithPictures, device_tools
 from natro_agent.travel import Travel
 from natro_agent.watchers import Watchers
 
@@ -141,6 +160,11 @@ RECENT_MINUTES = 30
 LATE_MINUTES = 2
 # What a finished background job found, as the next request Claude answers hears it.
 JOB_NOTE_CHARS = 1500
+# A finished job no device could show waits for one this long.
+JOB_WAIT_HOURS = 12
+# The phone's messages a device may still answer, by id.
+MOST_MESSAGES = 50
+MESSAGE_SECONDS = 30
 # Recordings are sent whole: 16 MB is over 8 minutes of audio.
 MAX_MESSAGE_BYTES = 16 * 2**20
 HELLO_SECONDS = 10
@@ -206,6 +230,8 @@ class RemoteDevice(Device):
         self.alerts = bool(hello.get("alerts"))
         self.watch_notifications = bool(hello.get("watch_notifications"))
         self.questions = bool(hello.get("questions"))
+        self.phone_messages = bool(hello.get("phone_messages"))
+        self.since = time.time()  # when it connected, for the dashboard
         # Set by the server: Natro asked a question (id, text, details), and it's over (id, his yes or no, or None
         # when it went unanswered); a tool's result came with a picture; the chat entry of the request being handled.
         self.on_question = lambda id, text, details: None
@@ -248,9 +274,17 @@ class RemoteDevice(Device):
         result = await self._ask("tool_call", name=name, args=args, request=self.entry())
         if not result.get("ok"):
             raise ToolError(result.get("result") or f"{name} failed on the {self.label}.")
-        if isinstance(result.get("picture"), dict):
-            self.on_picture(result["picture"])
-        return result.get("result", "")
+        text = result.get("result", "")
+        picture = result.get("picture")
+        if not isinstance(picture, dict):
+            return text
+        try:
+            data = base64.b64decode(str(picture.get("data", "")), validate=True)
+        except (binascii.Error, ValueError):
+            return text
+        mime = str(picture.get("mime") or "image/jpeg")
+        self.on_picture(mime, data, str(picture.get("name") or ""))
+        return WithPictures(str(text), [(mime, data)])
 
     async def confirm(self, question, details):
         asked, yes = None, None
@@ -287,10 +321,11 @@ class Server:
     reminders.Reminders (None: no reminders), whose clock (its run) the caller runs. jobs: a jobs.Jobs, for
     background jobs (None: none). watchers: a watchers.Watchers (None: none), whose checks (its run) the caller
     runs. converter: a convert.Converter, for converting his files (None: none). keys: a keys.Keys, for the
-    Settings window's keys (None: none)."""
+    Settings window's keys (None: none). routines: a routines.Routines (None: none; they need jobs), whose clock
+    (its run) the caller runs."""
 
     def __init__(self, agent, voice=None, token=None, transfers=None, pending=None, reminders=None, jobs=None,
-                 watchers=None, converter=None, keys=None):
+                 watchers=None, converter=None, keys=None, routines=None):
         self.agent = agent
         self.voice = voice
         self.token = token
@@ -312,6 +347,12 @@ class Server:
             agent.own_tools += jobs.tools()
             jobs.asking = _from.get
             jobs.run = self._run_job
+        self.routines = routines if jobs else None
+        if self.routines:
+            agent.own_tools += routines.tools()
+            routines.asking = _from.get
+            routines.start = self._routine
+        self._unseen_jobs = []  # (when, job_done's fields) for a device that shows jobs, none being online
         self.watchers = watchers
         if watchers:
             agent.own_tools += watchers.tools()
@@ -322,6 +363,9 @@ class Server:
         self.keys = keys
         self._used = {}  # device name -> when (monotonic) he last made a request on it
         self._questions = {}  # (device name, question id) -> its question_elsewhere, while Natro waits for an answer
+        # The phone's messages shown on other devices: id -> {"device", "key", "app", "title"}, the newest last.
+        self._messages = collections.OrderedDict()
+        self._message_ids = itertools.count(1)
         self._tasks = set()
 
     def _start(self, coroutine, running, id):
@@ -346,7 +390,7 @@ class Server:
         device = RemoteDevice(connection, hello)
         device.on_question = lambda id, text, details: self._asked(device, id, text, details)
         device.on_question_over = lambda id, yes: self._question_over(device, id, yes)
-        device.on_picture = lambda picture: self._tool_picture(device, picture)
+        device.on_picture = lambda mime, data, name: self._tool_picture(device, mime, data, name)
         device.entry = _entry.get
         sender = asyncio.create_task(device.send_all())
         self.agent.connect(device)
@@ -361,6 +405,8 @@ class Server:
             self.reminders.connected(device)
         if self.watchers:
             self.watchers.connected(device)
+        if device.jobs:
+            self._show_unseen_jobs()
         if device.questions:
             for question in list(self._questions.values()):
                 if question["device"] != device.name:
@@ -394,6 +440,12 @@ class Server:
                 elif kind == "notification_matched" and self.watchers:
                     self.watchers.matched(str(data.get("rule", "")), str(data.get("app") or ""),
                                           str(data.get("title") or ""), str(data.get("text") or ""))
+                elif kind == "phone_message":
+                    self._phone_message(device, data)
+                elif kind == "phone_message_gone":
+                    self._phone_message_gone(device, str(data.get("key") or ""))
+                elif kind == "message_reply":
+                    self._start(self._message_reply(device, data), running, data.get("id"))
                 elif kind == "reminder_snooze" and self.reminders:
                     self._snooze(device, str(data.get("id", "")), data.get("minutes"))
                 elif kind == "keys" and self.keys:
@@ -530,25 +582,88 @@ class Server:
         return [other for other in list(self.agent.devices.values())
                 if other.name != device.name and getattr(other, "questions", False)]
 
-    def _tool_picture(self, device, picture):
+    def _tool_picture(self, device, mime, data, name):
         """A screenshot or other picture a tool sent back: into the chat, with the request it's for."""
-        try:
-            data = base64.b64decode(str(picture.get("data", "")), validate=True)
-        except (binascii.Error, ValueError):
-            return
-        self.chat.picture(device, str(picture.get("mime") or "image/jpeg"), data, str(picture.get("name") or ""),
-                          entry_id=_entry.get())
+        self.chat.picture(device, mime, data, name, entry_id=_entry.get())
 
     def _sent_picture(self, device, data, picture):
-        """A picture he sent into the chat. Natro hears of it with his next request, but never sees it."""
-        if not isinstance(picture, bytes) or self.chat.picture(
-                device, str(data.get("mime") or ""), picture, str(data.get("name") or "")) is None:
+        """A picture he sent into the chat: Claude sees it with his next request."""
+        mime = str(data.get("mime") or "")
+        if not isinstance(picture, bytes) or self.chat.picture(device, mime, picture,
+                                                               str(data.get("name") or "")) is None:
             device.post(type="error", id=data.get("id"),
                         message="That picture can't be shown (too big, or not a picture).")
             return
-        self.agent.notes.append(f"he sent a picture into the chat from his {device.label}; it shows on his "
-                                "devices, and you can't see it")
+        if not self.agent.picture_sent(mime, picture, device.label):
+            self.agent.notes.append(f"he sent a picture into the chat from his {device.label}; it shows on his "
+                                    "devices, but it can't be opened, so you can't see it")
         log.write("chat", device=device.name, event="picture", bytes=len(picture))
+
+    def _phone_message(self, device, data):
+        """A message came to the phone: shown on the devices that show them (the PC), to answer there."""
+        key = str(data.get("key") or "")
+        viewers = [other for other in list(self.agent.devices.values())
+                   if other is not device and getattr(other, "phone_messages", False)]
+        if not key or not viewers:
+            return  # nowhere to show it: it's on the phone anyway
+        id = f"pm{int(time.time()):x}{next(self._message_ids)}"
+        message = {"device": device.name, "key": key, "app": short(str(data.get("app") or ""), 40) or "a message",
+                   "title": short(str(data.get("title") or ""), 80) or "Someone"}
+        self._messages[id] = message
+        while len(self._messages) > MOST_MESSAGES:
+            self._messages.popitem(last=False)
+        for viewer in viewers:
+            viewer.post(type="phone_message", id=id, app=message["app"], title=message["title"],
+                        text=short(str(data.get("text") or ""), 400), reply=bool(data.get("reply")),
+                        device=device.name, label=device.label)
+        # What it says is his and stays out of the log.
+        log.write("message", event="shown", app=message["app"], devices=[viewer.name for viewer in viewers])
+
+    def _phone_message_gone(self, device, key):
+        """A message's notification went from the phone (read, answered, dismissed): the others let go of it."""
+        for id, message in list(self._messages.items()):
+            if message["device"] == device.name and message["key"] == key:
+                del self._messages[id]
+                for other in list(self.agent.devices.values()):
+                    if getattr(other, "phone_messages", False):
+                        other.post(type="phone_message_gone", id=id)
+
+    async def _message_reply(self, device, data):
+        """His answer to a message from the phone, typed on this device: it goes from the phone, in the message's
+        own app. In the chat as a request, answered as one (reply, or error)."""
+        id, text = data.get("id"), str(data.get("text") or "").strip()
+        message = self._messages.get(str(data.get("to") or ""))
+        to = f"{message['title']} on {message['app']}" if message else "a message"
+        entry = self.chat.start(device, id, asked=f"To {to}: {text}")
+        self._used[device.name] = time.monotonic()
+        started = time.monotonic()
+        _entry.set(entry)
+        try:
+            phone = self.agent.devices.get(message["device"]) if message else None
+            if not message:
+                raise ToolError("That message isn't on your phone any more, so it can't be answered from here.")
+            if not text:
+                raise ToolError("There's nothing to send.")
+            if phone is None:
+                raise ToolError(f"Your phone is offline, so it can't answer {message['title']}.")
+            if not any(spec.get("name") == "reply_message" for spec in getattr(phone, "specs", [])):
+                raise ToolError("Natro's app on your phone can't answer messages yet: it needs updating.")
+            said = await asyncio.wait_for(phone.call_tool("reply_message", {"key": message["key"], "text": text}),
+                                          MESSAGE_SECONDS)
+        except (ToolError, asyncio.TimeoutError) as e:
+            problem = str(e) or "Your phone didn't answer in time."
+            self.chat.replied(entry, "", problem=problem)
+            device.post(type="error", id=id, message=problem)
+            log.write("message", event="reply_failed", device=device.name, error=problem)
+            return
+        finally:
+            _entry.set(None)
+        words = str(said).strip()  # the phone's: "Sent to Nino on WhatsApp."
+        reply = words.splitlines()[0] if words else f"Sent to {to}."
+        self.chat.replied(entry, reply)
+        device.post(type="reply", id=id, text=reply, model="none", cost=0.0,
+                    seconds=round(time.monotonic() - started, 2), tools=[], **self._month())
+        log.write("message", event="replied", device=device.name, app=message["app"])
 
     def _queued(self, device, kind, id, running):
         if kind == "queue_skip":
@@ -599,14 +714,22 @@ class Server:
         """A background job: Natro works on it beside his requests, in the chat as it goes; then what she found
         goes to his devices, and the next request Claude answers hears it."""
         RUNNING.set(job)
-        entry = self.chat.job(job.id, job.task)
+        entry = self.chat.job(job.id, job.task, routine=job.title if job.routine else "")
         _entry.set(entry)
         _from.set(self.agent.devices.get(job.asked_on))
-        asked_on = identity.KNOWN_DEVICES.get(job.asked_on, "device")
-        context = (f"[A background job: he asked for this on his {asked_on} at {datetime.now(timezone()):%H:%M} and "
-                   "is doing other things meanwhile. Work through it to the end on your own. When you're done, your "
-                   "reply's first paragraph is said to him out loud: the answer in a sentence or two. The details he'd "
-                   "want can follow, in short paragraphs without lists; he reads those.]")
+        now = datetime.now(timezone())
+        if job.routine:
+            what = (f"A routine he set up, \"{job.title}\": it runs by itself now, at {now:%H:%M}, and he isn't "
+                    "waiting for it")
+        else:
+            asked_on = identity.KNOWN_DEVICES.get(job.asked_on, "device")
+            what = (f"A background job: he asked for this on his {asked_on} at {now:%H:%M} and is doing other things "
+                    "meanwhile")
+        quiet = (" He wants to hear only when there's something to report: if there's nothing, reply with only "
+                 f"\"{QUIET_REPLY}\"") if job.quiet else ""
+        context = (f"[{what}. Work through it to the end on your own. When you're done, your reply's first paragraph "
+                   "is said to him out loud: the answer in a sentence or two. The details he'd want can follow, in "
+                   f"short paragraphs without lists; he reads those.{quiet}]")
 
         def step(step):
             job.step = step.get("text", "")
@@ -620,34 +743,78 @@ class Server:
         except asyncio.CancelledError:
             self.chat.replied(entry, "", problem="Cancelled")
             self.jobs.ended(job, "cancelled", "")
+            self._routine_ran(job, "cancelled")
             log.write("job", id=job.id, event="cancelled")
             raise
         except Exception as e:
             log.write("error", step="job", id=job.id, error=repr(e))
-            text = f"The job \"{short(job.task, 80)}\" failed: {e}"
+            text = (f"The routine \"{job.title}\" failed: {e}" if job.routine
+                    else f"The job \"{short(job.task, 80)}\" failed: {e}")
             self.chat.replied(entry, "", problem=text)
             self.jobs.ended(job, "failed", text)
+            self._routine_ran(job, "failed", text)
             self._job_done(job, text, ok=False)
             return
+        quiet = job.quiet and is_quiet(reply.text)
         self.chat.replied(entry, reply.text)
         self.jobs.ended(job, "done", reply.text)
-        log.write("job", id=job.id, event="done", minutes=job.minutes(), cost=round(reply.cost, 5))
-        self._job_done(job, reply.text, ok=True)
+        self._routine_ran(job, "quiet" if quiet else "done", reply.text)
+        log.write("job", id=job.id, event="quiet" if quiet else "done", minutes=job.minutes(),
+                  cost=round(reply.cost, 5))
+        if not quiet:  # a quiet routine with nothing to report: only the chat shows it ran
+            self._job_done(job, reply.text, ok=True)
+
+    def _routine_ran(self, job, state, result=""):
+        if job.routine and self.routines:
+            self.routines.ran(job.routine, state, result)
 
     def _job_done(self, job, text, ok):
-        """A job finished: shown on every device that shows jobs, spoken on one; Claude hears it next."""
+        """A job finished: shown on every device that shows jobs (or the next one that connects), spoken on one;
+        Claude hears it next."""
+        done = {"id": job.id, "task": job.task, "text": text, "say": lead(text), "ok": ok, "title": job.title}
+        if not self._show_job(done):
+            self._unseen_jobs.append((time.time(), done))
+        # So "what did you find?" is answered by Sonnet, who is told (the next request counts as personal).
+        what = f"your routine \"{job.title}\" ({job.id})" if job.routine else f"your background job {job.id}"
+        self.agent.private_notes.append(f"{what} (\"{short(job.task, 200)}\") {'finished' if ok else 'failed'}; "
+                                        f"you told him: \"{short(text, JOB_NOTE_CHARS)}\"")
+        self.agent.personal_next = True
+
+    def _show_job(self, done):
+        """job_done to every device that shows jobs, spoken on one. Returns whether any device showed it."""
         viewers = [device for device in list(self.agent.devices.values()) if getattr(device, "jobs", False)]
-        speaker = self._speaker(viewers) if viewers else None
+        if not viewers:
+            log.write("job", id=done["id"], event="waiting")
+            return False
+        speaker = self._speaker(viewers)
         for device in viewers:
-            device.post(type="job_done", id=job.id, task=job.task, text=text, say=lead(text), ok=ok,
-                        speak=device is speaker)
-        # So "what did you find?" is answered by Claude, who knows. Personal: only Claude hears of it.
-        self.agent.private_notes.append(f"your background job {job.id} (\"{short(job.task, 200)}\") "
-                                        f"{'finished' if ok else 'failed'}; you told him: "
-                                        f"\"{short(text, JOB_NOTE_CHARS)}\"")
-        self.agent.claude_next = True
-        log.write("job", id=job.id, event="shown", devices=[device.name for device in viewers],
-                  spoken_on=speaker.name if speaker else None)
+            device.post(type="job_done", **done, speak=device is speaker)
+        log.write("job", id=done["id"], event="shown", devices=[device.name for device in viewers],
+                  spoken_on=speaker.name)
+        return True
+
+    def _show_unseen_jobs(self):
+        """A device that shows jobs connected: the jobs that finished while none was online, if not too old."""
+        oldest = time.time() - JOB_WAIT_HOURS * 3600
+        unseen, self._unseen_jobs = self._unseen_jobs, []
+        for when, done in unseen:
+            if when < oldest:
+                log.write("job", id=done["id"], event="dropped", late_hours=JOB_WAIT_HOURS)
+            elif not self._show_job(done):
+                self._unseen_jobs.append((when, done))
+
+    def _routine(self, routine, asked=False):
+        """A routine is due (or he asked to run it now): it runs as a background job titled with its name.
+        Returns why it didn't start, or ""."""
+        if any(job.routine == routine["id"] for job in self.jobs.running()):
+            return "its last run is still going"
+        if not asked and self.agent.ledger.over_budget:
+            # Claude would ask first, and he isn't there to answer: skipped, and he's told.
+            self._tell(f"I skipped your routine \"{routine['name']}\": this month's {self.agent.ledger.budget:g} "
+                       "dollar budget is used up.")
+            return "this month's budget was used up"
+        self.jobs.add(routine["task"], title=routine["name"], routine=routine["id"], quiet=bool(routine.get("quiet")))
+        return ""
 
     def _alert(self, alert):
         """Something a watcher saw: shown on every device that shows alerts and in the chat, spoken on one if
@@ -661,9 +828,10 @@ class Server:
                         speak=device is speaker)
         self.chat.reminder(alert["id"], alert["text"], alert=True)
         if alert["kind"] != "meetings":
-            # So "read it" or "what did it say?" is answered by Claude, who knows. Personal: only Claude hears it.
+            # So "read it" or "what did it say?" is answered by Sonnet, who is told (the next request counts as
+            # personal).
             self.agent.private_notes.append(f"you told him: \"{alert['text']}\"")
-            self.agent.claude_next = True
+            self.agent.personal_next = True
         log.write("watcher", event="shown", id=alert["id"], devices=[device.name for device in viewers],
                   spoken_on=speaker.name if speaker else None)
         return True
@@ -757,13 +925,15 @@ async def run():
     transfers = Transfers(ROOT / "transfers", agent.devices)
     server = Server(agent, make_voice(), token, transfers, PendingRequests(ROOT / "pending.json", agent.devices),
                     reminders, Jobs(), watchers, Converter(transfers),
-                    Keys(ROOT / ".env", ROOT / "tokens" / "settings-pin.json"))
+                    Keys(ROOT / ".env", ROOT / "tokens" / "settings-pin.json"), Routines(ROOT / "routines.json"))
     print(f"Converters: {', '.join(name for name, there in converters().items() if there) or 'none'}")
     host, port = os.environ.get("NATRO_LISTEN", DEFAULT_LISTEN).rsplit(":", 1)
+    dashboard = Dashboard(server, host)
     restarting = False
     try:
-        async with serve(server.handle, host, int(port), process_request=health,
-                         max_size=MAX_MESSAGE_BYTES) as listener:
+        async with serve(server.handle, host, int(port),
+                         process_request=lambda connection, request: health(connection, request)
+                         or dashboard.http(connection, request), max_size=MAX_MESSAGE_BYTES) as listener:
             if sys.platform != "win32":  # systemd stops the service with SIGTERM
                 asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, listener.close)
 
@@ -773,8 +943,9 @@ async def run():
                 asyncio.get_running_loop().call_later(RESTART_SECONDS, listener.close)
 
             server.keys.restart = restart
-            print(f"Natro is listening on {host}:{port}")
-            clocks = [asyncio.create_task(server.reminders.run()), asyncio.create_task(server.watchers.run())]
+            print(f"Natro is listening on {host}:{port}; the dashboard is http://{host}:{port}/dashboard")
+            clocks = [asyncio.create_task(server.reminders.run()), asyncio.create_task(server.watchers.run()),
+                      asyncio.create_task(server.routines.run())]
             try:
                 await listener.serve_forever()
             except asyncio.CancelledError:

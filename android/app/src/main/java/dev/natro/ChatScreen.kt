@@ -265,7 +265,7 @@ private fun TurnView(turn: Turn, modifier: Modifier) {
             ReminderLabel(if (turn.alert) "Heads-up" else "Reminder")
             Theirs(turn)
         } else if (turn.job.isNotBlank()) {
-            JobLabel(turn.job)
+            JobLabel(turn.job, turn.routine)
             Theirs(turn)
             OtherQuestion(turn)
             if (turn.hasDetails) DetailsToggle(turn, open) { open = !open }
@@ -308,10 +308,10 @@ private fun ReminderLabel(text: String) {
         modifier = Modifier.fillMaxWidth().padding(start = 6.dp, bottom = 4.dp))
 }
 
-/** Above a background job, on her side: its task, on one line. */
+/** Above a background job, on her side: its task (or the routine's name, for a routine's run), on one line. */
 @Composable
-private fun JobLabel(task: String) {
-    Text("In the background: $task", color = palette.faint, fontSize = 11.5.sp, fontWeight = FontWeight.Medium,
+private fun JobLabel(task: String, routine: String) {
+    Text(if (routine.isNotBlank()) "Routine: $routine" else "In the background: $task", color = palette.faint, fontSize = 11.5.sp, fontWeight = FontWeight.Medium,
         maxLines = 1, overflow = TextOverflow.Ellipsis,
         modifier = Modifier.fillMaxWidth().padding(start = 6.dp, end = 40.dp, bottom = 4.dp))
 }

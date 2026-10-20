@@ -44,6 +44,8 @@ data class Turn(
     val reminder: Boolean = false,
     /** A background job's task (agent/natro_agent/jobs.py): her work on it as it goes, then what she found. */
     val job: String = "",
+    /** A routine's name (agent/natro_agent/routines.py), on the job that is its run. */
+    val routine: String = "",
     /** Something a watcher saw (agent/natro_agent/watchers.py): her words alone, as a reminder's. */
     val alert: Boolean = false,
 ) {
@@ -165,6 +167,7 @@ object Chat {
             sent = entry.optBoolean("sent"),
             reminder = entry.optBoolean("reminder"),
             job = entry.text("job"),
+            routine = entry.text("routine"),
             alert = entry.optBoolean("alert"),
         )
         val at = turns.indexOfLast { it.id == id }

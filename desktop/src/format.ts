@@ -18,9 +18,10 @@ function inline(text: string): string {
       if (part.length > 2 && part.startsWith('`') && part.endsWith('`')) return `<code>${part.slice(1, -1)}</code>`
       return part
         // Web links; natro:open/3 or natro:show/3 for a file that came from the phone (files.rs), a reminder's
-        // natro:snooze/<its id>, and natro:answer/phone/<its id>/yes or /no to a question on the phone (reply.rs).
+        // natro:snooze/<its id>, natro:answer/phone/<its id>/yes or /no to a question on the phone, and
+        // natro:reply/<its id> to a message that came to the phone (reply.rs).
         .replace(
-          /\[([^\]]+)\]\((https?:\/\/[^\s)]+|natro:(?:(?:open|show)\/\d+|snooze\/[\w-]+|answer\/[\w-]+\/[\w-]+\/(?:yes|no)))\)/g,
+          /\[([^\]]+)\]\((https?:\/\/[^\s)]+|natro:(?:(?:open|show)\/\d+|snooze\/[\w-]+|reply\/[\w-]+|answer\/[\w-]+\/[\w-]+\/(?:yes|no)))\)/g,
           '<a href="$2">$1</a>',
         )
         .replace(/(^|[\s(])(https?:\/\/[^\s<)]+[^\s<).,!?;:])/g, '$1<a href="$2">$2</a>')

@@ -55,6 +55,8 @@ MOST_ROUTES = 5
 MOST_LEGS = 5
 # Turn-by-turn lines kept for one route or walk.
 MOST_TURNS = 40
+# What he calls his home: NATRO_HOME_ADDRESS (Google would look for a place called "home").
+HOME_WORDS = {"home", "my home", "my house", "his home", "the house", "house"}
 # A place given as "lat,lng", as the phone's location tool says where it is: "41.69339,44.80153".
 COORDINATES = re.compile(r"(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)")
 
@@ -295,6 +297,11 @@ class Travel:
     def available(self):
         return bool(self.key)
 
+    def _place(self, value):
+        """A place as he gave it, in one line; "home" is his home address (when it's set)."""
+        value = " ".join(str(value or "").split())
+        return self.home if self.home and value.casefold() in HOME_WORDS else value
+
     def _how(self, args):
         """(mode, kinds of transport, preference) from a tool's arguments; kinds and a preference mean public
         transport unless a mode is given."""
@@ -314,8 +321,8 @@ class Travel:
                       alternatives=False):
         """(where from, as he'd say it; Google's routes); ToolError when there's none, or Google can't be asked.
         arrive (by public transport only) instead of depart: the routes that get there by then."""
-        destination = " ".join(str(destination or "").split())
-        origin = " ".join(str(origin or "").split()) or self.home
+        destination = self._place(destination)
+        origin = self._place(origin) or self.home
         if not destination:
             raise ToolError("Say where to.")
         if not origin:
@@ -376,7 +383,7 @@ class Travel:
         depart, arrive = moment(args, "depart_at"), moment(args, "arrive_by")
         if depart and arrive:
             raise ToolError("Give depart_at or arrive_by, not both.")
-        destination = " ".join(str(args.get("destination") or "").split())
+        destination = self._place(args.get("destination"))
         start, routes = await self._routes(destination, args.get("origin"), mode, depart, arrive, use, prefer,
                                            alternatives=True)
         now = datetime.now(timezone())
@@ -418,7 +425,7 @@ class Travel:
                 said.append(f"   The same way also leaves at {', '.join(later[:-1])}"
                             f"{' and ' if len(later) > 1 else ''}{later[-1]}.")
         said += notes
-        origin = " ".join(str(args.get("origin") or "").split()) or self.home
+        origin = self._place(args.get("origin")) or self.home
         said.append(f"Google Maps: {maps_link(origin, destination, mode)}")
         return "\n".join(said)
 
@@ -431,10 +438,10 @@ class Travel:
         depart, arrive = moment(args, "depart_at"), moment(args, "arrive_by")
         if depart and arrive:
             raise ToolError("Give depart_at or arrive_by, not both.")
-        origin = " ".join(str(args.get("origin") or "").split()) or self.home
+        origin = self._place(args.get("origin")) or self.home
         if not origin:
             raise ToolError("Natro doesn't know where he is: say where from, or set NATRO_HOME_ADDRESS.")
-        places = [origin] + [" ".join(str(leg.get("to") or "").split()) for leg in legs]
+        places = [origin] + [self._place(leg.get("to")) for leg in legs]
         if not all(places[1:]):
             raise ToolError("Each leg needs its to: where that part of the trip ends.")
         hows = [self._how(leg) for leg in legs]

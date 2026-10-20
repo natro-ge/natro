@@ -23,6 +23,7 @@ it's done, and if it fails he's told (tell: an alert, set by the server).
 import asyncio
 import itertools
 import shutil
+import sys
 import time
 from pathlib import Path
 
@@ -32,8 +33,9 @@ from natro_agent.identity import KNOWN_DEVICES
 from natro_agent.tools import Tool, ToolError
 
 MOST_BYTES = 300 << 20
-# Natro waits this long for the result before answering; after that it comes when it's ready.
-WAIT_SECONDS = 40
+# Natro waits this long for the result before answering; after that it comes when it's ready. Most take a few
+# seconds; a big presentation half a minute or more.
+WAIT_SECONDS = 15
 # How long one conversion may take.
 DOCUMENT_SECONDS = 180
 PICTURE_SECONDS = 60
@@ -90,9 +92,17 @@ def target(wanted):
     return ALIASES.get(wanted, wanted)
 
 
+def first_to_go(command):
+    """The command, so that if memory runs out it's the one the kernel stops, not Natro (on Linux: they share the
+    service's memory limit, and LibreOffice with a big presentation needs a lot)."""
+    if not sys.platform.startswith("linux"):
+        return list(command)
+    return ["sh", "-c", 'echo 1000 > /proc/self/oom_score_adj; exec "$@"', command[0], *command]
+
+
 async def run(command, seconds, cwd=None):
-    """Run a converter; ToolError with what it said if it fails or takes too long."""
-    process = await asyncio.create_subprocess_exec(*command, cwd=cwd, stdout=asyncio.subprocess.PIPE,
+    """Run a converter; ToolError with what it said if it fails, runs out of memory or takes too long."""
+    process = await asyncio.create_subprocess_exec(*first_to_go(command), cwd=cwd, stdout=asyncio.subprocess.PIPE,
                                                    stderr=asyncio.subprocess.STDOUT)
     try:
         output, _ = await asyncio.wait_for(process.communicate(), seconds)
@@ -100,6 +110,9 @@ async def run(command, seconds, cwd=None):
         process.kill()
         await process.wait()
         raise ToolError(f"{Path(command[0]).name} took longer than {seconds // 60 or 1} minutes, so it was stopped.")
+    if process.returncode == -9:  # SIGKILL: the kernel stopped it for running out of memory
+        raise ToolError(f"{Path(command[0]).name} ran out of memory on the server: the file is too big to convert "
+                        "there.")
     if process.returncode != 0:
         said = output.decode("utf-8", "replace").strip().splitlines()
         raise ToolError(f"{Path(command[0]).name} couldn't convert it: {said[-1] if said else process.returncode}")

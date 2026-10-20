@@ -7,7 +7,6 @@ dependencies = [
     "anthropic>=1.11",
     "mcp>=2.3",
     "websockets>=15",
-    "google-genai>=2.28",
     # Calendar, Tasks and Gmail over Google's REST APIs.
     "google-auth>=2.40",
     "requests",
@@ -34,6 +33,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["natro_agent"]
+
+[tool.setuptools.package-data]
+# The dashboard's page (dashboard.py).
+natro_agent = ["web/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

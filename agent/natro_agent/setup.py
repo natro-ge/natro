@@ -1,10 +1,7 @@
-"""Builds Natro the same way for the service and the typed chat: her own tools, MCP servers, Gemini."""
-import os
-
+"""Builds Natro the same way for the service and the typed chat: her own tools and MCP servers."""
 from natro_agent.agent import Agent
 from natro_agent.briefing import Briefing
 from natro_agent.config import MCP_CONFIG, ROOT
-from natro_agent.gemini import Gemini
 from natro_agent.google_tools import TOKEN_FILE, Google, GoogleAPI
 from natro_agent.history import History
 from natro_agent.memory import Memory
@@ -36,8 +33,7 @@ async def build_agent(servers, model=None, reminders=None, google=None, travel=N
     if SPOTIFY_TOKEN_FILE.exists():
         tools += Spotify(SpotifyAPI.from_token()).tools()
     tools += await servers.start(MCP_CONFIG)
-    # The free Gemini tier only when a key is set; otherwise everything goes to Claude.
-    gemini = Gemini() if os.environ.get("GEMINI_API_KEY") else None
-    # A model given here answers everything (for trying one out); otherwise Sonnet, with Haiku for PC tasks.
-    options = {"model": model, "pc_model": model} if model else {}
-    return Agent(tools, memory=memory, gemini=gemini, **options)
+    # A model given here answers everything (for trying one out); otherwise Haiku, with Sonnet for personal or
+    # risky requests.
+    options = {"model": model, "cheap_model": model} if model else {}
+    return Agent(tools, memory=memory, **options)

@@ -18,7 +18,7 @@ Device to Natro, each with an id that comes back in the answer ({"type": "keys",
   {"type": "keys", "id": "k1", "do": "status"}                      → "pin": whether there is one yet
   {"type": "keys", "id": "k2", "do": "unlock", "pin": "1234"}       → "session", "fields", "new_pin"; or
                                                                       "message" and "wait" (seconds)
-  {"type": "keys", "id": "k3", "do": "save", "session": "...", "values": {"GEMINI_API_KEY": "..."}}
+  {"type": "keys", "id": "k3", "do": "save", "session": "...", "values": {"TAVILY_API_KEY": "..."}}
                                                                     → "restarting"; or "message", "errors"
                                                                       (key -> why)
   {"type": "keys", "id": "k4", "do": "pin", "session": "...", "pin": "5678"}   a new PIN
@@ -86,12 +86,6 @@ def check_anthropic(key):
     return key
 
 
-def check_gemini(key):
-    _verdict("Google", _status("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
-                               {"x-goog-api-key": key}))
-    return key
-
-
 def check_tavily(key):
     _verdict("Tavily", _status("https://api.tavily.com/usage", {"Authorization": f"Bearer {key}"}))
     return key
@@ -152,9 +146,7 @@ class Field:
 
 FIELDS = [
     Field("ANTHROPIC_API_KEY", "Anthropic API key", check_anthropic, secret=True,
-          note="Claude: everything personal, and whatever Gemini can't do"),
-    Field("GEMINI_API_KEY", "Gemini API key", check_gemini, secret=True,
-          note="The free tier, for requests with nothing personal"),
+          note="Claude: Haiku and Sonnet answer every request"),
     Field("TAVILY_API_KEY", "Tavily API key", check_tavily, secret=True, note="Web search"),
     Field("GOOGLE_MAPS_API_KEY", "Google Maps API key", check_maps, secret=True,
           note="Travel times and routes (the Routes API)"),

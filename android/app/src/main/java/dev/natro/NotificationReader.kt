@@ -12,18 +12,31 @@ import java.util.Locale
  * Reads the phone's notifications for "what did I miss?". The owner turns it on in Settings >
  * Notification access (the Natro app has a button). Everything it reads is personal: only Claude
  * gets it. New ones are matched here against what he asked Natro to watch for (NotificationWatch), and
- * only those that fit a rule go to the brain.
+ * only those that fit a rule go to the brain; so do messages, for the PC to show (Messages), while "Show
+ * messages on the PC" is on.
  */
 class NotificationReader : NotificationListenerService() {
     override fun onNotificationPosted(item: StatusBarNotification) {
-        val rules = NotificationWatch.rules
-        if (rules.isEmpty() || item.isOngoing || item.packageName == packageName) return
+        if (item.isOngoing || item.packageName == packageName) return
         if (item.notification.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
         val (title, body) = parts(item)
         if (title.isBlank() && body.isBlank()) return
         val app = appName(item.packageName)
-        val rule = NotificationWatch.match(rules, app, item.packageName, title, body) ?: return
-        if (NotificationWatch.firstTime("${item.key}|$title|$body")) Natro.notificationMatched(rule.id, app, title, body)
+        val rules = NotificationWatch.rules
+        val rule = if (rules.isEmpty()) null else NotificationWatch.match(rules, app, item.packageName, title, body)
+        if (rule != null && NotificationWatch.firstTime("${item.key}|$title|$body")) {
+            Natro.notificationMatched(rule.id, app, title, body)
+        }
+        Prefs.init(this)
+        if (!Prefs.messagesToPc.value || !Messages.isMessage(item)) return
+        val (who, words) = Messages.latest(item, title, body) ?: return
+        if (words.isNotBlank() && Messages.firstTime(item.key, who, words)) {
+            Natro.phoneMessage(item.key, app, who, words, Messages.replyAction(item) != null)
+        }
+    }
+
+    override fun onNotificationRemoved(item: StatusBarNotification) {
+        if (Messages.forget(item.key)) Natro.phoneMessageGone(item.key)
     }
 
     override fun onListenerConnected() {
@@ -61,7 +74,7 @@ class NotificationReader : NotificationListenerService() {
         return title to listOf(body, lines).filter { it.isNotBlank() }.joinToString(": ")
     }
 
-    private fun appName(pkg: String): String = try {
+    fun appName(pkg: String): String = try {
         packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
     } catch (e: PackageManager.NameNotFoundException) {
         pkg

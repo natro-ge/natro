@@ -5,12 +5,10 @@ from zoneinfo import ZoneInfo
 import anthropic
 import httpx2
 import pytest
-from google.genai import errors
 
 from conftest import FakeClient, Owner, fallback, message, run, text, thinking, tool_use
 from natro_agent import agent as agent_module
 from natro_agent.agent import Agent, echo_content, noise, plain_question, utc_offset
-from natro_agent.gemini import MAX_REST_SECONDS, rest_seconds, without_header
 from natro_agent.dryrun import PC_TOOLS, DryRunDevice
 from natro_agent.tools import ASKS_FIRST, Tool
 
@@ -24,7 +22,7 @@ def make_agent(client, budget=15.0):
 
 def test_reply_and_cost():
     agent, _ = make_agent(FakeClient(message(thinking(), text("Hi, I'm Natro."))))
-    reply = run(agent.respond("who are you?", Owner()))
+    reply = run(agent.respond("what do you know about me?", Owner()))
     assert reply.text == "Hi, I'm Natro."
     assert reply.model == "claude-sonnet-5-5"
     assert abs(reply.cost - (1000 * 2 + 50 * 10) / 1e6) < 1e-12
@@ -180,7 +178,7 @@ def test_api_failure_moves_the_conversation_to_haiku():
     error = anthropic.APIConnectionError(request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"))
     client = FakeClient(error, message(text("Hi.")))
     agent, _ = make_agent(client)
-    reply = run(agent.respond("hi", Owner()))
+    reply = run(agent.respond("anything in my calendar today?", Owner()))
     assert reply.text == "Hi." and reply.model == "claude-haiku-5-5"
     assert client.requests[1]["model"] == "claude-haiku-5-5"
     assert "betas" not in client.requests[1] and "fallbacks" not in client.requests[1]
@@ -189,7 +187,7 @@ def test_api_failure_moves_the_conversation_to_haiku():
 def test_refusal_starts_a_fresh_conversation():
     client = FakeClient(message(stop="refusal"), message(text("Hi.")))
     agent, _ = make_agent(client)
-    reply = run(agent.respond("something declined", Owner()))
+    reply = run(agent.respond("read my latest email", Owner()))
     assert reply.text == "Sorry, I can't help with that one."
     run(agent.respond("hi", Owner()))
     assert len(client.requests[1]["messages"]) == 1
@@ -205,9 +203,9 @@ def test_too_many_steps_stops_the_loop():
 
 
 def test_budget_warning_then_cap():
-    # Each reply costs $0.0025; the budget is $0.005.
+    # Each reply costs $0.000125 (Haiku: 1,000 tokens in, 50 out); the budget is $0.0002.
     client = FakeClient(message(text("One.")), message(text("Two.")))
-    agent, _ = make_agent(client, budget=0.005)
+    agent, _ = make_agent(client, budget=0.0002)
     assert "One." == run(agent.respond("first", Owner())).text
     assert "passed 80%" in run(agent.respond("second", Owner())).text
     owner = Owner(answer=False)
@@ -218,7 +216,7 @@ def test_budget_warning_then_cap():
 
 def test_spending_is_summed_from_this_months_log():
     run(make_agent(FakeClient(message(text("One."))))[0].respond("first", Owner()))
-    assert abs(Agent(client=FakeClient()).ledger.spent - 0.0025) < 1e-9
+    assert abs(Agent(client=FakeClient()).ledger.spent - 0.000125) < 1e-9  # Haiku's
 
 
 def test_tools_that_ask_first_say_so_to_claude():
@@ -299,8 +297,48 @@ def test_noise_never_reaches_a_model():
     assert len(client.requests) == 2 and len(client.requests[1]["messages"]) == 3
 
 
-def test_gemini_reply_loses_a_copied_header_and_a_failing_model_rests_longer():
-    assert without_header("[2026-10-13 15:23] Of course, here it is.") == "Of course, here it is."
-    assert without_header("[1] is the first.") == "[1] is the first."
-    busy = errors.APIError(503, {"error": {"code": 503, "message": "high demand"}})
-    assert [rest_seconds(busy, n) for n in (1, 2, 3, 10)] == [600, 1200, 2400, MAX_REST_SECONDS]
+def test_the_same_call_twice_in_one_step_runs_once():
+    added = []
+    claude = FakeClient(message(tool_use("t1", "tasks_add", title="Milk"), tool_use("t2", "tasks_add", title="Milk"),
+                                tool_use("t3", "tasks_add", title="Eggs"), stop="tool_use"),
+                        message(text("Added milk and eggs.")))
+    agent = Agent([task_tool(added)], client=claude)
+    run(agent.respond("add milk and eggs to my tasks", Owner()))
+    assert added == ["Milk", "Eggs"]
+    results = {r["tool_use_id"]: r for r in claude.requests[1]["messages"][-1]["content"]}
+    assert results["t1"]["content"] == "Added." and "Not done again" in results["t2"]["content"]
+    assert not results["t2"]["is_error"]
+
+
+def test_what_a_cancelled_request_did_is_told_to_the_next():
+    import asyncio
+
+    added = []
+    started = asyncio.Event()
+
+    async def wait(args):
+        started.set()
+        await asyncio.sleep(3600)
+
+    slow = Tool(name="pc_screen", description="Read the screen.", run=wait, source="pc", personal=True,
+                input_schema={"type": "object", "properties": {}})
+    claude = FakeClient(message(tool_use("t1", "tasks_add", title="Milk"), stop="tool_use"),
+                        message(tool_use("t2", "pc_screen"), stop="tool_use"),
+                        message(text("Yes, milk is on it.")))
+    agent = Agent([task_tool(added), slow], client=claude)
+
+    async def play():
+        request = asyncio.create_task(agent.respond("add milk to my tasks, then look at my screen", Owner()))
+        await started.wait()
+        request.cancel()
+        try:
+            await request
+        except asyncio.CancelledError:
+            pass
+        return await agent.respond("did you add the milk?", Owner())
+
+    run(play())
+    header = claude.requests[2]["messages"][-1]["content"].splitlines()[0]
+    assert "he stopped his request \"add milk to my tasks, then look at my screen\" partway" in header
+    assert 'tasks_add {"title": "Milk"}: Added.' in header and "pc_screen" not in header
+    assert added == ["Milk"]  # nothing is done again

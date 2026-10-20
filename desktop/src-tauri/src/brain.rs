@@ -9,7 +9,8 @@
 //! The chat is shared with the phone (chat.rs): the brain sends its entries and
 //! pictures, and the requests kept for the PC while it was off. Reminders that go
 //! off show in the reply box, and are spoken when the brain picks the PC to say them;
-//! so does what a background job found when it's done, and what a watcher saw.
+//! so does what a background job found when it's done, and what a watcher saw. So do
+//! messages that come to the phone, to answer from here (chat.rs).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -161,6 +162,14 @@ impl Brain {
         self.send_piece(json!({"type": "picture", "id": id, "mime": mime, "name": name}), bytes)
     }
 
+    /// His answer to a message from the phone (the brain's id for it), typed in the chat: it goes from the
+    /// phone, in that message's own app. The request's id, or None when offline.
+    pub fn send_message_reply(&self, to: &str, text: &str) -> Option<String> {
+        let id = self.new_id('r');
+        self.send_json(json!({"type": "message_reply", "id": id, "to": to, "text": text}))
+            .then_some(id)
+    }
+
     /// A reminder that went off comes back in 10 minutes (the reply box's Snooze). False when offline.
     pub fn snooze(&self, reminder: &str) -> bool {
         self.send_json(json!({"type": "reminder_snooze", "id": reminder, "minutes": 10}))
@@ -210,7 +219,7 @@ async fn connect(
     let tools = helper.tools().await;
     let hello = json!({"type": "hello", "device": "pc", "label": "PC", "token": token, "tools": tools,
                        "files": true, "chat": true, "queue": true, "reminders": true, "jobs": true,
-                       "alerts": true, "questions": true});
+                       "alerts": true, "questions": true, "phone_messages": true});
     if let Err(e) = ws.send(json_message(hello)).await {
         return Ended::Lost(e.to_string());
     }
@@ -445,7 +454,8 @@ fn handle(
                 helper.say(&said);
             }
             let ok = message["ok"].as_bool().unwrap_or(true);
-            app.state::<Reply>().job_done(app, &id, &text("text"), ok);
+            // A routine's run (agent/natro_agent/routines.py) comes under the routine's name.
+            app.state::<Reply>().job_done(app, &id, &text("text"), ok, &text("title"));
         }
         // Something a watcher saw (agent/natro_agent/watchers.py): in the reply box; an urgent one is spoken
         // on the device the brain picks.
@@ -456,6 +466,21 @@ fn handle(
             }
             app.state::<Reply>().alert(app, &id, &text("text"));
         }
+        // A message that came to the phone (WhatsApp, texts...): in the reply box, with a Reply if it can be
+        // answered from here; never spoken.
+        "phone_message" => {
+            log::info!("a message on the {} ({})", text("label"), text("app"));
+            app.state::<Reply>().message(
+                app,
+                &id,
+                &text("title"),
+                &text("app"),
+                &text("text"),
+                message["reply"].as_bool().unwrap_or(false),
+            );
+        }
+        // That message was read (or answered, or dismissed) on the phone.
+        "phone_message_gone" => app.state::<Reply>().message_gone(app, &id),
         // Requests he made on the phone while the PC was off.
         "queued" => chat.queued(app, message["items"].as_array().map(Vec::as_slice).unwrap_or_default()),
         // The Settings window's keys (keys.rs): the server's answers.

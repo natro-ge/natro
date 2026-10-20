@@ -203,7 +203,7 @@ class ScreenControl:
 
     def screenshot(self):
         data = self.desktop.screenshot()
-        return Picture("The screenshot of his PC's screen is in the chat, where he can see it (you can't).", data,
+        return Picture("The screenshot of his PC's screen is here, and in the chat, where he can see it too.", data,
                        "image/jpeg", f"PC screen {time.strftime('%H.%M')}.jpg")
 
     def wait_for(self, text, seconds=10):
@@ -254,7 +254,8 @@ def tools(control=None):
         PCTool("wait_for", "Wait until some text shows on the PC's screen (a page loading, a dialog), up to 20 "
                "seconds; returns the screen.", control.wait_for,
                {"text": {"type": "string"}, "seconds": {"type": "integer"}}, ["text"], personal=True),
-        PCTool("screenshot", "Take a picture of the PC's screen and put it in the chat on his devices, for him to "
-               "see (\"show me my PC screen\"). You don't see it yourself: to read the screen, use screen.",
+        PCTool("screenshot", "Take a picture of the PC's screen: you see it, and it goes into the chat on his devices "
+               "for him (\"show me my PC screen\", \"what's this on my screen?\"). To act on the screen, read it "
+               "with screen.",
                control.screenshot, personal=True),
     ]

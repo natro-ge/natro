@@ -4,7 +4,7 @@ HTML becomes plain text (the article or main part when the page marks one; menus
 out), a PDF its text (pypdf), plain text and JSON as they are; READ_CHARS at a time, and start reads on.
 Only public web addresses: a link (or a redirect) to the server itself, its Tailscale network or any other
 private address is refused, so nothing on a page can make Natro reach inside. At most MAX_BYTES are read.
-Not personal: a public page, so the free Gemini tier may read one too.
+Not personal: a public page.
 """
 import asyncio
 import html

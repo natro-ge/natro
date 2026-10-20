@@ -21,6 +21,7 @@ from natro_agent.memory import Memory
 from natro_agent.notes import Notes
 from natro_agent.pending import PendingRequests
 from natro_agent.reminders import Reminders
+from natro_agent.routines import Routines
 from natro_agent.spotify import Spotify
 from natro_agent.travel import Travel
 from natro_agent.watchers import Watchers
@@ -42,6 +43,7 @@ def own_tools(folder):
             + transfers.tools() + Converter(transfers).tools() + PendingRequests(folder / "pending.json", {}).tools()
             + Reminders(folder / "reminders.json", {}).tools() + Weather(home="Tbilisi", get=MagicMock()).tools()
             + Briefing(folder / "briefing.json").tools() + Jobs().tools()
+            + Routines(folder / "routines.json").tools()
             + Watchers(folder / "watchers.json", {}, google=MagicMock()).tools()
             + Google(google_api).tools() + Spotify(MagicMock()).tools())
 

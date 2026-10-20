@@ -355,7 +355,7 @@ object Natro {
             // A background job is done: a notification, as a reminder is; spoken only if the brain picked the phone.
             "job_done" -> {
                 val text = data.optString("text")
-                app?.let { JobNotices.show(it, id, text, data.optBoolean("ok", true)) }
+                app?.let { JobNotices.show(it, id, text, data.optBoolean("ok", true), data.optString("title")) }
                 // Its first paragraph is said: the answer. The rest is for reading.
                 if (data.optBoolean("speak") && Prefs.speakReplies.value) speaker?.say(data.optString("say").ifBlank { text })
             }
@@ -583,6 +583,17 @@ object Natro {
     fun notificationMatched(rule: String, app: String, title: String, text: String) {
         send(JSONObject().put("type", "notification_matched").put("rule", rule).put("app", app)
             .put("title", Text.short(title, 200)).put("text", Text.short(text, 600)))
+    }
+
+    /** A message came on the phone: for the PC to show (agent/natro_agent/server.py; lost if Natro is offline). */
+    fun phoneMessage(key: String, app: String, from: String, text: String, reply: Boolean) {
+        send(JSONObject().put("type", "phone_message").put("key", key).put("app", app).put("title", from)
+            .put("text", text).put("reply", reply))
+    }
+
+    /** That message's notification went (read, answered or dismissed): the PC lets go of it. */
+    fun phoneMessageGone(key: String) {
+        send(JSONObject().put("type", "phone_message_gone").put("key", key))
     }
 
     /** A reminder's Snooze: it comes back in 10 minutes (the brain answers with reminder_snoozed). */

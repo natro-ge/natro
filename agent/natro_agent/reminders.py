@@ -113,6 +113,27 @@ def repeat_words(rule):
     return what
 
 
+def check_rule(repeat, start, least_minutes=MOST_OFTEN_MINUTES, what="Reminders"):
+    """An RRULE he gave, made Google's way (a plain-date UNTIL is the end of that day) and checked: it reads, and
+    it doesn't repeat more often than every least_minutes."""
+    rule = repeat_rule(repeat, start)[0].removeprefix("RRULE:")
+    try:
+        rrulestr(rule, dtstart=start)
+    except (ValueError, TypeError) as e:
+        raise ToolError(f"Can't read the repeat rule {repeat!r} ({e}): use an RRULE like FREQ=WEEKLY;BYDAY=MO.")
+    parts = rule_parts(rule)
+    interval = int(parts.get("INTERVAL", "1") or 1)
+    minutes = {"SECONDLY": 0, "MINUTELY": interval, "HOURLY": 60 * interval}.get(parts.get("FREQ"))
+    if minutes is not None and minutes < least_minutes:
+        raise ToolError(f"{what} repeat at most every {least_minutes} minutes.")
+    return rule
+
+
+def item_rule(item):
+    """A repeating item's times (its start and RRULE), in his time zone."""
+    return rrulestr(item["repeat"], dtstart=datetime.fromisoformat(item["start"]).astimezone(timezone()))
+
+
 class Reminders:
     """path: the JSON file they're kept in. devices: name -> device, while connected (the agent's).
 
@@ -191,8 +212,8 @@ class Reminders:
             start = self._start(args, now)
             item["start"] = start.isoformat()
             if repeat:
-                item["repeat"] = self._check_rule(repeat, start)
-                first = self._rule(item).after(now - timedelta(seconds=GRACE_SECONDS), inc=True)
+                item["repeat"] = check_rule(repeat, start)
+                first = item_rule(item).after(now - timedelta(seconds=GRACE_SECONDS), inc=True)
                 if first is None:
                     raise ToolError("That repeat rule has no times left.")
                 item["next"] = first.isoformat()
@@ -257,7 +278,7 @@ class Reminders:
         for item in self.items:
             if not item["next"] or (first := datetime.fromisoformat(item["next"])) > until:
                 continue
-            times = [first] + (self._rule(item).between(first, until) if item["repeat"] else [])
+            times = [first] + (item_rule(item).between(first, until) if item["repeat"] else [])
             timed += [(moment, item["text"]) for moment in times]
         on_return = [(KNOWN_DEVICES[item["on"]], item["text"]) for item in self.items if item["on"]]
         return sorted(timed, key=lambda found: found[0]), on_return
@@ -275,23 +296,6 @@ class Reminders:
         if not isinstance(when, datetime):
             when = datetime(when.year, when.month, when.day, *DAY_TIME, tzinfo=timezone())
         return when.astimezone(timezone())
-
-    @staticmethod
-    def _check_rule(repeat, start):
-        rule = repeat_rule(repeat, start)[0].removeprefix("RRULE:")
-        try:
-            rrulestr(rule, dtstart=start)
-        except (ValueError, TypeError) as e:
-            raise ToolError(f"Can't read the repeat rule {repeat!r} ({e}): use an RRULE like FREQ=WEEKLY;BYDAY=MO.")
-        parts = rule_parts(rule)
-        interval = int(parts.get("INTERVAL", "1") or 1)
-        if parts.get("FREQ") == "SECONDLY" or parts.get("FREQ") == "MINUTELY" and interval < MOST_OFTEN_MINUTES:
-            raise ToolError(f"Reminders repeat at most every {MOST_OFTEN_MINUTES} minutes.")
-        return rule
-
-    @staticmethod
-    def _rule(item):
-        return rrulestr(item["repeat"], dtstart=datetime.fromisoformat(item["start"]).astimezone(timezone()))
 
     # The clock
 
@@ -324,7 +328,7 @@ class Reminders:
                 continue
             changed = True
             if item["repeat"]:
-                rule = self._rule(item)
+                rule = item_rule(item)
                 # The latest time it was due: a repeating one may have passed several while nobody could see it.
                 last = rule.before(now, inc=True) or datetime.fromisoformat(item["next"])
                 following = rule.after(now)

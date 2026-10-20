@@ -5,9 +5,6 @@ offer, so "what can you do?" and "I can't reach your PC right now" stay true. It
 must come out the same for the same devices and tools: any change to the
 instructions means Claude can't reuse its cached copy. What Natro remembers comes
 last, since it changes most often.
-
-Claude gets the memory; the free Gemini tier never does (it gets the hand-over
-rules instead).
 """
 from collections import defaultdict
 
@@ -17,15 +14,13 @@ from natro_agent.config import IDENTITY_FILE
 KNOWN_DEVICES = {"pc": "PC", "phone": "phone"}
 
 
-def system_prompt(tools, devices, memory=None, hand_over_rules=None):
+def system_prompt(tools, devices, memory=None):
     """tools: every tool on offer, the devices' included. devices: the connected ones.
 
-    memory: what Natro remembers (for Claude). hand_over_rules: for Gemini instead.
+    memory: what Natro remembers.
     """
     identity = IDENTITY_FILE.read_text(encoding="utf-8").strip()
     parts = [identity, f"## Right now\n\n{capabilities(tools, devices)}"]
-    if hand_over_rules:
-        parts.append(hand_over_rules)
     if memory is not None:
         parts.append(f"## What you remember about your owner\n\n{memory}")
     return "\n\n".join(parts)

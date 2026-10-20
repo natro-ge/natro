@@ -4,7 +4,7 @@ One note per file, named after its title ("Shopping list.md"). Natro can list,
 read, search, write (new note or add to one) and edit notes right away; deleting
 a note needs the owner's yes. The PC keeps old versions of changed and deleted
 notes (Syncthing's file versioning), so an edit can be undone there.
-Notes are personal: they never go to the free Gemini tier.
+Notes are personal.
 """
 import os
 import re

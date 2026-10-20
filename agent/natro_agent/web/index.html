@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#eef1ee" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0a0c0b" media="(prefers-color-scheme: dark)">
+  <title>Natro Dashboard</title>
+  <link rel="icon" href="/dashboard/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/dashboard/style.css">
+  <script src="/dashboard/app.js" defer></script>
+</head>
+<body>
+  <div class="backdrop" aria-hidden="true"><i></i><i></i><i></i></div>
+
+  <header class="top">
+    <div class="top-inner glass">
+      <a class="brand" href="#overview">
+        <img src="/dashboard/icon.svg" alt="" width="30" height="30">
+        <span>Natro</span>
+      </a>
+      <nav class="tabs" role="tablist" aria-label="Sections">
+        <span class="tab-pill" aria-hidden="true"></span>
+        <a role="tab" href="#overview" data-view="overview"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h6V4H4zm0 7h6v-5H4zm10 0h6v-9h-6zm0-16v5h6V4z"/></svg><span>Overview</span></a>
+        <a role="tab" href="#usage" data-view="usage"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10m6 10V4m6 16v-7m6 7H2"/></svg><span>Usage</span></a>
+        <a role="tab" href="#system" data-view="system"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v10H4zM9 19h6m-3-4v4"/></svg><span>System</span></a>
+        <a role="tab" href="#logs" data-view="logs"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h9"/></svg><span>Logs</span></a>
+      </nav>
+      <div class="status" id="status" role="status">
+        <span class="dot"></span><span class="status-text">Connecting…</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="filters" id="filters">
+    <div class="segmented" id="range" role="radiogroup" aria-label="Time range">
+      <span class="seg-pill" aria-hidden="true"></span>
+      <button type="button" role="radio" data-range="24h">24 h</button>
+      <button type="button" role="radio" data-range="7d">7 days</button>
+      <button type="button" role="radio" data-range="30d">30 days</button>
+      <button type="button" role="radio" data-range="month">This month</button>
+    </div>
+    <span class="updated" id="updated"></span>
+  </div>
+
+  <main id="main">
+    <!-- Overview -->
+    <section class="view" id="view-overview" role="tabpanel" aria-label="Overview" hidden>
+      <div class="grid">
+        <article class="card hero span-5">
+          <div class="card-head"><h2>Spent this month</h2><span class="chip" id="month-name"></span></div>
+          <div class="hero-figure"><span id="hero-spent">—</span><small id="hero-budget"></small></div>
+          <div class="meter big" id="hero-meter"><span></span></div>
+          <div class="hero-foot">
+            <div><b id="hero-projected">—</b><span>projected by month end</span></div>
+            <div><b id="hero-left">—</b><span>left in the budget</span></div>
+            <div><b id="hero-days">—</b><span>days to go</span></div>
+          </div>
+        </article>
+        <div class="kpis span-7" id="kpis"></div>
+
+        <article class="card span-7 chart-card" id="card-spend">
+          <div class="card-head"><h2>Spending</h2><span class="sub">by model</span><button class="ghost table-toggle" type="button">Table</button></div>
+          <div class="legend"></div>
+          <div class="chart" data-height="230"></div>
+        </article>
+        <article class="card span-5" id="card-now">
+          <div class="card-head"><h2>Right now</h2><span class="sub" id="now-sub"></span></div>
+          <div class="now" id="now"></div>
+        </article>
+
+        <article class="card span-7 chart-card" id="card-requests">
+          <div class="card-head"><h2>Requests</h2><span class="sub">by device</span><button class="ghost table-toggle" type="button">Table</button></div>
+          <div class="legend"></div>
+          <div class="chart" data-height="200"></div>
+        </article>
+        <article class="card span-5" id="card-issues-short">
+          <div class="card-head"><h2>Recent switches &amp; problems</h2></div>
+          <ol class="feed" id="issues-short"></ol>
+        </article>
+      </div>
+    </section>
+
+    <!-- Usage -->
+    <section class="view" id="view-usage" role="tabpanel" aria-label="Usage" hidden>
+      <div class="grid">
+        <article class="card span-8 chart-card" id="card-tokens">
+          <div class="card-head"><h2>Tokens</h2><span class="sub">Claude, by kind</span><button class="ghost table-toggle" type="button">Table</button></div>
+          <div class="legend"></div>
+          <div class="chart" data-height="220"></div>
+        </article>
+        <article class="card span-4" id="card-cache">
+          <div class="card-head"><h2>Prompt cache</h2></div>
+          <div class="stat-big"><span id="cache-share">—</span><small>of input read from the cache</small></div>
+          <div class="meter" id="cache-meter"><span></span></div>
+          <dl class="pairs" id="token-totals"></dl>
+        </article>
+
+        <article class="card span-6 chart-card" id="card-latency">
+          <div class="card-head"><h2>Response time</h2><span class="sub">seconds per request</span><button class="ghost table-toggle" type="button">Table</button></div>
+          <div class="legend"></div>
+          <div class="chart" data-height="210"></div>
+        </article>
+        <article class="card span-6" id="card-week">
+          <div class="card-head"><h2>When you use Natro</h2><span class="sub">requests by weekday and hour</span><button class="ghost table-toggle" type="button">Table</button></div>
+          <div class="heat" id="heat"></div>
+        </article>
+
+        <article class="card span-6" id="card-models">
+          <div class="card-head"><h2>Models</h2></div>
+          <div class="table-wrap"><table class="data" id="models"></table></div>
+        </article>
+        <article class="card span-6" id="card-tools">
+          <div class="card-head"><h2>Tools</h2><span class="sub" id="tools-sub"></span></div>
+          <div class="legend static">
+            <span><i class="key rect" data-key="ok"></i>worked</span>
+            <span><i class="key rect" data-key="failed"></i>failed</span>
+            <span><i class="key rect" data-key="declined"></i>you said no</span>
+          </div>
+          <div class="hbars" id="tools"></div>
+        </article>
+
+        <article class="card span-12" id="card-issues">
+          <div class="card-head"><h2>Model switches &amp; problems</h2><span class="sub" id="issues-sub"></span></div>
+          <div class="issue-counts" id="issue-counts"></div>
+          <ol class="feed wide" id="issues"></ol>
+        </article>
+      </div>
+    </section>
+
+    <!-- System -->
+    <section class="view" id="view-system" role="tabpanel" aria-label="System" hidden>
+      <div class="grid">
+        <article class="card span-6" id="card-service">
+          <div class="card-head"><h2>Natro</h2><span class="chip" id="service-state"></span></div>
+          <dl class="pairs" id="service"></dl>
+          <div class="meters" id="service-meters"></div>
+        </article>
+        <article class="card span-6" id="card-host">
+          <div class="card-head"><h2>VPS</h2><span class="sub" id="host-name"></span></div>
+          <div class="meters" id="host-meters"></div>
+          <dl class="pairs" id="host"></dl>
+        </article>
+
+        <article class="card span-12" id="card-devices">
+          <div class="card-head"><h2>Devices</h2></div>
+          <div class="devices" id="devices"></div>
+        </article>
+
+        <article class="card span-6" id="card-reminders">
+          <div class="card-head"><h2>Reminders</h2><span class="count" id="reminders-count"></span></div>
+          <ul class="items" id="reminders"></ul>
+        </article>
+        <article class="card span-6" id="card-routines">
+          <div class="card-head"><h2>Routines</h2><span class="count" id="routines-count"></span></div>
+          <ul class="items" id="routines"></ul>
+        </article>
+        <article class="card span-6" id="card-jobs">
+          <div class="card-head"><h2>Background jobs</h2><span class="count" id="jobs-count"></span></div>
+          <ul class="items" id="jobs"></ul>
+        </article>
+        <article class="card span-6" id="card-watchers">
+          <div class="card-head"><h2>Watchers</h2><span class="count" id="watchers-count"></span></div>
+          <ul class="items" id="watchers"></ul>
+          <div class="card-head minor"><h3>Backups &amp; queue</h3></div>
+          <dl class="pairs" id="backups"></dl>
+        </article>
+      </div>
+    </section>
+
+    <!-- Logs -->
+    <section class="view" id="view-logs" role="tabpanel" aria-label="Logs" hidden>
+      <div class="card logs-card">
+        <div class="log-tools">
+          <label class="search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+            <input type="search" id="log-q" placeholder="Search requests, replies, tools, errors…" autocomplete="off" spellcheck="false">
+          </label>
+          <select id="log-device" aria-label="Device">
+            <option value="">All devices</option>
+            <option value="pc">PC</option>
+            <option value="phone">Phone</option>
+            <option value="job">Background jobs</option>
+          </select>
+          <button type="button" class="live-toggle on" id="log-live" aria-pressed="true"><span class="dot"></span>Live</button>
+        </div>
+        <div class="kind-chips" id="log-kinds" role="group" aria-label="Kinds"></div>
+        <div class="log-meta" id="log-meta"></div>
+        <ol class="log-list" id="log-list"></ol>
+        <button type="button" class="ghost more" id="log-more" hidden>Load older entries</button>
+      </div>
+    </section>
+  </main>
+
+  <div class="tip glass" id="tip" role="tooltip" hidden></div>
+</body>
+</html>

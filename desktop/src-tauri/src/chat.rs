@@ -8,7 +8,8 @@
 //! Settings; the microphone (tap it and talk; it sends when you stop, or tap
 //! it again); send. What's asked of the dock
 //! (Ctrl+Alt+Space) shows here too, as she speaks it. The bubbles stay until a
-//! new chat or Natro ends.
+//! new chat or Natro ends. Alt tapped twice opens and closes it too
+//! (double_tap.rs).
 //!
 //! When Natro asks before something risky for one of the chat's requests while
 //! it's open, her question is a bubble: its Yes or No, or type (or say) the
@@ -22,6 +23,11 @@
 //! him, and ones he sends (pasted, or the picture button); a click opens one. While
 //! the PC was off he may have asked for something on the phone: when it connects,
 //! the chat opens with those requests, to run or skip.
+//!
+//! A message that came to the phone shows in the reply box with a Reply (reply.rs):
+//! it opens the chat answering it ("Replying to Nino on WhatsApp" over the box), and
+//! what's typed then goes from the phone, in that message's own app, with no model
+//! in between. Its ✕, Esc or closing the chat stops answering.
 //!
 //! Unlike the dock and the reply box, the chat takes the keyboard while it's open.
 //! Esc or Ctrl+Space closes it and gives the keyboard back to the app you were in;
@@ -43,6 +49,7 @@ use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::Input::KeyboardAndMouse::{INPUT, INPUT_MOUSE, SendInput};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, IsWindow,
     SWP_SHOWWINDOW, SetForegroundWindow,
@@ -126,6 +133,13 @@ struct Question {
     answer: String,
     /// The device that asked, for a question about a request made on the other one ("phone").
     device: String,
+}
+
+/// A message from the phone the chat is answering (reply.rs): the brain's id for it, and whom it's to.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Replying {
+    id: String,
+    to: String,
 }
 
 /// A request he made on the phone while the PC was off, kept for it (pending.py).
@@ -442,6 +456,7 @@ pub enum ChatEvent {
         listening: bool,
         pictures: HashMap<String, String>,
         queued: Vec<Queued>,
+        replying: Option<Replying>,
     },
     Hide,
     /// One exchange changed (or is new).
@@ -458,6 +473,8 @@ pub enum ChatEvent {
     Listening { on: bool },
     /// A word over the box for a moment ("Natro is offline").
     Notice { text: String },
+    /// Answering a message from the phone, or (None) not any more.
+    Replying { replying: Option<Replying> },
 }
 
 pub struct Chat {
@@ -484,6 +501,8 @@ struct State {
     recorder: Option<Recorder>,
     /// The window that had the keyboard before the chat opened (an HWND), to give it back.
     before: isize,
+    /// The message from the phone that what's typed answers.
+    replying: Option<Replying>,
 }
 
 impl Chat {
@@ -511,10 +530,10 @@ impl Chat {
         self.state.lock().unwrap().open
     }
 
-    /// Ctrl+Space, the tray: open, or close and give the keyboard back.
+    /// Ctrl+Space, the double tap, the tray: open, or close and give the keyboard back.
     pub fn toggle(&self, app: &AppHandle) {
         if self.is_open() {
-            log::info!("the chat closed: Ctrl+Space or the tray");
+            log::info!("the chat closed: Ctrl+Space, the double tap or the tray");
             self.close(app, true);
         } else {
             self.open(app);
@@ -542,8 +561,16 @@ impl Chat {
         set_click_through(hwnd, true);
         let x = work.left + (work_w - w) / 2;
         set_window_pos(hwnd, x, work.bottom - h, w, h, SWP_SHOWWINDOW);
-        // Allowed: Natro has just had the key press (or the tray's click).
-        if unsafe { SetForegroundWindow(hwnd) }.as_bool() {
+        // Allowed: Natro has just had the key press (or the tray's click). Not after a double
+        // tap, whose keys went to the app in front: then input of her own (a mouse event that
+        // moves nothing) makes her the last to have had some, and Windows lets her.
+        let mut took = unsafe { SetForegroundWindow(hwnd) }.as_bool();
+        if !took {
+            log::info!("the chat asks again for the keyboard, after a nudge");
+            nudge();
+            took = unsafe { SetForegroundWindow(hwnd) }.as_bool();
+        }
+        if took {
             log::info!("the chat opened");
         } else {
             log::warn!("the chat opened but couldn't take the keyboard");
@@ -562,6 +589,7 @@ impl Chat {
             return;
         }
         state.open = false;
+        state.replying = None;
         let listening = state.recorder.take().is_some();
         let before = std::mem::take(&mut state.before);
         let declined = state.log.waiting().and_then(|question| {
@@ -638,6 +666,20 @@ impl Chat {
         }
         let brain = app.state::<Brain>();
         let mut state = self.state.lock().unwrap();
+        if let Some(replying) = state.replying.clone() {
+            let Some(id) = brain.send_message_reply(&replying.id, text) else {
+                drop(state);
+                self.notice(app, "Natro is offline");
+                return false;
+            };
+            log::info!("answered a message from the phone in the chat as {id}");
+            state.replying = None;
+            let changed = state.log.asked(&id, &format!("To {}: {text}", replying.to), false);
+            drop(state);
+            self.emit(app, ChatEvent::Replying { replying: None });
+            self.changed(app, changed);
+            return true;
+        }
         let changed = if let Some(question) = state.log.waiting() {
             self.answered(app, &question, is_yes(text), "typed");
             state.log.answer(&question, text)
@@ -829,6 +871,27 @@ impl Chat {
             });
     }
 
+    /// The reply box's Reply on a message from the phone (reply.rs): the chat opens answering it.
+    pub fn reply_to(&self, app: &AppHandle, id: &str, to: &str) {
+        let replying = Replying { id: id.into(), to: to.into() };
+        let open = {
+            let mut state = self.state.lock().unwrap();
+            state.replying = Some(replying.clone());
+            state.open
+        };
+        if open {
+            self.emit(app, ChatEvent::Replying { replying: Some(replying) });
+        } else {
+            self.open(app);
+        }
+    }
+
+    /// Not answering that message after all (its ✕).
+    fn stop_replying(&self, app: &AppHandle) {
+        self.state.lock().unwrap().replying = None;
+        self.emit(app, ChatEvent::Replying { replying: None });
+    }
+
     // From the brain (brain.rs)
 
     /// Whether a request is the chat's own (typed, or said to its microphone) and still
@@ -1010,6 +1073,7 @@ impl State {
             listening: self.recorder.is_some(),
             pictures: self.pictures.iter().cloned().collect(),
             queued: self.queued.clone(),
+            replying: self.replying.clone(),
         }
     }
 }
@@ -1053,6 +1117,12 @@ pub fn chat_send(app: AppHandle, text: String) -> bool {
     app.state::<Chat>().send(&app, &text)
 }
 
+/// The ✕ on "Replying to ...": what's typed goes to Natro again.
+#[tauri::command]
+pub fn chat_stop_replying(app: AppHandle) {
+    app.state::<Chat>().stop_replying(&app);
+}
+
 #[tauri::command]
 pub fn chat_mic(app: AppHandle) {
     app.state::<Chat>().mic(&app);
@@ -1094,10 +1164,10 @@ pub fn chat_attach(app: AppHandle) {
     app.state::<Chat>().attach(&app);
 }
 
-/// Esc.
+/// Esc, or the double tap (keys: "Alt twice").
 #[tauri::command]
-pub fn chat_close(app: AppHandle) {
-    log::info!("the chat closed: Esc");
+pub fn chat_close(app: AppHandle, keys: Option<String>) {
+    log::info!("the chat closed: {}", keys.as_deref().unwrap_or("Esc"));
     app.state::<Chat>().close(&app, true);
 }
 
@@ -1130,6 +1200,15 @@ fn process_of(window: HWND) -> u32 {
     let mut process = 0;
     unsafe { GetWindowThreadProcessId(window, Some(&mut process)) };
     process
+}
+
+/// An input event that does nothing, from Natro.
+fn nudge() {
+    let input = [INPUT {
+        r#type: INPUT_MOUSE,
+        ..Default::default()
+    }];
+    unsafe { SendInput(&input, size_of::<INPUT>() as i32) };
 }
 
 #[cfg(test)]

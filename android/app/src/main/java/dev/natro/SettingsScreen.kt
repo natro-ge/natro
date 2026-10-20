@@ -68,6 +68,7 @@ fun SettingsScreen(setup: List<SetupStep>, back: () -> Unit, openWakeTest: () ->
     val wakeWord by Prefs.wakeWord.collectAsStateWithLifecycle()
     val speak by Prefs.speakReplies.collectAsStateWithLifecycle()
     val show by Prefs.showReplies.collectAsStateWithLifecycle()
+    val messagesToPc by Prefs.messagesToPc.collectAsStateWithLifecycle()
     val paused by NatroService.wakePaused.collectAsStateWithLifecycle()
     val status by Natro.status.collectAsStateWithLifecycle()
     val spend by Natro.spend.collectAsStateWithLifecycle()
@@ -109,6 +110,12 @@ fun SettingsScreen(setup: List<SetupStep>, back: () -> Unit, openWakeTest: () ->
                 Line()
                 SwitchRow("Show replies as text", "Her answer opens from the bubble over other apps; tap it to fold it back.",
                     checked = show, onChange = Prefs::setShowReplies)
+            }
+
+            Group("Your PC") {
+                SwitchRow("Show messages on the PC", "Messages that come here (WhatsApp, Messenger, texts...) show " +
+                    "on your PC while it's on, to read and answer there. Needs notification access.",
+                    checked = messagesToPc, onChange = Prefs::setMessagesToPc)
             }
 
             val left = setup.count { !it.done }

@@ -6,7 +6,7 @@
 One fact per line: "- Tuxa's sister is Nino. (2026-10-05)". Lines that don't
 start with "- " are ignored, so headings and notes can be added by hand.
 Everything remembered is in Claude's instructions for each new conversation.
-Memory is personal: it never goes to the free Gemini tier.
+Memory is personal.
 """
 import os
 from datetime import date

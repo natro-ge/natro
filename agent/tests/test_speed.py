@@ -1,13 +1,10 @@
 """Short commands: run without a model, or with one model call instead of two."""
 import pytest
-from google.genai import errors
 
 from conftest import FakeClient, Owner, message, run, text, tool_use
 from natro_agent import quick
 from natro_agent.agent import Agent
-from natro_agent.gemini import REST_SECONDS, Gemini, rest_seconds
 from natro_agent.tools import Tool, ToolError
-from test_routing import FakeGeminiClient, gemini_calls, gemini_says
 
 
 def spotify(fails=False):
@@ -117,23 +114,17 @@ def test_several_things_get_the_second_model_call():
     assert len(claude.requests) == 2 and reply.text == "Skipped, and it's Fix You now."
 
 
-def test_gemini_ends_with_a_final_tools_result(tmp_path):
+def test_a_quick_command_in_a_conversation_is_kept_as_the_call_it_was():
+    # Her "Paused." alone, with no call before it, read to Claude as a claim she never acted on (2026-10-20).
     tool, calls = spotify()
-    gemini = FakeGeminiClient(gemini_calls("spotify_control", action="next"))
-    agent = Agent([tool], client=FakeClient(), gemini=Gemini(client=gemini))
-    reply = run(agent.respond("play the next one", Owner()))
-    assert reply.text == "Skipped to the next track." and len(gemini.requests) == 1
-    # The conversation goes on normally.
-    gemini.responses.append(gemini_says("Sure."))
-    assert run(agent.respond("thanks", Owner())).text == "Sure."
-
-
-def test_exhausted_free_model_rests_until_its_quota_resets():
-    daily = errors.APIError(429, {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "quota", "details": [
-        {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "30784s"}]}})
-    assert rest_seconds(daily) == 30784
-    minute = errors.APIError(429, {"error": {"code": 429, "message": "quota", "details": [
-        {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "7s"}]}})
-    assert rest_seconds(minute) == 30  # at least half a minute
-    busy = errors.APIError(503, {"error": {"code": 503, "message": "high demand"}})
-    assert rest_seconds(busy) == REST_SECONDS
+    claude = FakeClient(message(text("It's Yellow by Coldplay.")), message(text("Sure.")))
+    agent = Agent([tool], client=claude)
+    run(agent.respond("what's playing", Owner()))
+    run(agent.respond("Pause the music.", Owner()))
+    run(agent.respond("thanks", Owner()))
+    asked, called, result, said = claude.requests[1]["messages"][2:6]
+    assert asked["role"] == "user" and asked["content"].endswith("Pause the music.")
+    use, = called["content"]
+    assert use["type"] == "tool_use" and use["name"] == "spotify_control" and use["input"] == {"action": "pause"}
+    assert result["content"] == [{"type": "tool_result", "tool_use_id": use["id"], "content": "Paused."}]
+    assert said == {"role": "assistant", "content": "Paused."} and calls == [{"action": "pause"}]

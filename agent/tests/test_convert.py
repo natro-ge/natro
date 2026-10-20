@@ -201,3 +201,26 @@ def test_libreoffice_for_real(tmp_path):
     converter._run = convert.run
     ask(converter, path="/home/natro/hello.txt", to="pdf")
     assert transfers.sent[0][0] == "hello.pdf" and transfers.sent[0][2].startswith(b"%PDF")
+
+
+def test_a_converter_that_runs_out_of_memory_says_so_and_goes_first(monkeypatch):
+    # LibreOffice with an 8 MB presentation went past the service's memory limit, and the kernel stopped all of
+    # Natro (2026-10-19). Now the converter asks to be the one stopped, and he's told why.
+    monkeypatch.setattr(convert.sys, "platform", "linux")
+    assert convert.first_to_go(["soffice", "--headless"]) == [
+        "sh", "-c", 'echo 1000 > /proc/self/oom_score_adj; exec "$@"', "soffice", "soffice", "--headless"]
+    monkeypatch.setattr(convert.sys, "platform", "win32")
+    assert convert.first_to_go(["soffice", "--headless"]) == ["soffice", "--headless"]
+
+    class Killed:
+        returncode = -9
+
+        async def communicate(self):
+            return b"", None
+
+    async def start(*command, **options):
+        return Killed()
+
+    monkeypatch.setattr(convert.asyncio, "create_subprocess_exec", start)
+    with pytest.raises(ToolError, match="soffice ran out of memory on the server: the file is too big"):
+        run(convert.run(["soffice", "--convert-to", "pdf", "big.pptx"], 60))

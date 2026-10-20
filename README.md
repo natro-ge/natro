@@ -29,7 +29,9 @@ and your online accounts, and answers on screen and out loud, in English.
 - **One chat on the PC and the phone:** what you ask on either shows on both,
   with her replies, until you start a new chat on either. It lives on the
   server, in memory only. "Show me my PC screen" (or the phone's) puts a
-  screenshot in it, and you can send pictures into it; she never sees them.
+  screenshot in it. She sees pictures: send one into it and ask "what's
+  this?", "read this receipt" or "what does this error mean?", and she can
+  take a screenshot to look at a screen herself.
   When she asks before something risky, you can answer on either: the phone
   shows the PC's question as a notification with Yes and No, and the PC's
   reply box shows the phone's.
@@ -49,9 +51,15 @@ and your online accounts, and answers on screen and out loud, in English.
   it's done she tells you the answer, with the details in the chat.
 - **She keeps an eye out:** "always tell me when Nino emails", "let me know
   right away when the bank texts me", and a heads-up ten minutes before each
-  meeting, or when to leave for one further away. The checks are cheap rules
+  meeting, or ten minutes before you have to leave for one further away,
+  with the trip from where your phone is. The checks are cheap rules
   with no model call, and the phone matches its own notifications, so only the
   ones you asked about leave it.
+- **The phone's messages on the PC:** a message that comes to the phone
+  (WhatsApp, Messenger, Telegram, texts...) shows in the PC's reply box; its
+  Reply opens the chat, and what you type goes from the phone, in that app,
+  with no model in between. Or ask her: "reply to Nino that I'm on my way".
+  A switch in the phone's settings turns it off.
 - **Your own browser:** she uses your Edge, logged in as you, through
   Playwright and Microsoft's Playwright Extension: open a site, read the page,
   click and type, in tabs of her own. What sends, buys or deletes asks first;
@@ -83,7 +91,7 @@ and your online accounts, and answers on screen and out loud, in English.
 ```
         ┌─────────────────────────── Server (always on) ───────────────────────────┐
         │  Voice pipeline: Google Chirp 3 recognition → Claude translates to English │
-        │  Agent (the brain): Gemini free tier / Claude · identity · memory · notes  │
+        │  Agent (the brain): Claude Haiku / Sonnet · identity · memory · notes      │
         │  routing · confirmations · spending cap                                    │
         │  Cloud tools: Google, Spotify, web search, memory, notes, MCP servers      │
         └───────────▲─────────────────────────────────────────────▲─────────────────┘
@@ -110,12 +118,12 @@ A request, step by step:
 3. **Speech to English.** Google's Chirp 3 recognizes the Georgian (and English)
    speech; Claude turns it into accurate English, helped by a list of the names
    and terms you use.
-4. **The agent decides.** Requests with no personal data ("open Chrome",
-   "play Yellow", "weather tomorrow") start on Gemini's free tier. As soon as a
-   request needs anything personal (email, calendar, files, memory,
-   notifications) or a risky action, it goes to Claude (Sonnet, with Haiku as
-   the fallback), and personal data never reaches the free tier. Tests check
-   this.
+4. **The agent decides.** Plain requests ("open Chrome", "play Yellow",
+   "weather tomorrow") and anything about the PC's screen go to Claude Haiku,
+   which is quick and cheap. A request that needs anything personal (email,
+   calendar, files, memory, notifications) or a risky action goes to Claude
+   Sonnet, which keeps the rest of that conversation; Sonnet also takes over
+   whenever Haiku gets stuck. Tests check this.
 5. **Tools.** The server has its own tools (memory, notes, web search, Google,
    Spotify, MCP servers) and each connected device offers its own. Natro
    knows which devices are online and says so when one isn't.
@@ -150,9 +158,9 @@ Natro is in daily use and grows a piece at a time. Where it stands
 
 **Working**
 
-- The brain on a server: speech to English, the agent with Gemini's free tier
-  and Claude (personal data only to Claude), memory and notes, confirmations,
-  the spending cap; Google, Spotify, web search and MCP servers.
+- The brain on a server: speech to English, the agent on Claude (Haiku for
+  plain requests, Sonnet for personal or risky ones), memory and notes,
+  confirmations, the spending cap; Google, Spotify, web search and MCP servers.
 - The PC app (`pc/`): "OK Natro", the talk key, apps and files, spoken
   replies, the tray.
 - The Android app: the phone's assistant, "OK Natro" and "Hey Natro", a
@@ -174,12 +182,13 @@ Natro is in daily use and grows a piece at a time. Where it stands
 
 - Done: the glass dock at the top (Ctrl+Alt+Space) that shows each step with
   the app's own icon ("Opening Spotify", "Playing Yellow") and takes a click
-  to answer her questions; the chat (Ctrl+Space), a glass box rising from the
-  bottom with the conversation above it as bubbles, typed or spoken, answered
-  as text; files to and from the phone (Explorer's Send to, the tray); a
-  Verbose switch that keeps each request for testing; a Settings window with
-  the switches (Start with Windows among them), the keybinds and the API
-  keys behind a PIN, to change them without opening the server.
+  to answer her questions; the chat (Ctrl+Space, or Alt tapped twice), a
+  glass box rising from the bottom with the conversation above it as bubbles,
+  typed or spoken, answered as text; files to and from the phone (Explorer's
+  Send to, the tray); a Verbose switch that keeps each request for testing; a
+  Settings window with the switches (Start with Windows among them), the
+  keybinds and the API keys behind a PIN, to change them without opening the
+  server.
 - Next: the PC tools and Kokoro in Rust (no Python helper), the wake word and
   a better end-of-speech detector (Silero VAD). Then it replaces `pc/`.
 
@@ -218,9 +227,7 @@ Type in English. She has memory and notes already; `--dry-run-pc` adds a
 pretend PC whose tools only say what they would do. Each reply ends with the
 model, the time and the cost.
 
-**Free extras for `.env`:** `GEMINI_API_KEY`
-([Google AI Studio](https://aistudio.google.com/apikey)) sends requests with
-no personal data to Gemini's free tier; `TAVILY_API_KEY`
+**Free extras for `.env`:** `TAVILY_API_KEY`
 ([tavily.com](https://tavily.com), 1,000 free searches a month) turns on web
 search. `GOOGLE_MAPS_API_KEY` (a Google Cloud key for the Routes API) turns on
 travel time and routes, from `NATRO_HOME_ADDRESS` by `NATRO_TRAVEL_MODE` (drive, transit,
@@ -361,8 +368,6 @@ cd desktop\src-tauri; cargo test
 - The PC app is Windows only. The phone app needs Android 14 or newer on an
   arm64 phone, and is installed directly, not from the Play Store.
 - She hears Georgian with English mixed in, and replies in English.
-- The free Gemini tier allows only a few dozen requests a day; after that,
-  Claude answers.
 - Spotify control needs Premium. Spotify's rules for personal apps leave out
   recommendations and Spotify's own playlists (On Repeat, Discover Weekly).
 
