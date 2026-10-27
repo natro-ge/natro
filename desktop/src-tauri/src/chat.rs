@@ -9,7 +9,9 @@
 //! it again); send. What's asked of the dock
 //! (Ctrl+Alt+Space) shows here too, as she speaks it. The bubbles stay until a
 //! new chat or Natro ends. Alt tapped twice opens and closes it too
-//! (double_tap.rs).
+//! (double_tap.rs). Up and Down go through what he typed to her before, as in a
+//! terminal (the newest MOST_TYPED, kept in `logs/chat-history.json`; not his
+//! answers to her questions, nor to messages).
 //!
 //! When Natro asks before something risky for one of the chat's requests while
 //! it's open, her question is a bubble: its Yes or No, or type (or say) the
@@ -24,10 +26,10 @@
 //! the PC was off he may have asked for something on the phone: when it connects,
 //! the chat opens with those requests, to run or skip.
 //!
-//! A message that came to the phone shows in the reply box with a Reply (reply.rs):
-//! it opens the chat answering it ("Replying to Nino on WhatsApp" over the box), and
-//! what's typed then goes from the phone, in that message's own app, with no model
-//! in between. Its ✕, Esc or closing the chat stops answering.
+//! A message that came to the phone shows in the reply box as a card (reply.rs),
+//! answered there or in the chat: then the message is quoted over the box (who,
+//! the app, its words), and what's typed goes from the phone, in that message's
+//! own app, with no model in between. Its ✕, Esc or closing the chat stops answering.
 //!
 //! Unlike the dock and the reply box, the chat takes the keyboard while it's open.
 //! Esc or Ctrl+Space closes it and gives the keyboard back to the app you were in;
@@ -36,7 +38,7 @@
 //! where they are): elsewhere clicks go through to what's under it.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -57,7 +59,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::audio::{MIN_SAMPLES, has_speech};
 use crate::brain::Brain;
-use crate::dock::{hide, prepare_overlay, set_click_through, set_window_pos, work_area_with_mouse};
+use crate::dock::{
+    prepare_overlay, set_click_through, set_window_pos, solid_hit_surface, work_area_with_mouse,
+};
 use crate::files::Files;
 use crate::recorder::Recorder;
 use crate::reply::Reply;
@@ -79,6 +83,8 @@ const MOST: usize = 200;
 const REMEMBERED: usize = 16;
 /// The pictures kept (the brain keeps as many: older ones are gone from the chat).
 const PICTURES: usize = 24;
+/// What he typed to her that Up and Down go through: the newest.
+const MOST_TYPED: usize = 100;
 
 /// One request and Natro's answer, as the bubbles show them.
 #[derive(Serialize, Clone, Default, Debug)]
@@ -135,11 +141,21 @@ struct Question {
     device: String,
 }
 
-/// A message from the phone the chat is answering (reply.rs): the brain's id for it, and whom it's to.
+/// A message from the phone the chat is answering (reply.rs): the brain's id for it, who it's from, in
+/// which app, and its words (quoted over the box).
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Replying {
     id: String,
-    to: String,
+    from: String,
+    app: String,
+    text: String,
+}
+
+impl Replying {
+    /// Whom the answer goes to: "Nino on WhatsApp".
+    fn to(&self) -> String {
+        format!("{} on {}", self.from, self.app)
+    }
 }
 
 /// A request he made on the phone while the PC was off, kept for it (pending.py).
@@ -447,6 +463,19 @@ fn is_yes(text: &str) -> bool {
     !words.iter().any(|w| NO.contains(w)) && words.iter().any(|w| YES.contains(w))
 }
 
+/// A request he typed, kept for Up and Down: last, unless it's the one before again; the oldest go past
+/// MOST_TYPED. False if nothing changed.
+fn remember(typed: &mut Vec<String>, text: &str) -> bool {
+    if typed.last().is_some_and(|last| last == text) {
+        return false;
+    }
+    typed.push(text.to_string());
+    if typed.len() > MOST_TYPED {
+        typed.drain(..typed.len() - MOST_TYPED);
+    }
+    true
+}
+
 #[derive(Serialize, Clone)]
 #[serde(tag = "action", rename_all = "lowercase")]
 pub enum ChatEvent {
@@ -489,6 +518,8 @@ pub struct Chat {
     watching: AtomicBool,
     /// For testing (debug builds): a recorded clip instead of the microphone (recorder.rs).
     test_clip: Option<PathBuf>,
+    /// Where what he typed is kept for Up and Down.
+    history: PathBuf,
 }
 
 #[derive(Default)]
@@ -503,17 +534,25 @@ struct State {
     before: isize,
     /// The message from the phone that what's typed answers.
     replying: Option<Replying>,
+    /// What he typed to her, oldest first (Up and Down).
+    typed: Vec<String>,
 }
 
 impl Chat {
-    pub fn new(test_clip: Option<PathBuf>) -> Chat {
+    pub fn new(home: &Path, test_clip: Option<PathBuf>) -> Chat {
+        let history = home.join("logs").join("chat-history.json");
+        let typed = std::fs::read_to_string(&history)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
         Chat {
-            state: Mutex::default(),
+            state: Mutex::new(State { typed, ..State::default() }),
             turn: AtomicU64::new(0),
             takes: AtomicU64::new(0),
             hits: Mutex::default(),
             watching: AtomicBool::new(false),
             test_clip,
+            history,
         }
     }
 
@@ -521,7 +560,7 @@ impl Chat {
     pub fn prepare(&self, app: &AppHandle) -> tauri::Result<()> {
         prepare_overlay(&window(app), true, (WIDTH as i32, 600))?;
         if PAGE_LOADED.load(Ordering::SeqCst) {
-            hide(&window(app)); // the page is there already: no need to show it off the screen
+            hide_ready(app); // the page is there already: no need to show it off the screen
         }
         Ok(())
     }
@@ -616,7 +655,7 @@ impl Chat {
         thread::spawn(move || {
             thread::sleep(SLIDE_OUT);
             if app.state::<Chat>().turn.load(Ordering::SeqCst) == turn {
-                hide(&window(&app));
+                hide_ready(&app);
             }
         });
     }
@@ -674,7 +713,7 @@ impl Chat {
             };
             log::info!("answered a message from the phone in the chat as {id}");
             state.replying = None;
-            let changed = state.log.asked(&id, &format!("To {}: {text}", replying.to), false);
+            let changed = state.log.asked(&id, &format!("To {}: {text}", replying.to()), false);
             drop(state);
             self.emit(app, ChatEvent::Replying { replying: None });
             self.changed(app, changed);
@@ -685,6 +724,9 @@ impl Chat {
             state.log.answer(&question, text)
         } else if let Some(id) = brain.send_text(text) {
             log::info!("typed in the chat as {id}");
+            if remember(&mut state.typed, text) {
+                self.save_history(&state.typed);
+            }
             state.log.asked(&id, text, false)
         } else {
             drop(state);
@@ -694,6 +736,20 @@ impl Chat {
         drop(state);
         self.changed(app, changed);
         true
+    }
+
+    fn save_history(&self, typed: &[String]) {
+        let saved = serde_json::to_string(typed)
+            .map_err(std::io::Error::other)
+            .and_then(|text| {
+                if let Some(folder) = self.history.parent() {
+                    std::fs::create_dir_all(folder)?;
+                }
+                std::fs::write(&self.history, text)
+            });
+        if let Err(e) = saved {
+            log::warn!("couldn't keep what was typed in the chat: {e}");
+        }
     }
 
     /// Her question's Yes or No.
@@ -871,9 +927,21 @@ impl Chat {
             });
     }
 
-    /// The reply box's Reply on a message from the phone (reply.rs): the chat opens answering it.
-    pub fn reply_to(&self, app: &AppHandle, id: &str, to: &str) {
-        let replying = Replying { id: id.into(), to: to.into() };
+    /// His answer to a message from the phone, typed in the reply box (reply.rs) and on its way: it shows here
+    /// as his, and her reply to it isn't spoken.
+    pub fn answered_message(&self, app: &AppHandle, request: &str, to: &str, text: &str) {
+        let changed = self.state.lock().unwrap().log.asked(request, &format!("To {to}: {text}"), false);
+        self.changed(app, changed);
+    }
+
+    /// The reply box's "answer in the chat" on a message from the phone (reply.rs): the chat opens answering it.
+    pub fn reply_to(&self, app: &AppHandle, card: &crate::reply::Card) {
+        let replying = Replying {
+            id: card.id.clone(),
+            from: card.from.clone(),
+            app: card.app.clone(),
+            text: card.text.clone(),
+        };
         let open = {
             let mut state = self.state.lock().unwrap();
             state.replying = Some(replying.clone());
@@ -1098,9 +1166,26 @@ pub fn chat_state(app: AppHandle) -> Option<ChatEvent> {
         state.open.then(|| state.shown())
     });
     if showing.is_none() {
-        hide(&window(&app)); // it was shown off the screen only so the page would load
+        hide_ready(&app); // it was shown off the screen only so the page would load
     }
     showing
+}
+
+/// Hidden, and ready to take clicks where the page shows (solid_hit_surface), on the main thread;
+/// not if the chat has opened again meanwhile.
+fn hide_ready(app: &AppHandle) {
+    let turn = app.try_state::<Chat>().map(|chat| chat.turn.load(Ordering::SeqCst));
+    let main = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let chat = main.try_state::<Chat>();
+        let now = chat.as_ref().map(|chat| chat.turn.load(Ordering::SeqCst));
+        if now != turn || chat.is_some_and(|chat| chat.is_open()) {
+            return;
+        }
+        if let Ok(hwnd) = window(&main).hwnd() {
+            solid_hit_surface(hwnd);
+        }
+    });
 }
 
 /// Where the box and the bubbles are: x, y, width, height (logical pixels).
@@ -1115,6 +1200,12 @@ pub fn chat_hits(app: AppHandle, rects: Vec<[f64; 4]>) {
 #[tauri::command]
 pub fn chat_send(app: AppHandle, text: String) -> bool {
     app.state::<Chat>().send(&app, &text)
+}
+
+/// What he typed to her before, oldest first, for Up and Down.
+#[tauri::command]
+pub fn chat_history(app: AppHandle) -> Vec<String> {
+    app.state::<Chat>().state.lock().unwrap().typed.clone()
 }
 
 /// The ✕ on "Replying to ...": what's typed goes to Natro again.
@@ -1402,5 +1493,21 @@ mod tests {
         for no in ["no", "don't", "ok natro, no", "not now", "არა", "hmm", "", "yes, no, wait"] {
             assert!(!is_yes(no), "{no}");
         }
+    }
+
+    #[test]
+    fn up_and_down_keep_the_newest_requests_once_each() {
+        let mut typed = Vec::new();
+        assert!(remember(&mut typed, "open Spotify"));
+        assert!(!remember(&mut typed, "open Spotify")); // the same again: once
+        assert!(remember(&mut typed, "what's the weather"));
+        assert!(remember(&mut typed, "open Spotify")); // not right after itself: again
+        assert_eq!(typed, ["open Spotify", "what's the weather", "open Spotify"]);
+        for n in 0..MOST_TYPED {
+            remember(&mut typed, &format!("request {n}"));
+        }
+        assert_eq!(typed.len(), MOST_TYPED);
+        assert_eq!(typed[0], "request 0");
+        assert_eq!(typed.last().unwrap(), &format!("request {}", MOST_TYPED - 1));
     }
 }

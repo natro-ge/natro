@@ -100,8 +100,10 @@ def first_to_go(command):
     return ["sh", "-c", 'echo 1000 > /proc/self/oom_score_adj; exec "$@"', command[0], *command]
 
 
-async def run(command, seconds, cwd=None):
-    """Run a converter; ToolError with what it said if it fails, runs out of memory or takes too long."""
+async def run(command, seconds, cwd=None, work="convert", program=None):
+    """Run a converter; ToolError with what it said if it fails, runs out of memory or takes too long. work: what it
+    does, for those messages; program: its name there (default the command's)."""
+    program = program or Path(command[0]).name
     process = await asyncio.create_subprocess_exec(*first_to_go(command), cwd=cwd, stdout=asyncio.subprocess.PIPE,
                                                    stderr=asyncio.subprocess.STDOUT)
     try:
@@ -109,30 +111,47 @@ async def run(command, seconds, cwd=None):
     except asyncio.TimeoutError:
         process.kill()
         await process.wait()
-        raise ToolError(f"{Path(command[0]).name} took longer than {seconds // 60 or 1} minutes, so it was stopped.")
+        raise ToolError(f"{program} took longer than {seconds // 60 or 1} minutes, so it was stopped.")
     if process.returncode == -9:  # SIGKILL: the kernel stopped it for running out of memory
-        raise ToolError(f"{Path(command[0]).name} ran out of memory on the server: the file is too big to convert "
-                        "there.")
+        raise ToolError(f"{program} ran out of memory on the server: the file is too big to {work} there.")
     if process.returncode != 0:
         said = output.decode("utf-8", "replace").strip().splitlines()
-        raise ToolError(f"{Path(command[0]).name} couldn't convert it: {said[-1] if said else process.returncode}")
+        raise ToolError(f"{program} couldn't {work} it: {said[-1] if said else process.returncode}")
     return output
 
 
 class Converter:
     """transfers: the server's files.Transfers. tell(text): tells him something later (an alert), set by the
-    server. run: runs a converter program (for tests)."""
+    server. run: runs a converter program (for tests). The PDF tools (pdf.py) use its folder, its turn and soon
+    too."""
 
     def __init__(self, transfers, run=run):
         self.transfers = transfers
         self.tell = lambda text: None
         self._run = run
-        self._one_at_a_time = asyncio.Lock()
+        # One job at a time, conversions and PDF work alike: they share the service's memory.
+        self.turn = asyncio.Lock()
         self._ids = itertools.count(1)
         self.work = transfers.folder / "converting"
         shutil.rmtree(self.work, ignore_errors=True)  # anything a restart cut off
         self.work.mkdir(parents=True, exist_ok=True)
         self.profile = transfers.folder / "libreoffice"  # LibreOffice's settings, kept: it starts faster
+
+    def new_folder(self):
+        """A folder of its own for one job, in work (the caller deletes it)."""
+        folder = self.work / f"c{next(self._ids)}"
+        folder.mkdir()
+        return folder
+
+    async def soon(self, job, meanwhile, failed):
+        """job's answer if it's done within WAIT_SECONDS. Otherwise it goes on, he's told failed + why if it fails,
+        and the answer is meanwhile."""
+        task = asyncio.create_task(job)
+        done, _ = await asyncio.wait([task], timeout=WAIT_SECONDS)
+        if done:
+            return task.result()  # raises its ToolError, if it failed
+        task.add_done_callback(lambda task: self._later(task, failed))
+        return meanwhile
 
     def tools(self):
         device = {"type": "string", "enum": list(KNOWN_DEVICES)}
@@ -164,14 +183,10 @@ class Converter:
         name = safe_name(path)
         wanted = target(args.get("to"))
         self.check(name, wanted)
-        task = asyncio.create_task(self._convert(source, path, wanted, to_device))
-        done, _ = await asyncio.wait([task], timeout=WAIT_SECONDS)
-        if done:
-            return task.result()  # raises its ToolError, if it failed
-        task.add_done_callback(self._later)
         there = KNOWN_DEVICES[to_device]
-        return (f"I'm converting {name} to {wanted.upper()}; it's taking a while, so it'll land in your {there}'s "
-                "Downloads when it's done.")
+        return await self.soon(self._convert(source, path, wanted, to_device),
+                               f"I'm converting {name} to {wanted.upper()}; it's taking a while, so it'll land in your "
+                               f"{there}'s Downloads when it's done.", "The conversion didn't work")
 
     @staticmethod
     def check(name, wanted):
@@ -185,27 +200,33 @@ class Converter:
         if wanted not in TARGETS[kind]:
             raise ToolError(f"A .{have} file can become: {', '.join(sorted(TARGETS[kind] - {target(have)}))}.")
 
-    def _later(self, task):
-        """A conversion that went on after Natro answered: he's told if it failed."""
+    def _later(self, task, failed):
+        """A job that went on after Natro answered: he's told if it failed."""
         if task.cancelled():
             return
         if isinstance(error := task.exception(), Exception):
-            self.tell(f"The conversion didn't work: {error}")
+            self.tell(f"{failed}: {error}")
+
+    async def bring(self, source, path, folder):
+        """The file from his device, moved into folder: (where it is now, its name)."""
+        fetched, name = await self.transfers.fetch(source, path, most=MOST_BYTES)
+        try:
+            kept = folder / safe_name(name)
+            shutil.move(str(fetched), kept)
+        finally:
+            fetched.unlink(missing_ok=True)
+        return kept, name
 
     async def _convert(self, source, path, wanted, to_device):
         started = time.monotonic()
-        fetched, name = await self.transfers.fetch(source, path, most=MOST_BYTES)
-        folder = self.work / f"c{next(self._ids)}"
+        folder = self.new_folder()
         try:
-            folder.mkdir()
-            original = folder / safe_name(name)
-            shutil.move(str(fetched), original)
-            async with self._one_at_a_time:
+            original, name = await self.bring(source, path, folder)
+            async with self.turn:
                 result = await self._make(original, wanted, folder / "out")
             size = result.stat().st_size
             sent = self.transfers.send(result, f"{Path(name).stem}.{wanted}", to_device)
         finally:
-            fetched.unlink(missing_ok=True)
             shutil.rmtree(folder, ignore_errors=True)
         log.write("convert", name=name, to=wanted, size=size, seconds=round(time.monotonic() - started, 1))
         there = KNOWN_DEVICES[to_device]
@@ -286,9 +307,9 @@ def convert_picture(original, made, wanted):
 
 
 def available():
-    """Which converters this machine has, for the log at the start."""
-    return {program: bool(shutil.which(program)) for program in ("soffice", "pandoc", "ffmpeg")} | {
-        "pillow": _importable("PIL"), "pillow_heif": _importable("pillow_heif")}
+    """Which converters this machine has (the PDF tools' too), for the log at the start."""
+    return {program: bool(shutil.which(program)) for program in ("soffice", "pandoc", "ffmpeg", "gs", "ocrmypdf")} | {
+        "pillow": _importable("PIL"), "pillow_heif": _importable("pillow_heif"), "reportlab": _importable("reportlab")}
 
 
 def _importable(module):

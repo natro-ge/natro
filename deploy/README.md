@@ -80,11 +80,25 @@ request to the English and to the reply, and its cost.
 ## 8. The dashboard
 
 Natro serves a read-only dashboard beside the WebSocket: `http://<tailscale ip>:8700/`
-(it goes on to `/dashboard`) on any device in the tailnet, the phone too. It shows this
-month's spending against the budget, requests, models, tokens, tools, model switches and
-errors, the devices, the VPS's CPU, memory and disk, the reminders, routines, watchers,
-jobs and backups, and the log with search and a live tail. Nothing on it changes Natro,
-and it loads nothing from anywhere else (`agent/natro_agent/dashboard.py`, `web/`).
+(it goes on to `/dashboard`) on any device in the tailnet, the phone too, in natro.ge's look,
+light or dark with the system. Five pages:
+
+- **Home:** this month's spending against the budget, requests, the typical reply time,
+  problems, spending by model, what's connected, the latest requests and what's coming up.
+- **Activity:** a year of requests by day in GitHub's order (a column a week, Sunday on top),
+  and the log: search, kinds, a device, a day, a live tail. A request opens to its reply,
+  model, tools, where its time went and what it cost.
+- **Billing:** a month at a time, earlier ones too: the running total against the budget and
+  the 80% warning, where it's heading, by model, by command, and every request with its
+  tokens and cost (Export CSV).
+- **Speed:** reply times, and where they go (the voice pipeline, the model, tools, the device
+  starting to speak; `agent/natro_agent/timing.py`), part by part, and the slowest requests.
+- **System:** the service, the VPS's CPU, memory and disk, the devices, the reminders,
+  routines, background jobs, watchers and backups.
+
+Every bar, point and day says what's in it on hover (a tap on a phone) and opens those
+requests in Activity on a click. Nothing on it changes Natro, and it loads nothing from
+anywhere else, its fonts included (`agent/natro_agent/dashboard.py`, `web/`).
 
 It answers only requests addressed to Natro's own address or localhost, so another web
 page can't read it through a name of its own. To open it by another name (a MagicDNS

@@ -43,11 +43,14 @@ class Tool:
     # Its result's first line is a fine spoken reply ("Paused.", "Opened Spotify."): when a simple request
     # needed only this tool, that is the reply, without another model call.
     final: bool = False
+    # It asks the owner itself, in its own words, once it knows what to ask (send_message: whom, where, what), with
+    # agent.ASK; it may fail before, asking nothing. Only with confirm: the agent then doesn't ask before it.
+    own_question: bool = False
 
     def definition(self):
         """The tool as Claude's API takes it."""
         description = self.description
-        if self.confirm:
+        if self.confirm and not self.own_question:
             # Her sentence before the call is the question the owner hears; without it he only gets the tool's name.
             description += f" {ASKS_FIRST}"
         return {"name": self.name, "description": description, "input_schema": self.input_schema}
@@ -87,12 +90,20 @@ class Device:
         """Ask the owner; True only for a clear yes. details shows exactly what will run."""
         return False
 
+    @classmethod
+    def named(cls, name):
+        """A stand-in with only a name (for tools a device offered before)."""
+        device = cls()
+        device.name = device.label = name
+        return device
+
 
 def device_tools(device, specs, call):
     """Tools from a device's own descriptions of them.
 
-    specs: [{"name", "description", "input_schema", "personal", "confirm", "changes", "final"}, ...] as
-    the device sends them. call(name, args) runs one on the device.
+    specs: [{"name", "description", "input_schema", "personal", "confirm", "changes", "final", "hidden"}, ...] as
+    the device sends them. call(name, args) runs one on the device. A hidden one isn't offered to the model: only
+    the server calls it (the phone's send_message, which the server's own send_message calls after his yes).
     """
     return [Tool(name=tool_name(device.name, spec["name"]),
                  description=spec["description"],
@@ -103,4 +114,35 @@ def device_tools(device, specs, call):
                  confirm=spec.get("confirm", False),
                  changes=spec.get("changes", False),
                  final=spec.get("final", False))
-            for spec in specs]
+            for spec in specs if not spec.get("hidden")]
+
+
+class KnownTools:
+    """The tools each of his devices offered when it was last connected, kept in a file (devices.json).
+
+    They stay on offer while the device is offline (calling one says it's offline), so Claude's tool list, and the
+    instructions that list them, come out the same whichever devices are online: its cached copy of them still
+    applies (2026-10-26: devices coming and going wrote them again 3 times in 3 days, at ~$0.11 each on Sonnet).
+    """
+
+    def __init__(self, path=None):
+        self.path = path  # None: kept in memory only (tests)
+        self.specs = json.loads(path.read_text(encoding="utf-8")) if path and path.exists() else {}
+
+    def update(self, device):
+        """A device connected: remember its tools. None (not a device with specs) or none yet (an app still
+        starting up) leave what was remembered."""
+        specs = getattr(device, "specs", None)
+        if not specs or self.specs.get(device.name) == specs:
+            return
+        self.specs[device.name] = specs
+        if self.path:
+            temporary = self.path.with_name(self.path.name + ".tmp")
+            temporary.write_text(json.dumps(self.specs, ensure_ascii=False, indent=1), encoding="utf-8")
+            temporary.replace(self.path)
+
+    def tools(self, name):
+        """The device's tools as it last offered them (they can't run here: the agent runs them on the device)."""
+        async def offline(tool, args):
+            raise ToolError("That device is offline right now.")
+        return device_tools(Device.named(name), self.specs.get(name, []), offline)

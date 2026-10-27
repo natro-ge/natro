@@ -1,10 +1,10 @@
-"""Natro's instructions: who she is (identity/NATRO.md), what she can do right now, and what she remembers.
+"""Natro's instructions: who she is (identity/NATRO.md), her devices and tools, and what she remembers.
 
-The capabilities part is generated from the connected devices and the tools on
-offer, so "what can you do?" and "I can't reach your PC right now" stay true. It
-must come out the same for the same devices and tools: any change to the
-instructions means Claude can't reuse its cached copy. What Natro remembers comes
-last, since it changes most often.
+The tools part is generated from the tools on offer, so "what can you do?" stays
+true. It must come out the same for the same tools, whichever devices are online
+(each request's first line says which are): any change to the instructions means
+Claude can't reuse its cached copy. What Natro remembers is a block of its own
+after them, since it changes most often.
 """
 from collections import defaultdict
 
@@ -14,34 +14,27 @@ from natro_agent.config import IDENTITY_FILE
 KNOWN_DEVICES = {"pc": "PC", "phone": "phone"}
 
 
-def system_prompt(tools, devices, memory=None):
-    """tools: every tool on offer, the devices' included. devices: the connected ones.
-
-    memory: what Natro remembers.
-    """
+def system_prompt(tools):
+    """tools: every tool on offer, the devices' included (an offline one's too)."""
     identity = IDENTITY_FILE.read_text(encoding="utf-8").strip()
-    parts = [identity, f"## Right now\n\n{capabilities(tools, devices)}"]
-    if memory is not None:
-        parts.append(f"## What you remember about your owner\n\n{memory}")
-    return "\n\n".join(parts)
+    return f"{identity}\n\n## Your devices and tools\n\n{capabilities(tools)}"
 
 
-def capabilities(tools, devices):
-    connected = {device.name: device for device in devices}
-    lines = []
-    for name, label in KNOWN_DEVICES.items():
-        if name in connected:
-            lines.append(f"- Your owner's {label} is connected.")
-        else:
-            lines.append(f"- Your owner's {label} is offline, so you can't use it or its tools right now; "
-                         "queue_for_device keeps a request for it.")
+def memory_prompt(memory):
+    """memory: what Natro remembers."""
+    return f"## What you remember about your owner\n\n{memory}"
 
+
+def capabilities(tools):
+    lines = [f"- Your owner's devices: {', '.join(KNOWN_DEVICES.values())}. Each message's first line says which "
+             "are online. One that isn't can't run its tools (they say it's offline); queue_for_device keeps a "
+             "request for it."]
     by_source = defaultdict(list)
     for tool in tools:
         by_source[tool.source].append(tool.name)
     for source, names in sorted(by_source.items()):
-        if source in connected:
-            where = f"the {connected[source].label}"
+        if source in KNOWN_DEVICES:
+            where = f"the {KNOWN_DEVICES[source]}"
         elif source == "natro":
             where = "you (memory, notes, reminders, web, weather)"
         elif source == "google":

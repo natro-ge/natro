@@ -257,7 +257,8 @@ class Google:
         if notes:
             body["notes"] = notes
         task = await self.api.call("POST", f"{TASKS}/lists/@default/tasks", body=body)
-        return f"Added the task {task.get('title', title)!r} [id {task['id']}]."
+        # The first line is the reply when it's all he asked for (final); the id is for later calls.
+        return f"Added the task {task.get('title', title)!r}.\n[id {task['id']}]"
 
     async def complete_task(self, task_id):
         task = await self.api.call("PATCH", f"{TASKS}/lists/@default/tasks/{task_id}", body={"status": "completed"})
@@ -385,12 +386,12 @@ class Google:
         return f"Replaced {changed} place{'s' if changed != 1 else ''}." if changed else "That text isn't in the document."
 
     def tools(self):
-        def tool(name, description, properties, run, required=(), confirm=False, changes=False):
+        def tool(name, description, properties, run, required=(), confirm=False, changes=False, final=False):
             async def call(args):
                 return await run(**args)
             return Tool(name=name, description=description, run=call, source="google", personal=True,
-                        confirm=confirm, changes=changes, input_schema={"type": "object", "properties": properties,
-                                                                        "required": list(required)})
+                        confirm=confirm, changes=changes, final=final,
+                        input_schema={"type": "object", "properties": properties, "required": list(required)})
 
         when = {"type": "string", "description": "2026-10-06 for a day, or 2026-10-06T15:00 for a time (his local time)."}
         text = {"type": "string"}
@@ -415,9 +416,9 @@ class Google:
             tool("tasks_list", "List your owner's Google Tasks (his to-dos).",
                  {"show_completed": {"type": "boolean"}}, self.tasks),
             tool("tasks_add", "Add a to-do to Google Tasks, optionally due on a day.",
-                 {"title": text, "due": when, "notes": text}, self.add_task, ["title"], changes=True),
+                 {"title": text, "due": when, "notes": text}, self.add_task, ["title"], changes=True, final=True),
             tool("tasks_complete", "Mark a task as done.", {"task_id": text}, self.complete_task, ["task_id"],
-                 changes=True),
+                 changes=True, final=True),
             tool("tasks_delete", "Delete a task.", {"task_id": text}, self.delete_task, ["task_id"], confirm=True),
             tool("gmail_search", "Find emails with Gmail search syntax (default \"in:inbox\"; e.g. \"is:unread\", "
                  "\"from:nino newer_than:7d\"). Shows sender, subject, date and a snippet.",

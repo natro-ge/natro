@@ -14,6 +14,11 @@ import re
 
 # Longer details (a song, a search) are cut to this many characters.
 DETAIL = 22
+# edit_pdf's actions, as steps.
+PDF_STEPS = {"merge": "Merging PDFs", "split": "Splitting a PDF", "keep_pages": "Picking pages",
+             "delete_pages": "Deleting pages", "rotate": "Rotating pages", "compress": "Compressing a PDF",
+             "watermark": "Adding a watermark", "page_numbers": "Numbering pages", "lock": "Locking a PDF",
+             "unlock": "Unlocking a PDF", "to_jpg": "PDF to JPG", "ocr": "Reading a scan"}
 
 
 def short(value, length=DETAIL):
@@ -136,6 +141,13 @@ def _natro_step(tool, args):
         "copy_to_device": (f"Sending {short(file_name(args.get('path')))}" if args.get("path") else "Sending a file",
                            "files"),
         "queue_for_device": (f"Keeping it for the {'PC' if args.get('device') == 'pc' else 'phone'}", "work"),
+        "send_message": (f"Messaging {short(args.get('to'), 14)}" if args.get("to") else "Sending a message",
+                         "message", "Messenger" if args.get("app") == "messenger" else "Instagram"),
+        "people_save": ("Saving a username", "contacts"),
+        "people_forget": ("Forgetting someone", "contacts"),
+        "say_out_loud": ({"pc": "Saying it on the PC", "phone": "Saying it on the phone"}.get(args.get("device"),
+                                                                                           "Saying it out loud"),
+                         "volume"),
         "remind": (_reminder(args), "alarm"),
         "reminders_list": ("Checking reminders", "alarm"),
         "reminders_cancel": ("Cancelling a reminder", "alarm"),
@@ -147,6 +159,7 @@ def _natro_step(tool, args):
         "jobs_cancel": ("Cancelling a job", "work"),
         "convert_file": (f"Converting to {short(args.get('to'), 8).upper()}" if args.get("to") else "Converting a file",
                          "files"),
+        "edit_pdf": (PDF_STEPS.get(args.get("action"), "Working on a PDF"), "files"),
         "watch": ("Watching for it", "notifications"),
         "travel_time": (f"Route to {short(args.get('destination'), 16)}" if args.get("destination") else
                         "Checking the route", "web"),

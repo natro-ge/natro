@@ -26,6 +26,10 @@ MODELS = {
     },
     # Cheaper and slightly faster, but misses more misheard words.
     "claude-haiku-4-5": {"prices": (1.0, 5.0), "options": {}},
+    # 20 times cheaper than Sonnet and 0.3-0.4 s quicker, but on 2026-10-26 it missed misheard English words
+    # Sonnet recovered (5 major errors in 24 runs of the test clips against none) and reversed "minimize" into
+    # "don't minimize". Its effort defaults to medium, so it's set; it has no server-side fallback.
+    "claude-haiku-5-5": {"prices": (0.10, 0.50), "options": {"output_config": {"effort": "low"}}},
     # Most accurate but slower and pricier: used for test-set drafts and scoring.
     "claude-opus-5-5": {
         "prices": (4.0, 20.0),

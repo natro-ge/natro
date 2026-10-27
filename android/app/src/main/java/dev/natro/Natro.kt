@@ -4,6 +4,7 @@ import android.app.role.RoleManager
 import android.content.Context
 import android.media.AudioManager
 import android.media.ToneGenerator
+import android.os.SystemClock
 import android.util.Base64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -173,7 +174,7 @@ object Natro {
             webSocket.send(JSONObject().put("type", "hello").put("device", "phone").put("label", "phone")
                 .put("token", BuildConfig.NATRO_TOKEN).put("tools", tools?.specs()).put("files", true)
                 .put("chat", true).put("queue", true).put("reminders", true).put("jobs", true).put("alerts", true)
-                .put("watch_notifications", true).put("questions", true).toString())
+                .put("watch_notifications", true).put("questions", true).put("say", true).toString())
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
@@ -289,7 +290,15 @@ object Natro {
                 }
                 if (pending.remove(id)) {
                     reply.update { ReplyText(id, text.ifBlank { it?.takeIf { old -> old.id == id }?.text.orEmpty() }, true) }
-                    if (Prefs.speakReplies.value) speaker?.say(text)
+                    // One he asked to have said out loud was ("say", below).
+                    if (Prefs.speakReplies.value && !data.optBoolean("said")) {
+                        // How long its first sound took, for the dashboard.
+                        val came = SystemClock.elapsedRealtime()
+                        speaker?.say(text) {
+                            send(JSONObject().put("type", "spoken").put("id", id)
+                                .put("seconds", (SystemClock.elapsedRealtime() - came) / 1000.0))
+                        }
+                    }
                     if (pending.isEmpty()) bubbleEnds(BubbleKind.Done, "Done", DONE_MILLIS)
                 }
             }
@@ -303,6 +312,9 @@ object Natro {
                 bubbleShows(BubbleKind.Asking, Text.short(text, 90))
                 if (Prefs.speakReplies.value) speaker?.say(text)
             }
+            // Something he asked to have said out loud (agent/natro_agent/aloud.py): said even with Speak replies
+            // off, here or asked for on the PC.
+            "say" -> speaker?.say(data.optString("text"))
             "tool_call" -> scope.launch {
                 runTool(id, data.optString("name"), data.optJSONObject("args") ?: JSONObject(),
                     if (data.isNull("request")) "" else data.optString("request"))
@@ -590,6 +602,12 @@ object Natro {
         send(JSONObject().put("type", "phone_message").put("key", key).put("app", app).put("title", from)
             .put("text", text).put("reply", reply))
     }
+
+    /** A chat on Instagram or Messenger wrote: for the brain's address book (agent/natro_agent/people.py; never what
+     * it says). False if Natro is offline. */
+    fun person(app: String, name: String, chat: String, facebook: String, group: Boolean): Boolean =
+        send(JSONObject().put("type", "person").put("app", app).put("name", name).put("chat", chat)
+            .put("facebook", facebook).put("group", group))
 
     /** That message's notification went (read, answered or dismissed): the PC lets go of it. */
     fun phoneMessageGone(key: String) {

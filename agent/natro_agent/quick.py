@@ -90,8 +90,32 @@ def command(text, in_conversation, from_pc=False):
     return None
 
 
+# A word or two and a comma before the request: "Okay, Natro, ...", "Claude, open it." (the app, as translated).
+VOCATIVE = re.compile(r"^(?:\W*(?:(?:ok|okay|hey) )?[\w']+\s*,)+")
+PREFIX = re.compile(r"^(?:(?:ok|okay|hey)\W+)?(?:natro\W+)?(?:(?:please|can you|could you|would you)\W+)?")
+QUOTED = re.compile(r"\"[^\"]*\"|“[^”]*”")
+# A request kept for a device starts with a note in brackets ("[He asked for this on his other device ...]").
+NOTE = re.compile(r"^\[[^\]]*\]")
+# Where his own words start, the ones to note, add, remind him of or say: after a colon (not a time's), after
+# "remind me", "make a note", "add natro feature" and the like, or after "say ...,". They may be long, with "and"s
+# and commas of their own (2026-10-26: 8 of 11 requests that took a second call only to word a note, task or
+# reminder had them).
+CONTENT = re.compile(r"(?<!\d):(?!\d)|^(?:remind me|remember|make a note|take a note|note down|write down|"
+                     r"add (?:[\w-]+ ){0,2}?(?:notes?|tasks?|to-?dos?|features?))(?: (?:that|to|about|of))?\b|"
+                     r"^say\b[^,]*,")
+# Another thing to do, even inside his own words.
+VERBS = (r"open|close|play|pause|stop|start|send|text|message|call|turn|set|show|tell|search|find|delete|remove|"
+         r"add|remind|move|go|take|make|check|read|write|save|copy|put|run|book|order")
+ANOTHER = re.compile(rf"\b(then|also|afterwards|after that)\b|(\band|,)( please)? ({VERBS})\b")
+
+
 def simple(text):
-    """A request with one thing to do: short, with no "and", "then" or commas joining several."""
-    said = words(text)
+    """A request with one thing to do: short, with no "and", "then" or commas joining several. His own words to note,
+    add, remind him of or say (CONTENT, or quoted) only mustn't hold another thing to do."""
+    request = NOTE.sub("", QUOTED.sub(" quote ", text.lower().strip())).strip()
+    request = PREFIX.sub("", VOCATIVE.sub("", request).strip())
+    found = CONTENT.search(request)
+    command, content = (request[:found.end()].rstrip(",:"), request[found.end():]) if found else (request, "")
+    said = words(command)
     return len(said.split()) <= 12 and not re.search(r"\b(and|then|also|after|before|plus|but)\b", said) \
-        and not re.search(r"[,;]", re.sub(r"^\W*(ok|okay|hey)?\W*natro\W*", "", text.lower()))
+        and not re.search(r"[,;]", command) and not ANOTHER.search(content)

@@ -113,7 +113,7 @@ def test_tasks():
                       ("POST", f"{TASKS}/lists/@default/tasks"): (200, {"id": "t2", "title": "Call the bank"}),
                       ("PATCH", f"{TASKS}/lists/@default/tasks/t1"): (200, {"id": "t1", "title": "Buy milk"})})
     assert run(g.tasks()) == "- Buy milk (due Tue 06 Oct) [id t1]"
-    assert run(g.add_task("Call the bank", due="2026-10-09")) == "Added the task 'Call the bank' [id t2]."
+    assert run(g.add_task("Call the bank", due="2026-10-09")) == "Added the task 'Call the bank'.\n[id t2]"
     assert fake.requests[1][3] == {"title": "Call the bank", "due": "2026-10-09T00:00:00.000Z"}
     assert run(g.complete_task("t1")) == "Marked 'Buy milk' as done."
     assert fake.requests[2][3] == {"status": "completed"}
@@ -169,6 +169,8 @@ def test_google_tools_are_personal_and_risky_ones_ask():
     assert len(tools) == 16 and all(tool.personal for tool in tools.values())
     assert sorted(name for name, tool in tools.items() if tool.confirm) == \
         ["calendar_delete_event", "docs_replace", "gmail_send", "tasks_delete"]
+    # Their results' first lines are the whole reply to "add a task ...": no second model call to word it.
+    assert sorted(name for name, tool in tools.items() if tool.final) == ["tasks_add", "tasks_complete"]
 
 
 

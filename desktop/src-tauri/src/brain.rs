@@ -219,7 +219,7 @@ async fn connect(
     let tools = helper.tools().await;
     let hello = json!({"type": "hello", "device": "pc", "label": "PC", "token": token, "tools": tools,
                        "files": true, "chat": true, "queue": true, "reminders": true, "jobs": true,
-                       "alerts": true, "questions": true, "phone_messages": true});
+                       "alerts": true, "questions": true, "phone_messages": true, "say": true});
     if let Err(e) = ws.send(json_message(hello)).await {
         return Ended::Lost(e.to_string());
     }
@@ -316,15 +316,23 @@ fn handle(
                 json!({"text": text("text"), "model": text("model"), "cost": message["cost"],
                        "seconds": message["seconds"], "tools": message["tools"]}),
             );
-            // The chat's own requests are answered in writing only.
-            if !chat.mine(&id) {
-                helper.say(&text("text"));
+            // The chat's own requests are answered in writing only; one he asked to have said out loud was
+            // (said, below).
+            if !chat.mine(&id) && !message["said"].as_bool().unwrap_or(false) {
+                // How long its first sound took, for the dashboard.
+                let (replies, reply) = (replies.clone(), id.clone());
+                helper.say_reply(&text("text"), &id, move |seconds| {
+                    let spoken = json!({"type": "spoken", "id": reply, "seconds": seconds});
+                    let _ = replies.send(vec![json_message(spoken)]);
+                });
             }
             tray::show_spending(app, &message);
             dock.replied(app, &id);
-            // While the chat is open, it shows her replies; else the reply box does.
-            if !chat.is_open() {
-                app.state::<Reply>().replied(app, &id, &text("text"));
+            // While the chat is open, it shows her replies; else the reply box does. An answer typed in the
+            // box: the box says how it went either way.
+            let reply = app.state::<Reply>();
+            if !chat.is_open() || reply.is_sending(&id) {
+                reply.replied(app, &id, &text("text"));
             }
             chat.replied(app, &id, &text("text"));
         }
@@ -396,6 +404,7 @@ fn handle(
             verbose.event(&id, "error", json!({"message": text("message")}));
             dock.failed(app, &id);
             chat.failed(app, &id, &text("message"));
+            app.state::<Reply>().failed(app, &id, &text("message")); // an answer typed in the box
         }
         "reply_text" => {
             if !chat.is_open() {
@@ -466,18 +475,31 @@ fn handle(
             }
             app.state::<Reply>().alert(app, &id, &text("text"));
         }
+        // Something he asked to have said out loud (agent/natro_agent/aloud.py): said even with "Speak replies"
+        // off, and for the chat's own requests. Asked for on the phone, the reply box shows it too.
+        "say" => {
+            log::info!("saying out loud (asked on the {}): {}", text("from"), text("text"));
+            helper.say_anyway(&text("text"));
+            if text("from") != "pc" {
+                app.state::<Reply>().said(app, &id, &text("from"), &text("text"));
+            }
+        }
         // A message that came to the phone (WhatsApp, texts...): in the reply box, with a Reply if it can be
         // answered from here; never spoken.
         "phone_message" => {
             log::info!("a message on the {} ({})", text("label"), text("app"));
-            app.state::<Reply>().message(
-                app,
-                &id,
-                &text("title"),
-                &text("app"),
-                &text("text"),
-                message["reply"].as_bool().unwrap_or(false),
-            );
+            let time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.as_millis() as u64);
+            let card = crate::reply::Card {
+                id,
+                from: text("title"),
+                app: text("app"),
+                text: text("text"),
+                time,
+                can_reply: message["reply"].as_bool().unwrap_or(false),
+            };
+            app.state::<Reply>().message(app, card);
         }
         // That message was read (or answered, or dismissed) on the phone.
         "phone_message_gone" => app.state::<Reply>().message_gone(app, &id),

@@ -1,56 +1,23 @@
-"use strict";
-/* Natro's dashboard. It reads /dashboard/api/* and draws everything with the DOM and SVG: no libraries, and
-   nothing loaded from anywhere but Natro. Whatever came from the log goes onto the page as text
-   (textContent), never as HTML. */
-
+/* Natro's dashboard: Home, Activity, Billing, Speed and System, from /dashboard/api. Charts are built once and
+   updated in place when new numbers come (no redraw, no dimming); hovering, focusing or tapping a bar, a point or a
+   day says what's in it, and clicking it opens those requests in Activity. Times are his wall clock (the API's). */
 (() => {
+  "use strict";
+
   const API = "/dashboard/api";
-  const $ = (selector, root = document) => root.querySelector(selector);
-  const reduced = matchMedia("(prefers-reduced-motion: reduce)");
-
-  const SPEND = [["sonnet", "Sonnet"], ["haiku", "Haiku"], ["opus", "Opus"], ["gemini", "Gemini"], ["voice", "Voice"],
-    ["jobs", "Background jobs"], ["quick", "Quick answers"], ["other", "Other"]];
-  const DEVICES = [["pc", "PC"], ["phone", "Phone"], ["job", "Background jobs"], ["other", "Tests & other"]];
-  const TOKENS = [["cache_read_input_tokens", "Cache read"], ["cache_creation_input_tokens", "Cache write"],
-    ["input_tokens", "Input"], ["output_tokens", "Output"]];
-  const ISSUES = { hand_over: "Handed to Claude", cheaper_model: "Cheaper model", stronger_model: "Stronger model",
-    model_error: "Model errors", model_rest: "Models resting", error: "Errors" };
-  const PROBLEM_KINDS = new Set(["error", "model_error"]);
-  const BEFORE_WORDS = { "24h": "the 24 h before", "7d": "the 7 days before", "30d": "the 30 days before" };
-  const DEVICE_WORDS = { pc: "PC", phone: "Phone", job: "Background job", chat: "Chat", test: "Test", tester: "Test" };
-  const VIEWS = ["overview", "usage", "system", "logs"];
-
-  const state = {
-    view: "overview",
-    range: remember("range") || "7d",
-    stats: null,
-    live: null,
-    reachable: null,
-    animate: true,
-    lastLive: 0,
-    lastStats: 0,
-    logs: { entries: [], kinds: new Set(), counts: [], device: "", q: "", live: true, more: false, matched: 0,
-      open: new Set(), fresh: new Set(), loading: false, lastTail: 0 },
-  };
-
-  /* Small helpers */
-
-  function remember(key, value) {
-    try {
-      if (value === undefined) return localStorage.getItem(`natro-dashboard-${key}`);
-      localStorage.setItem(`natro-dashboard-${key}`, value);
-    } catch { /* private window: nothing remembered */ }
-    return null;
-  }
+  const VIEWS = ["home", "activity", "billing", "speed", "system"];
+  const $ = (query, root = document) => root.querySelector(query);
+  const phone = matchMedia("(max-width: 760px)");
+  const $$ = (query, root = document) => [...root.querySelectorAll(query)];
 
   function h(tag, props, ...children) {
     const node = document.createElement(tag);
-    for (const [name, value] of Object.entries(props || {})) {
+    for (const [key, value] of Object.entries(props || {})) {
       if (value == null || value === false) continue;
-      if (name === "class") node.className = value;
-      else if (name === "text") node.textContent = value;
-      else if (name.startsWith("on")) node.addEventListener(name.slice(2), value);
-      else node.setAttribute(name, value === true ? "" : value);
+      if (key === "class") node.className = value;
+      else if (key === "text") node.textContent = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value === true ? "" : value);
     }
     for (const child of children.flat()) {
       if (child != null && child !== false) node.append(child instanceof Node ? child : String(child));
@@ -60,48 +27,53 @@
 
   function s(tag, attrs) {
     const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
-    for (const [name, value] of Object.entries(attrs || {})) {
-      if (value != null && value !== "") node.setAttribute(name, value);
-    }
+    for (const [key, value] of Object.entries(attrs || {})) node.setAttribute(key, value);
     return node;
   }
 
-  function icon(paths) {
-    const svg = s("svg", { viewBox: "0 0 24 24", "aria-hidden": "true" });
-    for (const d of paths) svg.append(s("path", { d }));
-    return svg;
-  }
-
   const ICONS = {
-    pc: ["M4 5h16v10H4z", "M9 19h6", "M12 15v4"],
-    phone: ["M8 3h8a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z", "M11 18h2"],
-    device: ["M5 6h14v12H5z", "M9 10h6"],
-    job: ["M12 7v5l3 2", "M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18z"],
-    bell: ["M6 16V11a6 6 0 1 1 12 0v5l1.5 2h-15z", "M10 20a2 2 0 0 0 4 0"],
-    routine: ["M4 12a8 8 0 0 1 14-5.3L20 9", "M20 4v5h-5", "M20 12a8 8 0 0 1-14 5.3L4 15", "M4 20v-5h5"],
-    eye: ["M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z", "M12 9a3 3 0 1 1 0 6 3 3 0 0 1 0-6z"],
-    check: ["M5 12.5l4.5 4.5L19 7.5"],
-    cross: ["M6 6l12 12", "M18 6L6 18"],
-    alert: ["M12 4l9 16H3z", "M12 10v4", "M12 17v.5"],
-    off: ["M8 12h8"],
+    pc: "M4 5h16v10H4zM9 19h6M12 15v4",
+    phone: "M8 3h8a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM11 18h2",
+    job: "M12 7v5l3 2M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18z",
+    device: "M5 6h14v12H5zM9 10h6",
+    natro: "M7 18V6l10 12V7",
+    server: "M4 4h16v7H4zM4 13h16v7H4zM8 7.5h.01M8 16.5h.01",
+    bell: "M6 16v-5a6 6 0 1 1 12 0v5l1.5 2h-15zM10 20a2 2 0 0 0 4 0",
+    routine: "M4 12a8 8 0 0 1 14-5.3L20 9M20 4v5h-5M20 12a8 8 0 0 1-14 5.3L4 15M4 20v-5h5",
+    eye: "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12zM12 9a3 3 0 1 1 0 6 3 3 0 0 1 0-6z",
+    plug: "M9 3v5M15 3v5M7 8h10v3a5 5 0 0 1-10 0zM12 16v5",
+    alert: "M12 4l9 16H3zM12 10v4M12 17v.5",
+    file: "M7 3h7l4 4v14H7zM14 3v4h4",
+    message: "M4 5h16v11H9l-5 4z",
+    key: "M14 10a4 4 0 1 1-1.2-2.8L21 15v3h-3v-2h-2v-2h-2.2",
+    voice: "M9 6a3 3 0 0 1 6 0v5a3 3 0 0 1-6 0zM5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21",
+    check: "M5 12.5l4.5 4.5L19 7.5",
+    cross: "M6 6l12 12M18 6L6 18",
+    down: "M12 5v14M6 13l6 6 6-6",
+    up: "M12 19V5M6 11l6-6 6 6",
+  };
+  const icon = (name, cls) => {
+    const node = s("svg", { viewBox: "0 0 24 24", "aria-hidden": "true" });
+    if (cls) node.setAttribute("class", cls);
+    node.append(s("path", { d: ICONS[name] || ICONS.device }));
+    return node;
   };
 
-  /* Numbers and times */
+  /* Numbers, times and words */
 
-  const money = (v) => v == null ? "—" : v === 0 ? "$0" : Math.abs(v) < 0.1 ? `$${v.toFixed(3)}` : `$${v.toFixed(2)}`;
-  const moneyAxis = (v) => v === 0 ? "$0" : v < 0.1 ? `$${+v.toFixed(3)}` : v < 10 ? `$${+v.toFixed(2)}` : `$${Math.round(v)}`;
+  const money = (v) => v == null ? "—" : `$${v.toFixed(2)}`;
+  const cost = (v) => v == null ? "—" : v === 0 ? "$0" : Math.abs(v) < 0.1 ? `$${v.toFixed(3)}` : `$${v.toFixed(2)}`;
+  const axisMoney = (v) => v === 0 ? "$0" : v < 1 ? `$${+v.toFixed(2)}` : `$${+v.toFixed(1)}`;
+  const secs = (v) => v == null ? "—" : v < 10 ? `${v.toFixed(1)} s` : v < 60 ? `${Math.round(v)} s`
+    : `${Math.floor(v / 60)} min ${Math.round(v % 60)} s`;
   const whole = (v) => v == null ? "—" : Math.round(v).toLocaleString("en-US");
   const compact = (v) => {
     if (v == null) return "—";
     const a = Math.abs(v);
-    if (a >= 1e9) return `${+(v / 1e9).toFixed(a >= 1e10 ? 0 : 1)}B`;
     if (a >= 1e6) return `${+(v / 1e6).toFixed(a >= 1e7 ? 0 : 1)}M`;
     if (a >= 1e3) return `${+(v / 1e3).toFixed(a >= 1e4 ? 0 : 1)}K`;
     return `${Math.round(v)}`;
   };
-  const secs = (v) => v == null ? "—" : v < 10 ? `${v.toFixed(1)} s` : v < 60 ? `${Math.round(v)} s`
-    : `${Math.floor(v / 60)} m ${Math.round(v % 60)} s`;
-  const secsAxis = (v) => v === 0 ? "0" : `${+v.toFixed(1)} s`;
   const percent = (v, digits = 0) => v == null ? "—" : `${(v * 100).toFixed(digits)}%`;
   const bytes = (v) => {
     if (v == null) return "—";
@@ -114,1129 +86,1299 @@
     if (seconds == null) return "—";
     const m = Math.floor(seconds / 60), hrs = Math.floor(m / 60), d = Math.floor(hrs / 24);
     if (d) return `${d} d ${hrs % 24} h`;
-    if (hrs) return `${hrs} h ${m % 60} m`;
+    if (hrs) return `${hrs} h ${m % 60} min`;
     if (m) return `${m} min`;
     return `${Math.max(0, Math.round(seconds))} s`;
   };
-  const date = (iso) => iso ? new Date(iso) : null;
-  const hhmm = (d) => d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-  const hhmmss = (d) => d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  const dayWords = (d) => {
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const that = new Date(d); that.setHours(0, 0, 0, 0);
-    const days = Math.round((that - today) / 864e5);
-    if (days === 0) return "Today";
-    if (days === 1) return "Tomorrow";
-    if (days === -1) return "Yesterday";
-    if (days > 1 && days < 7) return d.toLocaleDateString("en-GB", { weekday: "long" });
-    return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
-  };
-  const ago = (iso) => {
-    if (!iso) return "—";
-    const seconds = (Date.now() - new Date(iso)) / 1000;
-    if (seconds < 45) return "just now";
-    if (seconds < 3600) return `${Math.round(seconds / 60)} min ago`;
-    if (seconds < 86400) return `${Math.round(seconds / 3600)} h ago`;
-    return `${Math.round(seconds / 86400)} d ago`;
-  };
-  const whenWords = (iso) => {
-    const d = date(iso);
-    return d ? `${dayWords(d)}, ${hhmm(d)}` : "—";
-  };
+  const plural = (n, word) => `${whole(n)} ${word}${n === 1 ? "" : "s"}`;
 
-  function bucketLabel(iso, unit, long) {
-    const d = new Date(iso);
-    if (unit === "hour") {
-      return long ? `${dayWords(d)}, ${hhmm(d)}–${hhmm(new Date(d.getTime() + 36e5))}` : hhmm(d);
-    }
-    if (long) return d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" });
-    return state.range === "7d" ? d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric" })
-      : d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+    "November", "December"];
+  const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  // A day as "2026-10-21", and its words. ISO times from the API are his wall clock, so their first ten characters
+  // are his date and characters 11 to 16 his time; the browser's own time zone plays no part.
+  const dayKey = (iso) => String(iso || "").slice(0, 10);
+  const clock = (iso) => String(iso || "").slice(11, 16);
+  const keyDate = (key) => new Date(`${key}T12:00:00Z`);
+  const shiftKey = (key, days) => new Date(keyDate(key).getTime() + days * 864e5).toISOString().slice(0, 10);
+  const today = () => state.live ? dayKey(state.live.now) : new Date().toISOString().slice(0, 10);
+  const longDay = (key) => { const d = keyDate(key); return `${WEEKDAYS[d.getUTCDay()]}, ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`; };
+  const shortDay = (key) => { const d = keyDate(key); return `${WEEKDAYS[d.getUTCDay()].slice(0, 3)} ${d.getUTCDate()}`; };
+  const dateShort = (key) => { const d = keyDate(key); return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()].slice(0, 3)}`; };
+  const dayWords = (key) => {
+    const t = today();
+    if (key === t) return "Today";
+    if (key === shiftKey(t, -1)) return "Yesterday";
+    if (key === shiftKey(t, 1)) return "Tomorrow";
+    const ahead = (keyDate(key) - keyDate(t)) / 864e5;
+    if (ahead > 0 && ahead < 7) return WEEKDAYS[keyDate(key).getUTCDay()];
+    return `${shortDay(key)} ${MONTHS[keyDate(key).getUTCMonth()].slice(0, 3)}`;
+  };
+  const whenWords = (iso) => iso ? `${dayWords(dayKey(iso))}, ${clock(iso)}` : "—";
+  const lowerWhen = (iso) => whenWords(iso).replace(/^(Today|Tomorrow|Yesterday)/, (word) => word.toLowerCase());
+  const since = (iso) => iso ? (Date.now() - new Date(iso)) / 1000 : null;
+  const monthName = (key) => `${MONTHS[+key.slice(5, 7) - 1]} ${key.slice(0, 4)}`;
+
+  const DEVICE_WORDS = { pc: "PC", phone: "Phone", job: "Background job" };
+  const deviceIcon = (name) => ICONS[name] ? name : name === "job" ? "job" : "device";
+  const FAMILY = (model) => {
+    const name = String(model || "").toLowerCase();
+    if (name.startsWith("none")) return "quick";
+    return ["opus", "sonnet", "haiku", "gemini"].find((word) => name.includes(word)) || "other";
+  };
+  const FAMILY_WORDS = { sonnet: "Sonnet", haiku: "Haiku", opus: "Opus", gemini: "Gemini", quick: "No model", other: "Other",
+    voice: "Voice", jobs: "Background jobs" };
+  // Spending's series, in a fixed order and colour: a series keeps its colour whatever else is shown.
+  const SERIES = [
+    { key: "sonnet", cls: "s1", label: "Sonnet", from: ["sonnet"] },
+    { key: "haiku", cls: "s2", label: "Haiku", from: ["haiku"] },
+    { key: "voice", cls: "s3", label: "Voice", from: ["voice"] },
+    { key: "opus", cls: "s4", label: "Opus", from: ["opus"] },
+    { key: "other", cls: "s5", label: "Other", from: ["gemini", "jobs", "quick", "other"] },
+  ];
+  const SERIES_OF = Object.fromEntries(SERIES.flatMap((series) => series.from.map((source) => [source, series])));
+  // Where a request's time went, in five parts (dashboard.py's STAGES, put together).
+  const STAGE_GROUPS = [
+    { key: "hearing", cls: "s1", label: "Hearing", from: ["speech", "translate"] },
+    { key: "thinking", cls: "s2", label: "Thinking", from: ["first_token", "writing"] },
+    { key: "tools", cls: "s3", label: "Tools", from: ["tools"] },
+    { key: "speaking", cls: "s4", label: "Speaking", from: ["speaking"] },
+    { key: "other", cls: "s5", label: "Other", from: ["other"] },
+  ];
+  const grouped = (stages) => STAGE_GROUPS.map((g) => ({ ...g, value: g.from.reduce((sum, k) => sum + (stages?.[k] || 0), 0) }));
+
+  /* State, saved choices, fetching */
+
+  const state = {
+    view: null, params: new URLSearchParams(), range: "7d", reachable: null,
+    live: null, stats: null, year: null, bill: null, billMonth: null,
+    at: { live: 0, stats: 0, year: 0, bill: 0, latest: 0, tail: 0 },
+  };
+  function saved(key, fallback) {
+    try { return localStorage.getItem(`natro.${key}`) ?? fallback; } catch { return fallback; }
   }
-
-  function setNumber(node, value, format) {
-    const from = node._value;
-    node._value = value;
-    cancelAnimationFrame(node._frame);
-    if (value == null || from == null || reduced.matches || from === value) {
-      node.textContent = format(value);
-      return;
-    }
-    const start = performance.now();
-    const step = (now) => {
-      const t = Math.min(1, (now - start) / 750), eased = 1 - (1 - t) ** 3;
-      node.textContent = format(from + (value - from) * eased);
-      if (t < 1) node._frame = requestAnimationFrame(step);
-    };
-    node._frame = requestAnimationFrame(step);
+  function save(key, value) {
+    try { localStorage.setItem(`natro.${key}`, value); } catch { /* a private window: not kept */ }
   }
+  async function get(path) {
+    const response = await fetch(`${API}${path}`, { cache: "no-store" });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `${response.status}`);
+    return data;
+  }
+  // The same, or null if Natro can't be reached (the page keeps what it shows).
+  const fetched = (path) => get(path).catch(() => null);
+  const query = (params) => new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== "")).toString();
 
-  /* Tooltip: one for the page. Values lead, names follow. */
+  /* The tooltip. Mouse: it follows the pointer and a click goes to the requests. Touch: the first tap pins it, with
+     a button to them. Keyboard: focus shows it, Enter goes. */
 
   const tip = $("#tip");
+  let tipOwner = null, pinned = false, lastPointer = "mouse";
+  addEventListener("pointerdown", (event) => {
+    lastPointer = event.pointerType || "mouse";
+    if (pinned && !tip.contains(event.target) && !(tipOwner && tipOwner.contains(event.target))) hideTip(true);
+  }, true);
+  addEventListener("scroll", () => hideTip(true), { passive: true });
 
-  function showTip(x, y, title, rows) {
-    tip.replaceChildren(h("div", { class: "tip-title", text: title }), ...rows.map((row) =>
-      h("div", { class: `tip-row${row.total ? " total" : ""}` },
-        row.key ? h("i", { class: `key ${row.shape || "line"}`, "data-key": row.key }) : null,
-        h("b", { text: row.value }), h("span", { text: row.label || "" }))));
+  function showTip(owner, nodes, { x, y, pin = false } = {}) {
+    tip.replaceChildren(...nodes.filter(Boolean));
     tip.hidden = false;
-    const box = tip.getBoundingClientRect();
-    let left = x + 16;
-    if (left + box.width > innerWidth - 8) left = x - box.width - 16;
-    let top = y - box.height / 2;
-    top = Math.max(8, Math.min(innerHeight - box.height - 8, top));
-    tip.style.transform = `translate(${Math.max(8, left)}px, ${top}px)`;
+    tip.classList.toggle("pinned", pin);
+    pinned = pin;
+    tipOwner = owner;
+    const box = tip.getBoundingClientRect(), r = owner.getBoundingClientRect();
+    const px = x ?? r.left + r.width / 2, py = y ?? r.top;
+    let left = px + 14, top = py - box.height - 10;
+    if (left + box.width > innerWidth - 8) left = px - box.width - 14;
+    if (left < 8) left = 8;
+    if (top < 8) top = (y ?? r.bottom) + 14;
+    tip.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
+  }
+  function hideTip(force) {
+    if (pinned && !force) return;
+    tip.hidden = true;
+    pinned = false;
+    tipOwner = null;
+  }
+  function tipRows(title, rows, { total, hint, go } = {}) {
+    return [
+      h("div", { class: "t", text: title }),
+      ...rows.map((row) => h("div", { class: "r" }, row.cls ? h("i", { class: `key k-${row.cls}` }) : h("i"),
+        h("span", { text: row.label }), h("b", { text: row.value }))),
+      total ? h("div", { class: "r total" }, h("i"), h("span", { text: total.label }), h("b", { text: total.value })) : null,
+      go ? h("a", { class: "go", href: go, text: "See these requests" }) : hint ? h("div", { class: "hint", text: hint }) : null,
+    ];
+  }
+  // A bar, a point or a day: what's in it on hover or focus; its requests on click.
+  function pickable(node, content, target) {
+    const show = (event) => {
+      if (pinned) return;
+      showTip(node, content({ hint: target() ? "Click to see these requests" : null }),
+        event && event.clientX != null ? { x: event.clientX, y: event.clientY } : {});
+    };
+    node.addEventListener("pointerenter", (event) => { if (event.pointerType !== "touch") show(event); });
+    node.addEventListener("pointermove", (event) => { if (event.pointerType !== "touch") show(event); });
+    node.addEventListener("pointerleave", () => hideTip());
+    node.addEventListener("focus", () => show());
+    node.addEventListener("blur", () => hideTip());
+    node.addEventListener("click", () => {
+      const go = target();
+      if (lastPointer === "touch" && !(pinned && tipOwner === node)) {
+        showTip(node, content({ go }), { pin: true });
+        return;
+      }
+      hideTip(true);
+      if (go) location.hash = go;
+    });
   }
 
-  function hideTip() { tip.hidden = true; }
+  /* Charts: built once, then updated in place */
 
-  /* Charts. Each is drawn for its card's width, again when that changes. */
-
-  const drawn = new Map(); // chart node -> draw(animate)
-  const resizer = new ResizeObserver((entries) => {
-    for (const entry of entries) {
-      const width = Math.round(entry.contentRect.width);
-      if (width && width !== entry.target._width) {
-        const first = !entry.target._width;
-        entry.target._width = width;
-        drawn.get(entry.target)?.(first && state.animate);
-      }
-    }
-  });
-
-  function mount(node, draw, animate) {
-    drawn.set(node, draw);
-    if (!node._observed) {
-      resizer.observe(node);
-      node._observed = true;
-    }
-    node._width = node.clientWidth;
-    if (node._width) draw(animate);
+  // A chart is one stop for Tab; the arrow keys move between its bars, points or days (the newest first).
+  const ACROSS = { ArrowLeft: -1, ArrowRight: 1, Home: "first", End: "last" };
+  const WEEKS = { ArrowLeft: -7, ArrowRight: 7, ArrowUp: -1, ArrowDown: 1, Home: "first", End: "last" };
+  function rove(root, items, keys) {
+    root.addEventListener("keydown", (event) => {
+      const list = items(), at = list.indexOf(document.activeElement), by = keys[event.key];
+      if (at < 0 || by == null) return;
+      event.preventDefault();
+      const to = by === "first" ? 0 : by === "last" ? list.length - 1 : Math.max(0, Math.min(list.length - 1, at + by));
+      list[at].tabIndex = -1;
+      list[to].tabIndex = 0;
+      list[to].focus();
+    });
+  }
+  function firstStop(list) {
+    list.forEach((node, i) => { node.tabIndex = i === list.length - 1 ? 0 : -1; });
   }
 
   function niceTicks(max, count = 4) {
     if (!(max > 0)) return [0, 1];
-    const raw = max / count, magnitude = 10 ** Math.floor(Math.log10(raw)), norm = raw / magnitude;
-    const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * magnitude;
+    const raw = max / count, mag = 10 ** Math.floor(Math.log10(raw));
+    const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((value) => value >= raw);
     const ticks = [];
-    for (let v = 0; v < max + step * 0.999; v += step) ticks.push(+v.toFixed(10));
-    if (ticks.length < 2) ticks.push(step);
+    for (let i = 0; i * step < max + step * 0.999 && ticks.length < 8; i++) ticks.push(+(i * step).toFixed(10));
     return ticks;
   }
-
-  function label(x, y, text, anchor = "middle", cls) {
-    const node = s("text", { x, y, "text-anchor": anchor, class: cls });
-    node.textContent = text;
-    return node;
+  function gridLines(node, ticks, format) {
+    const top = ticks[ticks.length - 1] || 1;
+    node.replaceChildren(...ticks.map((value, i) => {
+      const line = h("div", { class: i === 0 ? "gridline base" : "gridline" }, h("span", { text: format(value) }));
+      line.style.bottom = `${(value / top) * 100}%`;
+      return line;
+    }));
+    return top;
   }
 
-  const roundTop = (x, y, w, hgt, r) =>
-    `M${x},${y + hgt}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + hgt}Z`;
-  const rectPath = (x, y, w, hgt) => `M${x},${y}h${w}v${hgt}h${-w}Z`;
-
-  function frame(node, n, max, axisFormat, rightPad = 0) {
-    const width = node.clientWidth, plotH = +node.dataset.height || 220, top = 18, bottom = 26;
-    const ticks = niceTicks(max), yMax = ticks[ticks.length - 1];
-    const tickLabels = ticks.map(axisFormat);
-    const left = Math.max(...tickLabels.map((t) => t.length)) * 6.4 + 12;
-    const plotW = Math.max(10, width - left - rightPad), band = plotW / n;
-    const y = (v) => top + plotH - (v / yMax) * plotH;
-    const svg = s("svg", { viewBox: `0 0 ${width} ${top + plotH + bottom}`, height: top + plotH + bottom });
-    ticks.forEach((tick, k) => {
-      const ty = Math.round(y(tick)) + 0.5;
-      svg.append(s("line", { class: k ? "grid-line" : "base-line", x1: left, x2: left + plotW, y1: ty, y2: ty }));
-      svg.append(label(left - 8, ty + 3.5, tickLabels[k], "end"));
-    });
-    return { svg, width, plotH, plotW, top, bottom, left, band, y, height: top + plotH + bottom };
-  }
-
-  function xLabels(f, buckets, unit) {
-    const n = buckets.length, every = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(f.plotW / 56))));
-    for (let i = n - 1; i >= 0; i -= every) {
-      const cx = f.left + f.band * (i + 0.5);
-      const text = bucketLabel(buckets[i], unit);
-      const half = text.length * 3.2;
-      const anchor = cx - half < f.left - 4 ? "start" : cx + half > f.left + f.plotW + 4 ? "end" : "middle";
-      const x = anchor === "start" ? f.left + f.band * i : anchor === "end" ? f.left + f.band * (i + 1) : cx;
-      f.svg.append(label(x, f.height - 7, text, anchor));
+  // Stacked columns: spending by model.
+  class Bars {
+    constructor(root, { format, axis, label, tip: tipFor, go }) {
+      Object.assign(this, { root, format, axis, labelFor: label, tipFor, goFor: go, cols: [] });
+      this.grid = h("div");
+      this.colsNode = h("div", { class: "cols" });
+      this.peak = h("span", { class: "peak" });
+      this.plot = h("div", { class: "plot" }, this.grid, this.colsNode);
+      this.x = h("div", { class: "xaxis", "aria-hidden": "true" });
+      root.replaceChildren(this.plot, this.x);
+      rove(root, () => this.cols.map((c) => c.col), ACROSS);
     }
-  }
-
-  function legendItems(series, shape) {
-    return series.map((item) => h("span", {}, h("i", { class: `key ${shape}`, "data-key": item.key }), item.label));
-  }
-
-  function keyboard(node, count, activate, clear) {
-    node.tabIndex = 0;
-    node.onkeydown = (event) => {
-      if (!["ArrowLeft", "ArrowRight", "Home", "End", "Escape"].includes(event.key)) return;
-      event.preventDefault();
-      if (event.key === "Escape") { node._active = null; clear(); return; }
-      const now = node._active ?? count - 1;
-      const next = event.key === "Home" ? 0 : event.key === "End" ? count - 1
-        : Math.max(0, Math.min(count - 1, now + (event.key === "ArrowLeft" ? -1 : 1)));
-      node._active = next;
-      activate(next, null);
-    };
-    node.onfocus = () => { if (node.matches(":focus-visible")) { node._active = node._active ?? count - 1; activate(node._active, null); } };
-    node.onblur = () => { node._active = null; clear(); };
-  }
-
-  /* Stacked columns: one column per hour or day, a segment per series. */
-
-  function columns(card, { buckets, unit, series, format, axis, totalWord }) {
-    const node = $(".chart", card), legend = $(".legend", card);
-    const shown = series.filter((item) => item.values.some((v) => v > 0));
-    const totals = buckets.map((_, i) => shown.reduce((sum, item) => sum + (item.values[i] || 0), 0));
-    const grand = totals.reduce((a, b) => a + b, 0);
-    legend.replaceChildren(...(shown.length > 1 ? legendItems(shown, "rect") : []),
-      h("span", { class: "total" }, `${totalWord} `, h("b", { text: format(grand) })));
-    table(card, ["", ...shown.map((item) => item.label), ...(shown.length > 1 ? ["Total"] : [])],
-      buckets.map((bucket, i) => [bucketLabel(bucket, unit, true), ...shown.map((item) => format(item.values[i] || 0)),
-        ...(shown.length > 1 ? [format(totals[i])] : [])]));
-
-    mount(node, (animate) => {
-      node.replaceChildren();
-      if (!grand) {
-        node.append(h("div", { class: "empty", text: "Nothing in this range yet." }));
-        return;
-      }
-      const n = buckets.length, f = frame(node, n, Math.max(...totals), axis);
-      const barW = Math.max(2, Math.min(24, f.band * 0.62));
-      const groups = [];
-      for (let i = 0; i < n; i++) {
-        const cx = f.left + f.band * (i + 0.5), x = cx - barW / 2;
-        const group = s("g", { class: "col" });
-        group.append(s("rect", { class: "band-hover", x: f.left + f.band * i + 1, y: f.top - 6, width: Math.max(1, f.band - 2),
-          height: f.plotH + 6, rx: 6 }));
-        const bars = s("g", { class: animate && !reduced.matches ? "grow" : "" });
-        if (animate) bars.style.animationDelay = `${Math.round(i * Math.min(28, 420 / n))}ms`;
-        const present = shown.filter((item) => (item.values[i] || 0) > 0);
-        let base = 0;
-        present.forEach((item, k) => {
-          const value = item.values[i];
-          let bottom = f.y(base) - (k > 0 ? 1 : 0), top = f.y(base + value) + (k < present.length - 1 ? 1 : 0);
-          base += value;
-          if (bottom - top < 1.5) top = bottom - 1.5;
-          const r = Math.min(4, barW / 2, bottom - top);
-          bars.append(s("path", { class: `bar mark-${item.key}`,
-            d: k === present.length - 1 ? roundTop(x, top, barW, bottom - top, r) : rectPath(x, top, barW, bottom - top) }));
-        });
-        group.append(bars);
-        const hit = s("rect", { class: "hit", x: f.left + f.band * i, y: 0, width: f.band, height: f.height });
-        hit.addEventListener("pointerenter", (event) => activate(i, event));
-        hit.addEventListener("pointermove", (event) => activate(i, event));
-        group.append(hit);
-        f.svg.append(group);
-        groups.push(group);
-      }
-      const peak = totals.indexOf(Math.max(...totals));
-      f.svg.append(label(f.left + f.band * (peak + 0.5), f.y(totals[peak]) - 7, format(totals[peak]), "middle", "end-label"));
-      xLabels(f, buckets, unit);
-      f.svg.setAttribute("role", "img");
-      f.svg.setAttribute("aria-label", `${$("h2", card).textContent}: ${format(grand)} in all; the table view lists each value.`);
-      f.svg.addEventListener("pointerleave", clear);
-      node.append(f.svg);
-
-      function activate(i, event) {
-        groups.forEach((group, k) => {
-          group.classList.toggle("active", k === i);
-          group.classList.toggle("dim", k !== i);
-        });
-        const rows = shown.map((item) => ({ key: item.key, shape: "rect", value: format(item.values[i] || 0), label: item.label }));
-        if (shown.length > 1) rows.push({ value: format(totals[i]), label: "Total", total: true });
-        const box = groups[i].getBoundingClientRect();
-        showTip(event ? event.clientX : box.left + box.width / 2, event ? event.clientY : box.top + box.height / 2,
-          bucketLabel(buckets[i], unit, true), rows);
-      }
-
-      function clear() {
-        groups.forEach((group) => group.classList.remove("active", "dim"));
-        hideTip();
-      }
-      keyboard(node, n, activate, clear);
-    }, state.animate);
-  }
-
-  /* Lines, with a crosshair that finds the hour or day. */
-
-  function lines(card, { buckets, unit, series, format, axis }) {
-    const node = $(".chart", card), legend = $(".legend", card);
-    const shown = series.filter((item) => item.values.some((v) => v != null));
-    legend.replaceChildren(...(shown.length > 1 ? legendItems(shown, "line") : []));
-    table(card, ["", ...shown.map((item) => item.label)],
-      buckets.map((bucket, i) => [bucketLabel(bucket, unit, true), ...shown.map((item) => format(item.values[i]))]));
-
-    mount(node, (animate) => {
-      node.replaceChildren();
-      const values = shown.flatMap((item) => item.values.filter((v) => v != null));
-      if (!values.length) {
-        node.append(h("div", { class: "empty", text: "No requests in this range yet." }));
-        return;
-      }
-      const n = buckets.length, f = frame(node, n, Math.max(...values), axis, 54);
-      const xOf = (i) => f.left + f.band * (i + 0.5);
-      const crosshair = s("line", { class: "crosshair", y1: f.top - 4, y2: f.top + f.plotH });
-      f.svg.append(crosshair);
-      const ends = [];
-      const paths = [];
-      for (const item of shown) {
-        let d = "", single = [];
-        item.values.forEach((v, i) => {
-          if (v == null) return;
-          const previous = i > 0 ? item.values[i - 1] : null;
-          d += `${previous == null ? "M" : "L"}${xOf(i).toFixed(1)},${f.y(v).toFixed(1)}`;
-          const next = i < n - 1 ? item.values[i + 1] : null;
-          if (previous == null && next == null) single.push(i);
-        });
-        if (shown.length === 1) {
-          const first = item.values.findIndex((v) => v != null), last = item.values.length - 1 - [...item.values].reverse().findIndex((v) => v != null);
-          f.svg.append(s("path", { class: `area mark-${item.key}`,
-            d: `${d}L${xOf(last).toFixed(1)},${f.y(0)}L${xOf(first).toFixed(1)},${f.y(0)}Z` }));
-        }
-        const path = s("path", { class: `line mark-${item.key}`, d });
-        f.svg.append(path);
-        paths.push(path);
-        for (const i of single) f.svg.append(s("circle", { class: `dot-mark mark-${item.key}`, cx: xOf(i), cy: f.y(item.values[i]), r: 3 }));
-        const lastIndex = item.values.length - 1 - [...item.values].reverse().findIndex((v) => v != null);
-        const lastValue = item.values[lastIndex];
-        f.svg.append(s("circle", { class: `dot-mark mark-${item.key}`, cx: xOf(lastIndex), cy: f.y(lastValue), r: 4 }));
-        ends.push({ item, x: xOf(lastIndex), y: f.y(lastValue), value: lastValue });
-      }
-      const apart = ends.every((a, k) => ends.every((b, j) => j <= k || Math.abs(a.y - b.y) >= 14));
-      if (apart) for (const end of ends) f.svg.append(label(end.x + 9, end.y + 4, format(end.value), "start", "end-label"));
-      const hoverDots = shown.map((item) => {
-        const dot = s("circle", { class: `dot-mark hover-dot mark-${item.key}`, r: 4.5, cx: -20, cy: -20 });
-        f.svg.append(dot);
-        return dot;
+    build(n) {
+      this.cols = Array.from({ length: n }, (_, i) => {
+        const segs = SERIES.map((series) => h("span", { class: `seg ${series.cls}`, hidden: true }));
+        const stack = h("span", { class: "stack" }, ...segs);
+        const col = h("button", { type: "button", class: "col" }, stack);
+        pickable(col, (extra) => this.tipFor(i, extra), () => this.goFor(i));
+        return { col, stack, segs };
       });
-      for (let i = 0; i < n; i++) {
-        const hit = s("rect", { class: "hit", x: f.left + f.band * i, y: 0, width: f.band, height: f.height });
-        hit.addEventListener("pointerenter", (event) => activate(i, event));
-        hit.addEventListener("pointermove", (event) => activate(i, event));
-        f.svg.append(hit);
-      }
-      xLabels(f, buckets, unit);
-      f.svg.setAttribute("role", "img");
-      f.svg.setAttribute("aria-label", `${$("h2", card).textContent}; the table view lists each value.`);
-      f.svg.addEventListener("pointerleave", clear);
-      node.append(f.svg);
-      if (animate && !reduced.matches) {
-        for (const path of paths) {
-          path.style.setProperty("--len", Math.ceil(path.getTotalLength()));
-          path.classList.add("draw");
-        }
-      }
-
-      function activate(i, event) {
-        node.classList.add("hovering");
-        crosshair.setAttribute("x1", xOf(i));
-        crosshair.setAttribute("x2", xOf(i));
-        shown.forEach((item, k) => {
-          const v = item.values[i];
-          hoverDots[k].setAttribute("cx", v == null ? -20 : xOf(i));
-          hoverDots[k].setAttribute("cy", v == null ? -20 : f.y(v));
+      this.colsNode.style.gridTemplateColumns = `repeat(${n}, minmax(0, 1fr))`;
+      this.x.style.gridTemplateColumns = `repeat(${n}, minmax(0, 1fr))`;
+      this.colsNode.replaceChildren(...this.cols.map((c) => c.col));
+      firstStop(this.cols.map((c) => c.col));
+    }
+    update(n, values) {  // values: series key -> per bucket
+      if (n !== this.cols.length) this.build(n);
+      const totals = Array.from({ length: n }, (_, i) => SERIES.reduce((sum, series) => sum + (values[series.key]?.[i] || 0), 0));
+      const max = Math.max(0, ...totals);
+      const top = gridLines(this.grid, niceTicks(max), this.axis);
+      const peak = totals.indexOf(max);
+      this.cols.forEach(({ col, stack, segs }, i) => {
+        stack.style.height = `${(totals[i] / top) * 100}%`;
+        let last = null;
+        SERIES.forEach((series, k) => {
+          const value = values[series.key]?.[i] || 0;
+          segs[k].hidden = value <= 0;
+          segs[k].style.flexBasis = `${totals[i] ? (value / totals[i]) * 100 : 0}%`;
+          segs[k].classList.remove("cap");
+          if (value > 0) last = segs[k];
         });
-        const box = node.getBoundingClientRect();
-        showTip(event ? event.clientX : box.left + (xOf(i) / f.width) * box.width, event ? event.clientY : box.top + box.height / 2,
-          bucketLabel(buckets[i], unit, true),
-          shown.map((item) => ({ key: item.key, value: format(item.values[i]), label: item.label })));
-      }
-
-      function clear() {
-        node.classList.remove("hovering");
-        hideTip();
-      }
-      keyboard(node, n, activate, clear);
-    }, state.animate);
-  }
-
-  function spark(node, values) {
-    mount(node, () => {
-      node.replaceChildren();
-      const points = values.map((v, i) => [i, v]).filter(([, v]) => v != null);
-      if (points.length < 2) return;
-      const width = node.clientWidth, height = 34;
-      const max = Math.max(...points.map(([, v]) => v)), min = Math.min(0, ...points.map(([, v]) => v));
-      const x = (i) => 3 + (i / (values.length - 1)) * (width - 6);
-      const y = (v) => height - 4 - ((v - min) / (max - min || 1)) * (height - 9);
-      const svg = s("svg", { viewBox: `0 0 ${width} ${height}`, height, "aria-hidden": "true" });
-      const line = points.map(([i, v]) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
-      svg.append(s("polygon", { class: "spark-area", points: `${x(points[0][0])},${height} ${line} ${x(points.at(-1)[0])},${height}` }));
-      svg.append(s("polyline", { class: "spark-line", points: line }));
-      const [li, lv] = points.at(-1);
-      svg.append(s("circle", { class: "spark-dot", cx: x(li), cy: y(lv), r: 3 }));
-      node.append(svg);
-    }, false);
-  }
-
-  /* Table views: every chart's numbers, without hovering. */
-
-  function table(card, head, rows) {
-    let view = $(".table-view", card);
-    if (!view) {
-      view = h("div", { class: "table-view table-wrap" });
-      card.append(view);
-    }
-    view.replaceChildren(h("table", { class: "data" },
-      h("thead", {}, h("tr", {}, head.map((cell, k) => h("th", { class: k ? "num" : null, text: cell })))),
-      h("tbody", {}, rows.map((row) => h("tr", {}, row.map((cell, k) => h("td", { class: k ? "num" : null, text: cell })))))));
-  }
-
-  document.addEventListener("click", (event) => {
-    const button = event.target.closest(".table-toggle");
-    if (!button) return;
-    const card = button.closest(".card");
-    const on = card.classList.toggle("as-table");
-    button.setAttribute("aria-pressed", on);
-    button.textContent = on ? "Chart" : "Table";
-  });
-
-  /* Overview */
-
-  const KPIS = [
-    { id: "spent", label: "Spent", format: money, upIsGood: false },
-    { id: "requests", label: "Requests", format: whole, upIsGood: null },
-    { id: "latency", label: "Median response", format: secs, upIsGood: false },
-    { id: "tools", label: "Tool calls", format: whole, upIsGood: null },
-  ];
-
-  function buildKpis() {
-    $("#kpis").replaceChildren(...KPIS.map((kpi) => h("article", { class: "card kpi", id: `kpi-${kpi.id}` },
-      h("span", { class: "label", text: kpi.label }), h("span", { class: "value", text: "—" }),
-      h("span", { class: "delta" }), h("div", { class: "spark" }))));
-  }
-
-  function change(now, before, upIsGood) {
-    if (now == null || before == null) return null;
-    if (before === 0) return now === 0 ? { text: "Same as", cls: "" } : { text: "Up from none in", cls: "" };
-    const ratio = (now - before) / before;
-    if (Math.abs(ratio) < 0.005) return { text: "Same as", cls: "" };
-    const cls = upIsGood == null ? "" : (ratio > 0) === upIsGood ? "good" : "bad";
-    return { text: `${ratio > 0 ? "▲" : "▼"} ${Math.abs(ratio * 100).toFixed(Math.abs(ratio) < 0.1 ? 1 : 0)}%`, cls };
-  }
-
-  function beforeWords(stats) {
-    return BEFORE_WORDS[stats.range] || `the ${stats.buckets.length} days before`;
-  }
-
-  function renderKpis(stats) {
-    const before = stats.before;
-    const spendSeries = stats.buckets.map((_, i) => Object.values(stats.spend).reduce((sum, values) => sum + values[i], 0));
-    const requestSeries = stats.buckets.map((_, i) => Object.values(stats.requests).reduce((sum, values) => sum + values[i], 0));
-    const values = {
-      spent: [stats.spent, before.spent, spendSeries],
-      requests: [stats.request_count, before.request_count, requestSeries],
-      latency: [stats.seconds.all_median, before.median_seconds, stats.seconds.median],
-      tools: [stats.tool_calls, before.tool_calls, stats.tool_buckets],
-    };
-    for (const kpi of KPIS) {
-      const tile = $(`#kpi-${kpi.id}`), [now, then, series] = values[kpi.id];
-      setNumber($(".value", tile), now, kpi.format);
-      const delta = $(".delta", tile), moved = change(now, then, kpi.upIsGood);
-      if (kpi.id === "tools") {
-        $(".label", tile).textContent = stats.tool_calls
-          ? `${kpi.label} · ${percent(1 - stats.tool_failed / stats.tool_calls)} worked` : kpi.label;
-      }
-      delta.replaceChildren(...(moved ? [h("b", { class: moved.cls, text: moved.text }),
-        ` ${moved.text.includes("%") ? "vs" : ""} ${beforeWords(stats)}`.replace("  ", " ")] : []));
-      spark($(".spark", tile), series);
-    }
-  }
-
-  function renderHero(live) {
-    const month = live.month, share = month.budget ? month.spent / month.budget : 0;
-    setNumber($("#hero-spent"), month.spent, money);
-    $("#hero-budget").textContent = `of the $${month.budget} budget`;
-    $("#month-name").textContent = new Date(live.now).toLocaleDateString("en-GB", { month: "long" });
-    const meter = $("#hero-meter");
-    meter.classList.toggle("warning", share >= 0.8 && share < 1);
-    meter.classList.toggle("critical", share >= 1);
-    $("span", meter).style.width = `${Math.min(100, share * 100)}%`;
-    let mark = $(".mark", meter);
-    if (month.projected != null && month.budget) {
-      if (!mark) meter.append(mark = h("i", { class: "mark", title: "projected by month end" }));
-      mark.style.left = `calc(${Math.min(100, (month.projected / month.budget) * 100)}% - 1px)`;
-    } else if (mark) mark.remove();
-    $("#hero-projected").textContent = money(month.projected);
-    const left = month.budget - month.spent;
-    $("#hero-left").textContent = left >= 0 ? money(left) : `over by ${money(-left)}`;
-    $("#hero-days").textContent = Math.max(0, Math.ceil(month.days - month.elapsed_days));
-  }
-
-  function renderNow(live) {
-    const rows = [];
-    const online = live.devices.filter((device) => device.online);
-    rows.push(nowRow("pc", online.length ? `${online.length} device${online.length > 1 ? "s" : ""} online` : "No device online",
-      h("div", { class: "device-pills" }, live.devices.filter((d) => d.online || DEVICE_WORDS[d.name])
-        .slice(0, 4).map((d) => statusChip(d.online, `${cap(d.label)}${d.online ? "" : ` · ${ago(d.seen)}`}`)))));
-    const running = live.jobs.filter((job) => job.state === "running");
-    rows.push(nowRow("job", running.length ? `${running.length} background job${running.length > 1 ? "s" : ""} running`
-      : "No background job running", running[0] ? (running[0].step || running[0].title || running[0].task) : lastJobWords(live.jobs)));
-    const nextReminder = live.reminders.find((item) => item.next);
-    rows.push(nowRow("bell", nextReminder ? `Next reminder: ${whenWords(nextReminder.next)}` : "No reminder coming",
-      nextReminder ? nextReminder.text : `${live.reminders.length} set`));
-    const nextRoutine = live.routines.filter((item) => item.next).sort((a, b) => a.next.localeCompare(b.next))[0];
-    rows.push(nowRow("routine", nextRoutine ? `Next routine: ${whenWords(nextRoutine.next)}` : "No routine coming",
-      nextRoutine ? nextRoutine.name : `${live.routines.length} set up`));
-    rows.push(nowRow("eye", `${live.watchers.length} watcher${live.watchers.length === 1 ? "" : "s"}`,
-      live.watchers.map((item) => item.text).join(" · ") || "Nothing watched"));
-    $("#now").replaceChildren(...rows);
-    $("#now-sub").textContent = `as of ${hhmmss(new Date(live.now))}`;
-  }
-
-  function lastJobWords(jobs) {
-    const last = jobs[0];
-    return last ? `Last: ${last.title || last.task} (${last.state}, ${ago(last.finished || last.started)})` : "None today";
-  }
-
-  function nowRow(kind, title, detail) {
-    return h("div", { class: "now-row" }, h("span", { class: "now-icon" }, icon(ICONS[kind])),
-      h("div", { class: "what" }, h("b", { text: title }), typeof detail === "string" ? h("span", { text: detail }) : detail));
-  }
-
-  function statusChip(on, text) {
-    return h("span", { class: `chip ${on ? "good" : ""}` }, icon(on ? ICONS.check : ICONS.off), text);
-  }
-
-  function issueChip(kind) {
-    return h("span", { class: `chip ${PROBLEM_KINDS.has(kind) ? "critical" : kind === "model_rest" ? "warning" : ""}`,
-      text: ISSUES[kind] || kind });
-  }
-
-  function issueFeed(list, items, wide) {
-    if (!items.length) {
-      list.replaceChildren(h("li", {}, h("span", { class: "chip good", text: "All quiet" }),
-        h("span", { class: "text", text: "No model switches or problems in this range." })));
-      return;
-    }
-    list.replaceChildren(...items.map((item) => h("li", {}, issueChip(item.kind), h("span", { class: "text", text: item.text }),
-      h("span", { class: "when", text: `${dayWords(new Date(item.time))}, ${hhmm(new Date(item.time))}` }))));
-  }
-
-  function seriesFrom(map, order) {
-    const known = new Set(order.map(([key]) => key));
-    const extra = Object.keys(map).filter((key) => !known.has(key));
-    return [...order, ...extra.map((key) => [key, key])].filter(([key]) => map[key])
-      .map(([key, name]) => ({ key, label: name, values: map[key] }));
-  }
-
-  function renderOverview() {
-    const { stats, live } = state;
-    if (live) {
-      renderHero(live);
-      renderNow(live);
-    }
-    if (!stats) return;
-    renderKpis(stats);
-    columns($("#card-spend"), { buckets: stats.buckets, unit: stats.unit, series: seriesFrom(stats.spend, SPEND),
-      format: money, axis: moneyAxis, totalWord: "In all" });
-    columns($("#card-requests"), { buckets: stats.buckets, unit: stats.unit, series: seriesFrom(stats.requests, DEVICES),
-      format: whole, axis: compact, totalWord: "In all" });
-    issueFeed($("#issues-short"), stats.recent_issues.slice(0, 6));
-  }
-
-  /* Usage */
-
-  function renderUsage() {
-    const stats = state.stats;
-    if (!stats) return;
-    columns($("#card-tokens"), { buckets: stats.buckets, unit: stats.unit, series: seriesFrom(stats.tokens, TOKENS),
-      format: compact, axis: compact, totalWord: "In all" });
-    setNumber($("#cache-share"), stats.cache_share, (v) => percent(v));
-    $("span", $("#cache-meter")).style.width = `${(stats.cache_share || 0) * 100}%`;
-    const totals = stats.token_totals;
-    $("#token-totals").replaceChildren(...TOKENS.flatMap(([key, name]) => [h("dt", { text: name }),
-      h("dd", { text: whole(totals[key] || 0) })]), h("dt", { text: "Total" }),
-    h("dd", {}, h("b", { text: whole(Object.values(totals).reduce((a, b) => a + b, 0)) })));
-
-    lines($("#card-latency"), { buckets: stats.buckets, unit: stats.unit, format: secs, axis: secsAxis,
-      series: [{ key: "median", label: "Median", values: stats.seconds.median },
-        { key: "p95", label: "Slowest 5%", values: stats.seconds.p95 }] });
-    heat(stats.week);
-    models(stats.models);
-    tools(stats);
-    $("#issues-sub").textContent = `${Object.values(stats.issues).reduce((a, b) => a + b, 0)} in this range`;
-    $("#issue-counts").replaceChildren(...Object.keys(ISSUES).map((kind) => h("div", { class: "issue-count" },
-      h("b", { text: whole(stats.issues[kind] || 0) }), h("span", { text: ISSUES[kind] }))));
-    issueFeed($("#issues"), stats.recent_issues, true);
-  }
-
-  function heat(week) {
-    const node = $("#heat"), card = $("#card-week");
-    const max = Math.max(1, ...week.flat());
-    const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-    const cells = [];
-    week.forEach((hours, d) => {
-      cells.push(h("span", { class: "day", text: days[d] }));
-      hours.forEach((count, hour) => {
-        const level = count ? Math.max(1, Math.ceil((count / max) * 5)) : 0;
-        const cell = h("span", { class: `cell l${level}`, role: "img", "aria-label": `${days[d]} ${hour}:00, ${count} requests` });
-        cell.addEventListener("pointerenter", (event) => showTip(event.clientX, event.clientY,
-          `${days[d]}, ${String(hour).padStart(2, "0")}:00–${String((hour + 1) % 24).padStart(2, "0")}:00`,
-          [{ value: whole(count), label: count === 1 ? "request" : "requests" }]));
-        cell.addEventListener("pointerleave", hideTip);
-        cells.push(cell);
+        last?.classList.add("cap");
+        col.setAttribute("aria-label", `${this.labelFor(i, true)}: ${this.format(totals[i])}`);
+        if (i === peak && max > 0) {
+          this.peak.textContent = this.format(max);
+          this.peak.style.bottom = `calc(${(max / top) * 100}% + 6px)`;
+          col.append(this.peak);
+        }
       });
-    });
-    cells.push(h("span"));
-    for (let hour = 0; hour < 24; hour++) cells.push(h("span", { class: "hour", text: hour % 6 === 0 ? String(hour).padStart(2, "0") : "" }));
-    node.replaceChildren(...cells);
-    let scale = $(".heat-scale", card);
-    if (!scale) card.insertBefore(scale = h("div", { class: "heat-scale" }), node.nextSibling);
-    scale.replaceChildren("Fewer", ...[0, 1, 2, 3, 4, 5].map((l) => h("span", { class: `cell l${l}` })), "More");
-    table(card, ["", "Requests", "Busiest hour", ...Array.from({ length: 24 }, (_, hour) => `${hour}:00`)],
-      week.map((hours, d) => {
-        const top = Math.max(...hours);
-        return [days[d], whole(hours.reduce((a, b) => a + b, 0)), top ? `${hours.indexOf(top)}:00` : "—", ...hours.map(whole)];
+      if (!(max > 0)) this.peak.remove();
+      const every = Math.ceil(n / (phone.matches ? 5 : 8));
+      this.x.replaceChildren(...this.cols.map((_, i) => h("span", { text: i % every === 0 ? this.labelFor(i, false) : "" })));
+    }
+  }
+
+  // Lines over columns: the month's running total, or reply times. Each column can be hovered, focused or clicked.
+  class Lines {
+    constructor(root, { series, axis, label, tip: tipFor, go, daily, everyLabel }) {
+      Object.assign(this, { root, series, axis, labelFor: label, tipFor, goFor: go, everyLabel, n: 0, active: null });
+      this.grid = h("div");
+      this.refs = h("div");
+      this.svg = s("svg", { class: "lines", viewBox: "0 0 1000 1000", preserveAspectRatio: "none", "aria-hidden": "true" });
+      this.area = s("path", { class: "area" });
+      this.paths = series.map((item) => s("path", { class: item.cls === "s2" ? "l2" : "l1" }));
+      this.projection = s("path", { class: "l1 dash" });
+      this.svg.append(this.area, ...this.paths, this.projection);
+      this.cross = h("div", { class: "cross", hidden: true });
+      this.dots = series.map((item) => h("span", { class: `pt ${item.cls}`, hidden: true }));
+      this.end = h("span", { class: "endlabel", hidden: true });
+      this.colsNode = h("div", { class: "cols" });
+      this.plot = h("div", { class: "plot" }, this.grid, this.refs, this.svg, this.end, this.cross, ...this.dots, this.colsNode);
+      this.x = h("div", { class: "xaxis", "aria-hidden": "true" });
+      this.daily = daily ? h("div", { class: "days" }) : null;
+      root.replaceChildren(this.plot, this.x, ...(daily ? [h("div", { class: "daily" }, h("div", { class: "label", text: daily }), this.daily)] : []));
+      this.plot.addEventListener("pointerleave", () => this.mark(null));
+      rove(root, () => this.cols, ACROSS);
+    }
+    build(n) {
+      this.n = n;
+      this.cols = Array.from({ length: n }, (_, i) => {
+        const col = h("button", { type: "button", class: "col" });
+        pickable(col, (extra) => this.tipFor(i, extra), () => this.goFor(i));
+        col.addEventListener("pointerenter", () => this.mark(i));
+        col.addEventListener("focus", () => this.mark(i));
+        return col;
+      });
+      for (const node of [this.colsNode, this.x, this.daily].filter(Boolean)) node.style.gridTemplateColumns = `repeat(${n}, minmax(0, 1fr))`;
+      this.colsNode.replaceChildren(...this.cols);
+      firstStop(this.cols);
+      if (this.daily) this.daily.replaceChildren(...this.cols.map(() => h("i")));
+    }
+    // data: {values: [per series, per column (null: none)], top?, refs: [{value, label, warn}], projection: [i, from, to, value],
+    //        area: bool, daily: per column (null: to come), end: label for the projection's end}
+    update(n, data) {
+      if (n !== this.n) this.build(n);
+      this.data = data;
+      const all = [...data.values.flat(), ...(data.refs || []).map((r) => r.value), data.projection?.[3]].filter((v) => v != null);
+      const top = gridLines(this.grid, niceTicks(Math.max(data.top || 0, ...all, 0)), this.axis);
+      this.top = top;
+      const x = (i) => ((i + 0.5) / n) * 1000, y = (v) => 1000 - (v / top) * 1000;
+      const path = (values) => values.map((v, i) => v == null ? null : [x(i), y(v)])
+        .reduce((d, p, i, list) => p ? `${d}${list[i - 1] ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}` : d, "");
+      data.values.forEach((values, k) => this.paths[k].setAttribute("d", path(values)));
+      if (data.area) {
+        const values = data.values[0], last = values.reduce((at, v, i) => v != null ? i : at, -1);
+        this.area.setAttribute("d", last >= 0 ? `${path(values)}L${x(last)},1000L${x(0)},1000Z` : "");
+      } else this.area.setAttribute("d", "");
+      if (data.projection) {
+        const [from, value0, to, value1] = data.projection;
+        this.projection.setAttribute("d", `M${x(from)},${y(value0)}L${x(to)},${y(value1)}`);
+        this.end.hidden = false;
+        this.end.textContent = data.end || "";
+        this.end.style.bottom = `${(value1 / top) * 100}%`;
+      } else {
+        this.projection.setAttribute("d", "");
+        this.end.hidden = true;
+      }
+      this.refs.replaceChildren(...(data.refs || []).map((ref) => {
+        const line = h("div", { class: ref.warn ? "refline warn" : "refline" }, h("span", { text: ref.label }));
+        line.style.bottom = `${(ref.value / top) * 100}%`;
+        return line;
       }));
-  }
-
-  function models(list) {
-    const most = Math.max(1, ...list.map((m) => m.requests));
-    $("#models").replaceChildren(
-      h("thead", {}, h("tr", {}, h("th", { text: "Model" }), h("th", { class: "num", text: "Requests" }), h("th", { text: "" }),
-        h("th", { class: "num", text: "Cost" }), h("th", { class: "num", text: "Median" }), h("th", { class: "num", text: "Tokens" }))),
-      h("tbody", {}, list.length ? list.map((m) => {
-        const share = h("span", { class: `share mark-${m.family}` }, h("i"));
-        share.firstChild.style.width = `${(m.requests / most) * 100}%`;
-        return h("tr", {}, h("td", {}, h("span", { class: "model-name" }, h("i", { class: "key rect", "data-key": m.family }),
-          h("span", { class: "mono", text: m.model }))), h("td", { class: "num", text: whole(m.requests) }), h("td", {}, share),
-        h("td", { class: "num", text: money(m.cost) }), h("td", { class: "num", text: secs(m.median_seconds) }),
-        h("td", { class: "num", text: compact(m.tokens) }));
-      }) : h("tr", {}, h("td", { colspan: 6, class: "muted", text: "No requests in this range yet." }))));
-  }
-
-  function tools(stats) {
-    const node = $("#tools"), most = Math.max(1, ...stats.tools.map((t) => t.calls));
-    $("#tools-sub").textContent = stats.tool_calls
-      ? `${whole(stats.tool_calls)} calls to ${stats.tool_count} tools · ${percent(1 - stats.tool_failed / stats.tool_calls)} worked` : "";
-    if (!stats.tools.length) {
-      node.replaceChildren(h("div", { class: "empty", text: "No tool calls in this range yet." }));
-      return;
+      const every = Math.ceil(n / (phone.matches ? 5 : 8));
+      this.x.replaceChildren(...this.cols.map((_, i) => h("span", { text: this.everyLabel || i % every === 0 ? this.labelFor(i, false) : "" })));
+      this.cols.forEach((col, i) => col.setAttribute("aria-label", this.labelFor(i, true)));
+      if (this.daily) {
+        const days = data.daily, max = Math.max(0, ...days.filter((v) => v != null));
+        [...this.daily.children].forEach((bar, i) => {
+          bar.classList.toggle("future", days[i] == null);
+          bar.style.height = days[i] == null ? "" : `${max ? (days[i] / max) * 100 : 0}%`;
+        });
+      }
+      this.mark(this.active);
     }
-    node.replaceChildren(...stats.tools.map((tool, k) => {
-      const worked = tool.calls - tool.failed - tool.declined;
-      const parts = [["ok", worked], ["failed", tool.failed], ["declined", tool.declined]].filter(([, n]) => n > 0);
-      const track = h("span", { class: "track" }, parts.map(([key]) => h("i", { class: `key`, "data-key": key })));
-      const row = h("div", { class: "hbar", tabindex: 0 }, h("span", { class: "name", text: tool.tool, title: tool.tool }), track,
-        h("span", { class: "n" }, whole(tool.calls), tool.failed ? h("small", { text: `${tool.failed}✕` }) : null));
-      const tell = (x, y) => showTip(x, y, tool.tool, [{ key: "ok", shape: "rect", value: whole(worked), label: "worked" },
-        { key: "failed", shape: "rect", value: whole(tool.failed), label: "failed" },
-        { key: "declined", shape: "rect", value: whole(tool.declined), label: "you said no" }]);
-      row.addEventListener("pointermove", (event) => tell(event.clientX, event.clientY));
-      row.addEventListener("pointerleave", hideTip);
-      row.addEventListener("focus", () => { const box = row.getBoundingClientRect(); tell(box.right - 60, box.top + box.height / 2); });
-      row.addEventListener("blur", hideTip);
-      requestAnimationFrame(() => setTimeout(() => {
-        [...track.children].forEach((bar, i) => { bar.style.width = `${(parts[i][1] / most) * 100}%`; });
-      }, state.animate ? k * 35 : 0));
-      return row;
+    mark(i) {
+      this.active = i;
+      const on = i != null && i < this.n;
+      this.cross.hidden = !on;
+      this.cols?.forEach((col, k) => col.classList.toggle("on", k === i));
+      if (this.daily) [...this.daily.children].forEach((bar, k) => bar.classList.toggle("on", k === i));
+      [...this.x.children].forEach((label, k) => label.classList.toggle("on", k === i));
+      this.dots.forEach((dot, k) => {
+        const value = on ? this.data.values[k]?.[i] : null;
+        dot.hidden = value == null;
+        if (value != null) {
+          dot.style.left = `${((i + 0.5) / this.n) * 100}%`;
+          dot.style.bottom = `${(value / this.top) * 100}%`;
+        }
+      });
+      if (on) this.cross.style.left = `${((i + 0.5) / this.n) * 100}%`;
+    }
+  }
+
+  // A year of days, in GitHub's order: a column a week, oldest on the left, Sunday at the top, months above.
+  class Heat {
+    constructor(root, { go }) {
+      Object.assign(this, { root, goFor: go, cells: [], start: null });
+      rove(root, () => this.cells, WEEKS);
+    }
+    build(year) {
+      const n = year.counts.length, weeks = Math.ceil(n / 7);
+      this.root.style.setProperty("--weeks", weeks);
+      const nodes = [h("span", { class: "m" }), ...["", "Mon", "", "Wed", "", "Fri", ""].map((w) => h("span", { class: "w", text: w }))];
+      let lastMonth = -1, lastLabel = -9;
+      this.cells = [];
+      for (let w = 0; w < weeks; w++) {
+        const first = shiftKey(year.start, w * 7), month = +first.slice(5, 7);
+        let label = "";
+        if (month !== lastMonth) {
+          // A month's name where its first full week starts; not the first column's if the next starts within 3 weeks.
+          const next = +shiftKey(year.start, (w + 3) * 7).slice(5, 7);
+          if (!(w === 0 && next !== month) && w - lastLabel >= 3) { label = MONTHS[month - 1].slice(0, 3); lastLabel = w; }
+          lastMonth = month;
+        }
+        nodes.push(h("span", { class: "m", text: label }));
+        for (let d = 0; d < 7 && w * 7 + d < n; d++) {
+          const i = w * 7 + d;
+          const cell = h("button", { type: "button" });
+          pickable(cell, (extra) => this.tip(i, extra), () => this.goFor(this.key(i)));
+          this.cells.push(cell);
+          nodes.push(cell);
+        }
+      }
+      this.root.replaceChildren(...nodes);
+      firstStop(this.cells);
+      this.start = year.start;
+      const scroller = this.root.parentElement;  // on a narrow screen, start at this week, as GitHub does
+      requestAnimationFrame(() => { scroller.scrollLeft = scroller.scrollWidth; });
+    }
+    key(i) { return shiftKey(this.start, i); }
+    tip(i, extra) {
+      const count = this.year.counts[i];
+      return tipRows(`${count ? plural(count, "request") : "No requests"} on ${longDay(this.key(i))}`, [], extra);
+    }
+    update(year, selected) {
+      if (year.start !== this.start || year.counts.length !== this.cells.length) this.build(year);
+      this.year = year;
+      const nonzero = year.counts.filter((c) => c > 0).sort((a, b) => a - b);
+      const q = (share) => nonzero[Math.floor(share * (nonzero.length - 1))] || 0;
+      const cuts = [q(0.25), q(0.5), q(0.75)];
+      this.cells.forEach((cell, i) => {
+        const count = year.counts[i];
+        const level = !count ? 0 : count <= cuts[0] ? 1 : count <= cuts[1] ? 2 : count <= cuts[2] ? 3 : 4;
+        cell.className = level ? `l${level}` : "";
+        cell.setAttribute("aria-label", `${count ? plural(count, "request") : "No requests"} on ${longDay(this.key(i))}`);
+        cell.setAttribute("aria-pressed", String(this.key(i) === selected));
+      });
+    }
+  }
+
+  // A row of parts as one bar: where a request's time went.
+  function track(parts, total) {
+    const sum = total || parts.reduce((a, p) => a + p.value, 0) || 1;
+    return h("span", { class: "track" }, ...parts.filter((p) => p.value > 0).map((p) => {
+      const share = p.value / sum;
+      const node = h("i", { class: p.cls, title: `${p.label}: ${secs(p.value)}` });
+      node.style.flex = `0 0 calc(${share * 100}% - 2px)`;
+      return node;
     }));
   }
 
-  /* System */
+  /* Pieces used on several pages */
 
-  function renderSystem() {
-    const live = state.live;
-    if (!live) return;
-    const service = live.service, process = service.process || {};
-    const up = (Date.now() - new Date(service.started)) / 1000;
-    const stateChip = $("#service-state");
-    stateChip.className = `chip ${state.reachable ? "good" : "critical"}`;
-    stateChip.replaceChildren(icon(state.reachable ? ICONS.check : ICONS.cross), state.reachable ? "Running" : "Unreachable");
-    const version = service.version;
-    pairs($("#service"), [
-      ["Up for", `${duration(up)}`, `since ${whenWords(service.started)}`],
-      ["Version", version ? h("span", {}, h("span", { class: "mono", text: version.commit }), ` · ${whenWords(version.date)}`) : "—"],
-      ["Last change", version ? clip(version.subject, 140) : "—"],
-      ["Main model", service.model ? h("span", { class: "mono", text: service.model }) : "—"],
-      ["Voice", service.voice ? "On" : "Off (no speech here)"],
-      ["Python", service.python],
-    ]);
-    $("#service-meters").replaceChildren(
-      meterBox("Natro's memory", process.memory, process.memory_max, bytes),
-      meterBox("Natro's CPU", process.cpu, 1, (v) => percent(v, 1), process.cpu == null ? "measured from the next look" : "of one core"));
-    const host = live.host;
-    $("#host-name").textContent = `${host.name} · ${host.system}`;
-    const memoryUsed = host.memory ? host.memory.total - (host.memory.available ?? 0) : null;
-    $("#host-meters").replaceChildren(
-      meterBox("CPU", host.cpu, 1, (v) => percent(v, 0), `${host.cores} cores`),
-      meterBox("Memory", memoryUsed, host.memory?.total, bytes),
-      meterBox("Disk", host.disk.used, host.disk.total, bytes));
-    pairs($("#host"), [
-      ["Load", host.load ? `${host.load.map((v) => v.toFixed(2)).join(" · ")}` : "—", host.load ? `1, 5 and 15 min, on ${host.cores} cores` : ""],
-      ["Up for", host.uptime != null ? duration(host.uptime) : "—"],
-    ]);
-    renderDevices(live.devices);
-    renderReminders(live.reminders);
-    renderRoutines(live.routines);
-    renderJobs(live.jobs);
-    renderWatchers(live.watchers);
-    const backup = live.backups;
-    const old = backup && (Date.now() - new Date(backup.last)) / 36e5 > 26;
-    pairs($("#backups"), [
-      ["Last backup", backup ? h("span", {}, `${ago(backup.last)} · ${bytes(backup.size)} `,
-        old ? h("span", { class: "chip warning", text: "Overdue" }) : null) : "None found"],
-      ["Copies kept", backup ? `${backup.count}` : "—"],
-      ["Waiting for a device", `${live.pending} request${live.pending === 1 ? "" : "s"}`],
-    ]);
+  function setText(id, text) { const node = document.getElementById(id); if (node) node.textContent = text; }
+  function meter(id, share) {
+    const node = document.getElementById(id);
+    node.style.width = `${Math.min(1, Math.max(0, share || 0)) * 100}%`;
+    node.classList.toggle("near", share >= 0.8 && share < 1);
+    node.classList.toggle("over", share >= 1);
+  }
+  function foot(id, text, tone, arrow) {
+    const node = document.getElementById(id);
+    node.className = `foot${tone ? ` ${tone}` : ""}`;
+    node.replaceChildren(...(arrow ? [icon(arrow)] : []), text);
+  }
+  function item(iconName, title, sub, right, dot) {
+    return h("li", {}, h("span", { class: "ic" }, icon(iconName)),
+      h("div", { class: "clip" }, h("b", {}, h("span", { text: title }), dot ? h("span", { class: `dot${dot === "off" ? " off" : ""}` }) : null),
+        sub ? h("small", { text: sub }) : null),
+      right || h("span"));
+  }
+  const none = (text) => h("li", { class: "none", text });
+  function listInto(id, countId, items, render, empty) {
+    $(`#${id}`).replaceChildren(...(items.length ? items.map(render) : [none(empty)]));
+    if (countId) setText(countId, String(items.length));
+  }
+  const tag = (text, cls) => h("span", { class: `tag${cls ? ` ${cls}` : ""}`, text });
+  const BEFORE = { "24h": "the day before", "7d": "the 7 days before", "30d": "the 30 days before", month: "the same days last month" };
+  function change(now, before, { word, upIsGood }) {
+    if (!now || !before) return null;
+    const ratio = now / before - 1;
+    if (Math.abs(ratio) < 0.02) return { text: `About the same as ${BEFORE[state.range]}`, tone: "" };
+    const up = ratio > 0;
+    return { text: `${Math.round(Math.abs(ratio) * 100)}% ${up ? word[0] : word[1]} than ${BEFORE[state.range]}`,
+      tone: upIsGood == null ? "" : up === upIsGood ? "good" : "bad", arrow: upIsGood == null ? null : up ? "up" : "down" };
   }
 
-  function cap(text) {
-    return text ? text[0].toUpperCase() + text.slice(1) : text;
-  }
-
-  function clip(text, length) {
-    return text && text.length > length ? `${text.slice(0, length - 1).trimEnd()}…` : text;
-  }
-
-  function pairs(node, rows) {
-    node.replaceChildren(...rows.flatMap(([name, value, note]) => [h("dt", { text: name }),
-      h("dd", {}, value, note ? h("small", { text: ` ${note}` }) : null)]));
-  }
-
-  function meterBox(name, value, max, format, note) {
-    const share = value != null && max ? value / max : null;
-    const meter = h("div", { class: `meter${share >= 0.9 ? " critical" : share >= 0.75 ? " warning" : ""}` }, h("span"));
-    requestAnimationFrame(() => { $("span", meter).style.width = `${Math.min(100, (share || 0) * 100)}%`; });
-    return h("div", { class: "meter-box" },
-      h("div", { class: "top-line" }, h("span", { text: name }), h("b", { text: format(value) })),
-      meter, h("small", { text: note || (max && max !== 1 ? `of ${format(max)}${share != null ? ` · ${percent(share)}` : ""}` : "") }));
-  }
-
-  function renderDevices(devices) {
-    $("#devices").replaceChildren(...devices.map((device) => {
-      const kind = ICONS[device.name] ? device.name : "device";
-      return h("div", { class: `device${device.online ? " online" : ""}` },
-        h("div", { class: "device-top" }, h("span", { class: "device-icon" }, icon(ICONS[kind])),
-          h("div", {}, h("b", { text: cap(device.label) }), h("span", { text: device.name })),
-          statusChip(device.online, device.online ? "Online" : "Offline")),
-        h("dl", { class: "pairs" },
-          h("dt", { text: device.online ? "Connected" : "Last seen" }),
-          h("dd", { text: device.online ? ago(device.since) : ago(device.seen) }),
-          h("dt", { text: "Last request" }), h("dd", { text: device.used ? ago(device.used) : "not since Natro started" }),
-          device.online ? [h("dt", { text: "Its tools" }), h("dd", { text: `${device.tools}` })] : null),
-        device.abilities.length ? h("div", { class: "abilities" }, device.abilities.map((a) => h("span", { class: "chip", text: a }))) : null);
-    }));
-  }
-
-  function whenBox(iso, fallback) {
-    const d = date(iso);
-    return h("span", { class: "when-box" }, h("b", { text: d ? hhmm(d) : fallback }), h("span", { text: d ? dayWords(d) : "" }));
-  }
-
-  function listInto(node, countNode, items, render, emptyText) {
-    countNode.textContent = items.length;
-    node.replaceChildren(...(items.length ? items.map(render) : [h("li", { class: "none", text: emptyText })]));
-  }
-
-  function renderReminders(items) {
-    listInto($("#reminders"), $("#reminders-count"), items, (item) => h("li", {},
-      whenBox(item.next, item.on ? "Back" : "—"),
-      h("div", { class: "body" }, h("b", { text: item.text }),
-        h("div", { class: "chips" }, item.repeat ? h("span", { class: "chip accent", text: item.repeat }) : null,
-          item.on ? h("span", { class: "chip", text: `when the ${DEVICE_WORDS[item.on] || item.on} is back` }) : null))),
-    "No reminders set.");
-  }
-
-  const RUN_CHIPS = { done: "good", quiet: "", failed: "critical", cancelled: "", skipped: "warning" };
-
-  function renderRoutines(items) {
-    listInto($("#routines"), $("#routines-count"), items, (item) => h("li", {},
-      whenBox(item.next, "—"),
-      h("div", { class: "body" }, h("b", { text: item.name }), h("span", { text: item.task }),
-        h("div", { class: "chips" }, h("span", { class: "chip accent", text: item.repeat }),
-          item.quiet ? h("span", { class: "chip", text: "quiet" }) : null,
-          item.last ? h("span", { class: `chip ${RUN_CHIPS[item.last.state] ?? ""}`, title: item.last.result || "",
-            text: `last: ${item.last.state}, ${ago(item.last.at)}` }) : null))),
-    "No routines set up. Ask Natro for one: “every weekday at 8, brief me”.");
-  }
-
-  const JOB_CHIPS = { running: "accent", done: "good", failed: "critical", cancelled: "" };
-
-  function renderJobs(items) {
-    listInto($("#jobs"), $("#jobs-count"), items, (job) => h("li", {},
-      h("span", { class: "when-box" }, h("b", { text: hhmm(new Date(job.started)) }), h("span", { text: dayWords(new Date(job.started)) })),
-      h("div", { class: "body" }, h("b", { text: job.title || clip(job.task, 120) }),
-        h("span", { text: job.state === "running" ? (job.step || "Working…") : clip(job.result, 200) }),
-        h("div", { class: "chips" }, h("span", { class: `chip ${JOB_CHIPS[job.state] ?? ""}`, text: job.state }),
-          h("span", { class: "chip", text: `${job.minutes} min` }), job.routine ? h("span", { class: "chip", text: "routine" }) : null))),
-    "No background jobs since Natro started.");
-  }
-
-  function renderWatchers(items) {
-    listInto($("#watchers"), $("#watchers-count"), items, (item) => h("li", {},
-      h("span", { class: "now-icon" }, icon(ICONS.eye)),
-      h("div", { class: "body" }, h("b", { text: item.text }),
-        h("div", { class: "chips" }, h("span", { class: "chip", text: item.kind }),
-          item.urgent ? h("span", { class: "chip warning", text: "said out loud" }) : null,
-          item.once ? h("span", { class: "chip", text: "once" }) : null))),
-    "Nothing watched.");
-  }
-
-  /* Logs */
-
-  const LOG = state.logs;
-
-  function logParams(extra) {
-    const params = new URLSearchParams({ range: state.range });
-    if (LOG.kinds.size) params.set("kinds", [...LOG.kinds].join(","));
-    if (LOG.device) params.set("device", LOG.device);
-    if (LOG.q.trim()) params.set("q", LOG.q.trim());
-    for (const [key, value] of Object.entries(extra || {})) params.set(key, value);
-    return params.toString();
-  }
-
-  async function loadLogs() {
-    LOG.loading = true;
-    $("#log-list").classList.add("stale");
-    try {
-      const data = await get(`/logs?${logParams()}`);
-      LOG.entries = data.entries;
-      LOG.more = data.more;
-      LOG.matched = data.matched;
-      LOG.counts = data.kinds;
-      LOG.fresh.clear();
-      renderLogs();
-    } catch (error) {
-      $("#log-meta").textContent = `Couldn't load the log: ${error.message}`;
-    } finally {
-      LOG.loading = false;
-      $("#log-list").classList.remove("stale");
-    }
-  }
-
-  async function tailLogs() {
-    if (LOG.loading || !LOG.entries.length && LOG.matched) return;
-    LOG.lastTail = Date.now();
-    const newest = LOG.entries[0]?.id;
-    try {
-      const data = await get(`/logs?${logParams(newest ? { after: newest } : {})}`);
-      if (!data.entries.length) return;
-      for (const entry of data.entries) LOG.fresh.add(entry.id);
-      LOG.entries = [...data.entries, ...LOG.entries];
-      LOG.matched += data.entries.length;
-      const seen = new Map(LOG.counts);
-      for (const entry of data.entries) seen.set(entry.entry.kind, (seen.get(entry.entry.kind) || 0) + 1);
-      LOG.counts = [...seen].sort((a, b) => b[1] - a[1]);
-      renderLogs();
-    } catch { /* the status pill says Natro can't be reached */ }
-  }
-
-  async function olderLogs() {
-    const oldest = LOG.entries.at(-1)?.id;
-    if (!oldest) return;
-    const button = $("#log-more");
-    button.disabled = true;
-    try {
-      const data = await get(`/logs?${logParams({ before: oldest })}`);
-      LOG.entries = [...LOG.entries, ...data.entries];
-      LOG.more = data.more;
-      renderLogs();
-    } finally {
-      button.disabled = false;
-    }
-  }
-
-  function renderLogChips() {
-    const node = $("#log-kinds");
-    const all = h("button", { type: "button", "aria-pressed": String(!LOG.kinds.size), onclick: () => { LOG.kinds.clear(); loadLogs(); } }, "All");
-    node.replaceChildren(all, ...LOG.counts.map(([kind, count]) => h("button", {
-      type: "button", "aria-pressed": String(LOG.kinds.has(kind)),
-      onclick: () => {
-        if (LOG.kinds.has(kind)) LOG.kinds.delete(kind); else LOG.kinds.add(kind);
-        loadLogs();
-      },
-    }, kind, h("small", { text: whole(count) }))));
-  }
-
-  function renderLogs() {
-    renderLogChips();
-    const list = $("#log-list");
-    const items = [];
-    let day = "";
-    for (const row of LOG.entries) {
-      const at = new Date(row.time), thisDay = at.toDateString();
-      if (thisDay !== day) {
-        day = thisDay;
-        items.push(h("li", { class: "log-day" }, h("span", { text: dayWords(at) })));
-      }
-      items.push(logRow(row, at));
-    }
-    if (!items.length) items.push(h("li", { class: "empty", text: "No log entries match." }));
-    list.replaceChildren(...items);
-    LOG.fresh.clear();
-    $("#log-more").hidden = !LOG.more;
-    const shown = LOG.entries.length;
-    $("#log-meta").textContent = shown ? `Showing ${whole(shown)} of ${whole(Math.max(LOG.matched, shown))} entries, newest first`
-      + (LOG.live ? " · live" : "") : "";
-  }
-
-  function logRow(row, at) {
-    const entry = row.entry, said = summary(entry);
-    const open = LOG.open.has(row.id);
-    const item = h("li", { class: `log-row${open ? " open" : ""}${LOG.fresh.has(row.id) ? " fresh" : ""}` });
-    const button = h("button", { type: "button", "aria-expanded": String(open) },
-      h("span", { class: "t", text: hhmmss(at) }),
-      h("span", { class: `k chip kind-${entry.kind}`, text: entry.kind || "?" }),
-      h("span", { class: "s" }, said.main, said.dim ? h("em", { text: said.dim }) : null),
-      h("span", { class: "m", text: said.meta || "" }));
-    const detail = h("div", { class: "log-detail" }, h("div", {}, open ? detailOf(entry) : null));
-    button.addEventListener("click", () => {
-      const now = item.classList.toggle("open");
-      button.setAttribute("aria-expanded", String(now));
-      if (now) {
-        LOG.open.add(row.id);
-        if (!detail.firstChild.firstChild) detail.firstChild.append(detailOf(entry));
-      } else LOG.open.delete(row.id);
-    });
-    item.append(button, detail);
-    return item;
-  }
-
-  function detailOf(entry) {
-    const fields = Object.entries(entry).filter(([key]) => key !== "time" && key !== "kind");
-    const raw = JSON.stringify(entry, null, 2);
-    const pre = h("pre", { text: raw });
-    const copy = h("button", { type: "button", class: "ghost", text: "Copy JSON" });
-    copy.addEventListener("click", async () => {
-      try {
-        await navigator.clipboard.writeText(raw);
-      } catch {
-        const range = document.createRange();
-        range.selectNodeContents(pre);
-        const selection = getSelection();
-        selection.removeAllRanges();
-        selection.addRange(range);
-        document.execCommand("copy");
-        selection.removeAllRanges();
-      }
-      copy.textContent = "Copied";
-      setTimeout(() => { copy.textContent = "Copy JSON"; }, 1400);
-    });
-    return h("div", { class: "inner" },
-      h("dl", { class: "pairs" }, fields.flatMap(([key, value]) => [h("dt", { text: key }),
-        h("dd", { class: typeof value === "object" && value !== null ? "mono" : null,
-          text: typeof value === "object" && value !== null ? JSON.stringify(value) : String(value) })])),
-      h("details", {}, h("summary", { class: "muted", text: "Raw entry" }), pre),
-      h("div", { class: "actions" }, copy));
-  }
-
-  function short(text, length = 140) {
-    const words = String(text ?? "").replace(/\s+/g, " ").trim();
-    return words.length > length ? `${words.slice(0, length - 1)}…` : words;
-  }
-
-  function argsWords(args) {
-    if (!args || typeof args !== "object") return "";
-    return short(Object.entries(args).map(([key, value]) => `${key}: ${typeof value === "object" ? JSON.stringify(value) : value}`).join(", "), 90);
-  }
-
+  // A log entry in words: {icon, title, detail, meta, problem}.
   function summary(e) {
-    const device = DEVICE_WORDS[e.device] || e.device;
+    const device = DEVICE_WORDS[e.device] || e.device || "";
+    const short = (text, n = 140) => { const t = String(text || ""); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
     switch (e.kind) {
-      case "request":
-        return { main: short(e.text, 160) || "(spoken)", dim: e.cancelled ? "  · cancelled" : e.reply ? `  → ${short(e.reply, 200)}` : "",
-          meta: [device, money((e.cost || 0) + (e.voice_cost || 0)), e.seconds != null ? secs(e.seconds) : null].filter(Boolean).join(" · ") };
-      case "tool":
-        return { main: e.tool, dim: `  ${argsWords(e.args)}${e.declined ? "  · you said no" : e.ok === false ? "  · failed" : ""}`, meta: device };
-      case "device":
-        return { main: `${device} ${e.event}`, dim: e.tools?.length ? `  · ${e.tools.length} tools` : "", meta: "" };
-      case "job":
-        return { main: `Job ${e.id} ${e.event}`, dim: e.task ? `  ${short(e.task, 160)}` : "",
-          meta: [e.minutes != null ? `${e.minutes} min` : null, e.cost ? money(e.cost) : null].filter(Boolean).join(" · ") };
-      case "routine":
-        return { main: `Routine ${e.name || e.id} ${e.event}`, dim: e.why ? `  ${e.why}` : e.repeat ? `  ${e.repeat}` : "", meta: "" };
-      case "reminder":
-        return { main: `Reminder ${e.event}`, dim: e.text ? `  ${short(e.text)}` : e.minutes ? `  ${e.minutes} min` : "", meta: e.spoken_on || "" };
-      case "watcher":
-        return { main: `Watcher ${e.event}`, dim: e.what ? `  ${short(e.what)}` : "", meta: "" };
-      case "file":
-        return { main: `File ${e.event}: ${e.name || e.id}`, dim: e.to ? `  → ${e.to}` : "", meta: e.size ? bytes(e.size) : "" };
-      case "convert":
-        return { main: `Converted ${e.name} to ${e.to}`, dim: "", meta: [e.size ? bytes(e.size) : null, e.seconds != null ? secs(e.seconds) : null].filter(Boolean).join(" · ") };
-      case "voice":
-        return { main: "Voice", dim: "  heard, not answered", meta: money(e.voice_cost) };
-      case "hand_over":
-        return { main: "Handed to Claude", dim: `  ${e.reason || ""}`, meta: "" };
+      case "device": return { icon: "plug", title: `${device} ${e.event || ""}`, detail: e.tools?.length ? `${e.tools.length} tools` : "" };
+      case "job": return { icon: "job", title: `Job ${e.event || ""}`, detail: short(e.task || e.title || ""),
+        meta: [e.minutes != null ? `${e.minutes} min` : null, e.cost ? cost(e.cost) : null].filter(Boolean).join(" · ") };
+      case "routine": return { icon: "routine", title: `Routine ${e.event || ""}`, detail: e.name || e.why || e.repeat || "" };
+      case "reminder": return { icon: "bell", title: `Reminder ${e.event || ""}`, detail: short(e.text || ""), meta: e.spoken_on ? `on the ${DEVICE_WORDS[e.spoken_on] || e.spoken_on}` : "" };
+      case "watcher": return { icon: "eye", title: `Watcher ${e.event || ""}`, detail: short(e.what || e.text || "") };
+      case "message": return { icon: "message", title: `Message ${e.event || ""}`, detail: short(e.from || e.text || "") };
+      case "file": return { icon: "file", title: `File ${e.event || ""}`, detail: `${e.name || e.id || ""}${e.to ? ` → ${e.to}` : ""}`, meta: e.size ? bytes(e.size) : "" };
+      case "convert": return { icon: "file", title: "Converted", detail: `${e.name || ""} to ${e.to || ""}`, meta: e.seconds != null ? secs(e.seconds) : "" };
+      case "pdf": return { icon: "file", title: "PDF", detail: short(e.action || e.name || "") };
+      case "voice": return { icon: "voice", title: "Heard, not answered", detail: device, meta: e.voice_cost ? cost(e.voice_cost) : "" };
+      case "warm": return { icon: "check", title: `${FAMILY_WORDS[FAMILY(e.model)] || e.model}'s cache kept warm`,
+        detail: e.tokens?.cache_creation_input_tokens ? "written again" : "", meta: e.cost ? cost(e.cost) : "" };
+      case "chat": return { icon: "message", title: `Chat ${e.event || ""}`, detail: device };
+      case "keys": return { icon: "key", title: `Keys ${e.event || ""}`, detail: (e.keys || []).join(", ") };
+      case "queued": return { icon: "job", title: `Kept for the ${device}`, detail: short(e.text) };
+      case "queue_skipped": return { icon: "job", title: "Skipped what was kept", detail: short(e.text) };
+      case "hand_over": return { icon: "alert", title: "Handed to Claude", detail: short(e.reason), problem: true };
       case "cheaper_model":
-      case "stronger_model":
-        return { main: `${e.model} → ${e.switched_to}`, dim: `  ${e.reason || ""}`, meta: "" };
-      case "model_rest":
-        return { main: `${e.model} rests ${e.seconds} s`, dim: `  after ${e.failures} failure${e.failures === 1 ? "" : "s"}: ${short(e.error, 120)}`, meta: "" };
-      case "model_error":
-        return { main: `${e.model} failed`, dim: `  ${short(e.error, 160)}${e.switched_to ? ` → ${e.switched_to}` : ""}`, meta: "" };
-      case "error":
-        return { main: `Error${e.step ? ` in ${e.step}` : ""}`, dim: `  ${short(e.error, 180)}`, meta: device || "" };
-      case "keys":
-        return { main: `Keys ${e.event}`, dim: e.keys ? `  ${e.keys.join(", ")}` : "", meta: device };
-      case "chat":
-        return { main: `Chat ${e.event}`, dim: e.bytes ? `  ${bytes(e.bytes)}` : "", meta: device };
-      case "queued":
-        return { main: `Kept for the ${device}`, dim: `  ${short(e.text)}`, meta: "" };
-      default: {
-        const rest = Object.entries(e).filter(([key]) => !["time", "kind"].includes(key))
-          .map(([key, value]) => `${key}: ${typeof value === "object" ? JSON.stringify(value) : value}`).join(", ");
-        return { main: short(rest, 200), dim: "", meta: "" };
-      }
+      case "stronger_model": return { icon: "alert", title: `${FAMILY_WORDS[FAMILY(e.model)] || e.model} → ${FAMILY_WORDS[FAMILY(e.switched_to)] || e.switched_to}`, detail: short(e.reason), problem: true };
+      case "model_rest": return { icon: "alert", title: `${e.model} rests ${e.seconds} s`, detail: short(e.error, 120), problem: true };
+      case "model_error": return { icon: "alert", title: `${e.model} failed`, detail: short(e.error, 160), problem: true };
+      case "mcp_error": return { icon: "alert", title: "MCP server failed", detail: short(e.error || e.server, 160), problem: true };
+      case "error": return { icon: "alert", title: `Error${e.step ? ` in ${e.step}` : ""}`, detail: short(e.error, 180), meta: device, problem: true };
+      case "tool": return { icon: "check", title: e.tool, detail: e.declined ? "you said no" : e.ok === false ? "failed" : "", meta: device };
+      default: return { icon: "device", title: e.kind || "Entry", detail: "" };
     }
+  }
+
+  // A request in a list: when, where, what was asked and answered, what it was and cost.
+  function requestTags(row) {
+    const e = row.entry;
+    const tags = [];
+    if (e.cancelled) return [tag("Cancelled", "no")];
+    const family = FAMILY(e.model);
+    tags.push(tag(FAMILY_WORDS[family] || family));
+    if (row.command && !["Conversation", "Quick, no tools"].includes(row.command)) tags.push(tag(row.command));
+    if ((row.tools || []).some((t) => t.declined)) tags.push(tag("You said no", "no"));
+    return tags;
+  }
+  const requestCost = (e) => (e.cost || 0) + (e.voice_cost || 0);
+  function requestLine(row, { withDay } = {}) {
+    const e = row.entry;
+    return [
+      h("span", { class: "when", text: withDay && dayKey(row.time) !== today() ? `${dayWords(dayKey(row.time)).slice(0, 3)} ${clock(row.time)}` : clock(row.time) }),
+      icon(deviceIcon(e.device), "dev"),
+      h("span", { class: "what" }, h("b", { text: e.text || "(spoken)" }), h("span", { text: e.cancelled ? "Cancelled" : e.reply || "" })),
+      h("span", { class: "meta" }, h("span", { class: "tags" }, ...requestTags(row)),
+        h("span", { text: [cost(requestCost(e)), e.seconds != null ? secs(e.seconds) : null].filter(Boolean).join(" · ") })),
+    ];
+  }
+
+  /* Home */
+
+  const home = {
+    enter() {
+      if (!home.chart) {
+        home.chart = new Bars($("#home-chart"), {
+          format: cost, axis: axisMoney,
+          label: (i, long) => bucketLabel(i, long),
+          tip: (i, extra) => {
+            const stats = state.stats, rows = SERIES.map((series) => ({ cls: series.cls, label: series.label, value: home.values[series.key]?.[i] || 0 }))
+              .filter((row) => row.value > 0).map((row) => ({ ...row, value: cost(row.value) }));
+            const total = SERIES.reduce((sum, series) => sum + (home.values[series.key]?.[i] || 0), 0);
+            const requests = Object.values(stats.requests).reduce((sum, list) => sum + (list[i] || 0), 0);
+            return tipRows(bucketLabel(i, true), [...rows, { label: "Requests", value: whole(requests) }], { total: { label: "Total", value: cost(total) }, ...extra });
+          },
+          go: (i) => `#activity?day=${dayKey(state.stats.buckets[i])}`,
+        });
+      }
+      if (state.stats) home.renderStats();
+      if (state.live) home.renderLive();
+      if (Date.now() - state.at.stats > 20000) loadStats();
+      home.latest();
+    },
+    renderStats() {
+      const stats = state.stats;
+      const values = {};
+      for (const [source, list] of Object.entries(stats.spend)) {
+        const series = SERIES_OF[source] || SERIES_OF.other;
+        values[series.key] = (values[series.key] || list.map(() => 0)).map((v, i) => v + (list[i] || 0));
+      }
+      home.values = values;
+      home.chart.update(stats.buckets.length, values);
+      const shown = SERIES.filter((series) => (values[series.key] || []).some((v) => v > 0));
+      $("#home-legend").replaceChildren(...shown.map((series) => h("span", {}, h("i", { class: `key k-${series.cls}` }), `${series.label} `,
+        h("b", { text: cost(values[series.key].reduce((a, b) => a + b, 0)) }))),
+        h("span", { class: "total" }, "Total ", h("b", { text: cost(stats.spent) })));
+
+      setText("home-requests", whole(stats.request_count));
+      const more = change(stats.request_count, stats.before.request_count, { word: ["more", "fewer"] });
+      foot("home-requests-delta", more ? more.text : "", "", null);
+      setText("home-typical", secs(stats.seconds.all_median));
+      const faster = change(stats.seconds.all_median, stats.before.median_seconds, { word: ["slower", "faster"], upIsGood: false });
+      foot("home-typical-delta", faster ? faster.text : "", faster?.tone, faster?.arrow);
+      const switches = ["hand_over", "cheaper_model", "stronger_model"].reduce((a, k) => a + (stats.issues[k] || 0), 0);
+      const errors = Object.values(stats.issues).reduce((a, b) => a + b, 0) - switches;
+      setText("home-problems", whole(switches + errors));
+      const sub = $("#home-problems-sub");
+      const words = [switches ? `${whole(switches)} model switch${switches === 1 ? "" : "es"}` : null, errors ? plural(errors, "error") : null];
+      sub.replaceChildren(h("span", {}, words.filter(Boolean).join(", ") || "None",
+        switches + errors ? [" · ", h("a", { href: "#activity?kinds=problems", text: "See them" })] : []));
+    },
+    renderLive() {
+      const live = state.live, month = live.month;
+      setText("home-spent", money(month.spent));
+      setText("home-budget", `of ${money(month.budget)}`);
+      meter("home-meter", month.budget ? month.spent / month.budget : 0);
+      const projected = month.projected;
+      foot("home-track", month.spent >= month.budget ? "Over the budget" : projected != null ? `On track for ${money(projected)}` : "",
+        month.spent >= month.budget ? "bad" : "");
+
+      const host = live.host || {};
+      const memory = host.memory ? 1 - (host.memory.available ?? host.memory.total) / host.memory.total : null;
+      $("#home-now").replaceChildren(
+        item("natro", "Natro", `Running · up ${duration(since(live.service.started))}`, null, "on"),
+        ...live.devices.map((d) => item(deviceIcon(d.name), DEVICE_WORDS[d.name] || d.label,
+          d.online ? `Connected since ${whenWords(d.since).replace("Today, ", "")}` : d.seen ? `Last seen ${whenWords(d.seen)}` : "Not connected",
+          null, d.online ? "on" : "off")),
+        item("server", "VPS", host.system || host.name || ""));
+      $("#home-host").replaceChildren(
+        miniMeter("VPS CPU", host.cpu != null ? percent(host.cpu) : "—", host.cpu),
+        miniMeter("Memory", memory != null ? percent(memory) : "—", memory));
+
+      const next = [
+        ...live.jobs.filter((j) => j.state === "running").map((j) => ({ at: "", node: item("job", j.title, `Running for ${j.minutes} min`, h("span", { class: "chip good", text: "Running" })) })),
+        ...live.reminders.filter((r) => r.next).map((r) => ({ at: r.next, node: item("bell", r.text, whenWords(r.next)) })),
+        ...live.routines.filter((r) => r.next).map((r) => ({ at: r.next, node: item("routine", r.name || r.task, `${capital(r.repeat)} · next ${lowerWhen(r.next)}`) })),
+      ].sort((a, b) => (a.at || "").localeCompare(b.at || "")).slice(0, 4);
+      const watching = live.watchers.slice(0, Math.max(0, 5 - next.length)).map((w) => item("eye", capital(w.text), "Watching"));
+      $("#home-next").replaceChildren(...(next.length + watching.length ? [...next.map((x) => x.node), ...watching] : [none("Nothing scheduled")]));
+    },
+    async latest(force) {
+      if (!force && Date.now() - state.at.latest < 10000) return;
+      state.at.latest = Date.now();
+      let data = await fetched(`/logs?${query({ kinds: "request", range: "24h", limit: 6 })}`);
+      if (data && data.entries.length < 3) data = await fetched(`/logs?${query({ kinds: "request", range: "7d", limit: 6 })}`);
+      if (!data) return;
+      $("#home-latest").replaceChildren(...(data.entries.length ? data.entries.map((row) =>
+        h("li", {}, h("a", { href: `#activity?day=${dayKey(row.time)}&open=${row.id}` }, ...requestLine(row, { withDay: true })))) : [h("li", { class: "empty", text: "No requests yet." })]));
+    },
+  };
+  function bucketLabel(i, long) {
+    const stats = state.stats, iso = stats.buckets[i];
+    if (stats.unit === "hour") return long ? `${dayWords(dayKey(iso))}, ${clock(iso)}` : clock(iso);
+    if (long) return longDay(dayKey(iso));
+    if (stats.buckets.length > 8 || phone.matches) return String(+iso.slice(8, 10));
+    return dayKey(iso) === today() ? "Today" : shortDay(dayKey(iso));
+  }
+  function miniMeter(name, value, share) {
+    const bar = h("span");
+    bar.style.width = `${Math.min(1, share || 0) * 100}%`;
+    return h("div", {}, h("span", {}, name, h("b", { text: value })), h("div", { class: "meter" }, bar));
+  }
+  const capital = (text) => String(text || "").replace(/^./, (c) => c.toUpperCase());
+
+  /* Activity */
+
+  const KIND_GROUPS = [
+    { key: "all", label: "All", kinds: null },
+    { key: "requests", label: "Requests", kinds: ["request"] },
+    { key: "devices", label: "Devices", kinds: ["device", "chat", "keys", "queued", "queue_skipped"] },
+    { key: "jobs", label: "Jobs", kinds: ["job", "routine"] },
+    { key: "reminders", label: "Reminders", kinds: ["reminder", "watcher", "message"] },
+    { key: "files", label: "Files", kinds: ["file", "convert", "pdf"] },
+    { key: "problems", label: "Problems", kinds: ["error", "model_error", "model_rest", "mcp_error", "hand_over", "cheaper_model", "stronger_model"] },
+  ];
+  // Shown inside their request instead (dashboard.py's attachments).
+  const NESTED = ["tool", "timing", "spoken"];
+
+  const activity = {
+    rows: [], group: "all", q: "", device: "", live: saved("live", "1") === "1", day: null, open: null, more: false, loading: false,
+    enter(params) {
+      if (!activity.heat) activity.heat = new Heat($("#heat"), { go: (key) => `#activity?day=${key}` });
+      const day = params.get("day"), kinds = params.get("kinds");
+      const changed = day !== activity.day || (kinds && kinds !== activity.group);
+      activity.day = day;
+      if (kinds && KIND_GROUPS.some((g) => g.key === kinds)) activity.group = kinds;
+      if (params.get("open")) activity.open = activity.reveal = params.get("open");
+      if (state.year) {
+        activity.heat.update(state.year, activity.day);
+        renderYearTitle();
+      }
+      if (Date.now() - state.at.year > 60000) loadYear();
+      $("#log-live").setAttribute("aria-pressed", String(activity.live));
+      $("#log-date").value = activity.day || "";
+      $("#log-date").max = today();
+      if (changed || !activity.rows.length) activity.load();
+      else activity.render();
+    },
+    params(extra) {
+      const group = KIND_GROUPS.find((g) => g.key === activity.group);
+      return query({
+        ...(activity.day ? { day: activity.day } : { range: "30d" }),
+        kinds: group.kinds ? group.kinds.join(",") : NESTED.map((k) => `-${k}`).join(","),
+        q: activity.q, device: activity.device, ...extra,
+      });
+    },
+    async load() {
+      activity.loading = true;
+      const asked = activity.params();
+      const data = await fetched(`/logs?${asked}`);
+      activity.loading = false;
+      if (asked !== activity.params()) return;  // the filters changed meanwhile
+      if (!data) {
+        $("#log-list").replaceChildren(h("div", { class: "empty", text: "Can't reach Natro." }));
+        return;
+      }
+      activity.rows = data.entries;
+      activity.more = data.more;
+      activity.counts = data.kinds;
+      state.at.tail = Date.now();
+      activity.render();
+    },
+    async older() {
+      const last = activity.rows[activity.rows.length - 1];
+      if (!last) return;
+      const data = await fetched(`/logs?${activity.params({ before: last.id })}`);
+      if (!data) return;
+      activity.rows.push(...data.entries);
+      activity.more = data.more;
+      activity.render();
+    },
+    async tail() {
+      if (!activity.live || activity.loading || !activity.rows.length || (activity.day && activity.day !== today())) return;
+      state.at.tail = Date.now();
+      const data = await fetched(`/logs?${activity.params({ after: activity.rows[0].id })}`);
+      if (data?.entries.length) {
+        activity.rows.unshift(...data.entries);
+        activity.counts = data.kinds;
+        activity.render();
+      }
+    },
+    render() {
+      const counts = Object.fromEntries(activity.counts || []);
+      const total = Object.entries(counts).filter(([k]) => !NESTED.includes(k)).reduce((a, [, v]) => a + v, 0);
+      $("#log-kinds").replaceChildren(...KIND_GROUPS.map((g) => {
+        const n = g.kinds ? g.kinds.reduce((a, k) => a + (counts[k] || 0), 0) : total;
+        return h("button", { type: "button", "aria-pressed": String(g.key === activity.group), onclick: () => {
+          activity.group = g.key;
+          activity.load();
+        } }, g.label, h("small", { text: compact(n) }));
+      }));
+      const banner = $("#log-day");
+      banner.hidden = !activity.day;
+      if (activity.day) {
+        banner.replaceChildren(h("span", {}, "Showing ", h("b", { text: longDay(activity.day) })),
+          h("button", { type: "button", class: "btn-soft", text: "All days", onclick: () => { location.hash = "#activity"; } }));
+      }
+      const list = $("#log-list");
+      if (!activity.rows.length) {
+        list.replaceChildren(h("div", { class: "empty", text: activity.q ? "Nothing matches." : "Nothing here yet." }));
+      } else {
+        const nodes = [];
+        let current = null;
+        for (const row of activity.rows) {
+          const key = dayKey(row.time);
+          if (key !== current) {
+            current = key;
+            const count = state.year ? yearCount(key) : null;
+            nodes.push(h("div", { class: "day-head" }, h("b", { text: `${dayWords(key) === "Today" || dayWords(key) === "Yesterday" ? `${dayWords(key)}, ` : ""}${longDay(key)}` }),
+              count != null ? h("span", { text: plural(count, "request") }) : null));
+          }
+          nodes.push(row.entry.kind === "request" ? activity.request(row) : activity.event(row));
+        }
+        list.replaceChildren(...nodes);
+      }
+      $("#log-more").hidden = !activity.more;
+      if (activity.reveal && $(".req.open")) {  // opened from a link: bring it into view, once
+        $(".req.open").scrollIntoView({ block: "center" });
+        activity.reveal = null;
+      }
+    },
+    request(row) {
+      const open = row.id === activity.open;
+      const button = h("button", { type: "button", "aria-expanded": String(open), onclick: () => {
+        activity.open = open ? null : row.id;
+        activity.render();
+      } }, ...requestLine(row));
+      return h("div", { class: open ? "req open" : "req" }, button, open ? activity.detail(row) : null);
+    },
+    detail(row) {
+      const e = row.entry, tokens = e.tokens || {};
+      const parts = row.stages ? grouped(row.stages) : null;
+      const copy = h("button", { type: "button", class: "btn-soft", text: "Copy as JSON", onclick: async () => {
+        copy.textContent = await copyText(JSON.stringify(e, null, 2)) ? "Copied" : "Can't copy here";
+        setTimeout(() => { copy.textContent = "Copy as JSON"; }, 1400);
+      } });
+      const fresh = (tokens.input_tokens || 0) + (tokens.cache_creation_input_tokens || 0);
+      return h("dl", { class: "detail" },
+        h("dt", { text: "Request" }), h("dd", { text: e.text || "(spoken)" }),
+        h("dt", { text: "Reply" }), h("dd", { text: e.cancelled ? "Cancelled" : e.reply || "—" }),
+        h("dt", { text: "Model" }), h("dd", { text: e.model || "—" }),
+        h("dt", { text: "Tools" }), h("dd", {}, ...((row.tools || []).length ? row.tools.map((t) => h("div", { class: "tool" },
+          h("code", { text: t.tool }), t.args ? h("span", { class: "args", text: argsWords(t.args) }) : null,
+          h("span", { class: t.declined || t.ok === false ? "ok no" : "ok", text: t.declined ? "you said no" : t.ok === false ? "failed" : "worked" }))) : ["None"])),
+        h("dt", { text: "Time" }), h("dd", {}, parts ? [track(parts), h("div", { class: "times" },
+          ...parts.filter((p) => p.value > 0).map((p) => h("span", {}, h("i", { class: `key k-${p.cls}` }), `${p.label} `, h("b", { text: secs(p.value) }))))]
+          : secs(e.seconds)),
+        h("dt", { text: "Cost" }), h("dd", { text: [cost(requestCost(e)), e.voice_cost ? `${cost(e.cost || 0)} model + ${cost(e.voice_cost)} voice` : null,
+          fresh || tokens.cache_read_input_tokens ? `${compact(fresh + (tokens.cache_read_input_tokens || 0))} tokens in (${compact(tokens.cache_read_input_tokens || 0)} from the cache), ${compact(tokens.output_tokens || 0)} out` : null]
+          .filter(Boolean).join(" · ") }),
+        h("dt"), h("dd", {}, copy));
+    },
+    event(row) {
+      const info = summary(row.entry);
+      return h("div", { class: info.problem ? "event problem" : "event" },
+        h("span", { class: "when", text: clock(row.time) }), icon(info.icon),
+        h("span", { class: "clip" }, h("b", { text: capital(info.title) }), info.detail ? ` · ${info.detail}` : ""),
+        h("span", { class: "meta", text: info.meta || "" }));
+    },
+  };
+  // The clipboard API needs HTTPS (or localhost); the dashboard is plain HTTP inside the tailnet, so fall back.
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      const area = h("textarea", { readonly: true, "aria-hidden": "true" });
+      area.value = text;
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      document.body.append(area);
+      area.select();
+      const done = document.execCommand("copy");
+      area.remove();
+      return done;
+    }
+  }
+  function argsWords(args) {
+    if (!args || typeof args !== "object") return String(args || "");
+    const text = Object.entries(args).map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`).join(", ");
+    return text.length > 140 ? `${text.slice(0, 139)}…` : text;
+  }
+  function yearCount(key) {
+    const year = state.year;
+    const i = (keyDate(key) - keyDate(year.start)) / 864e5;
+    return i >= 0 && i < year.counts.length ? year.counts[i] : null;
   }
 
   let typing;
   $("#log-q").addEventListener("input", (event) => {
     clearTimeout(typing);
-    typing = setTimeout(() => { LOG.q = event.target.value; loadLogs(); }, 280);
+    typing = setTimeout(() => { activity.q = event.target.value.trim(); activity.load(); }, 280);
   });
-  $("#log-device").addEventListener("change", (event) => { LOG.device = event.target.value; loadLogs(); });
+  $("#log-device").addEventListener("change", (event) => { activity.device = event.target.value; activity.load(); });
   $("#log-live").addEventListener("click", (event) => {
-    LOG.live = !LOG.live;
-    event.currentTarget.classList.toggle("on", LOG.live);
-    event.currentTarget.setAttribute("aria-pressed", String(LOG.live));
-    renderLogs();
+    activity.live = !activity.live;
+    save("live", activity.live ? "1" : "0");
+    event.currentTarget.setAttribute("aria-pressed", String(activity.live));
+    if (activity.live) activity.tail();
   });
-  $("#log-more").addEventListener("click", olderLogs);
+  $("#log-more").addEventListener("click", () => activity.older());
+  $("#log-date").addEventListener("change", (event) => {
+    location.hash = event.target.value ? `#activity?day=${event.target.value}` : "#activity";
+  });
 
-  /* Fetching */
+  /* Billing */
 
-  async function get(path) {
-    const response = await fetch(`${API}${path}`, { cache: "no-store" });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || `${response.status} ${response.statusText}`);
-    return data;
+  const billing = {
+    ledger: [], q: "", device: "", more: false,
+    enter(params) {
+      const month = params.get("month");
+      if (!billing.chart) {
+        billing.chart = new Lines($("#bill-chart"), {
+          series: [{ cls: "s1" }], axis: axisMoney, daily: "Each day", everyLabel: true,
+          label: (i, long) => long ? longDay(billing.key(i)) : i % 7 === 0 ? String(i + 1) : "",
+          tip: (i, extra) => {
+            const b = state.bill, future = b.current && i > b.today;
+            if (future) return tipRows(longDay(billing.key(i)), [{ label: "To come", value: "" }]);
+            return tipRows(longDay(billing.key(i)), [
+              { label: "That day", value: cost(billing.daily[i]) },
+              { label: "Month so far", value: money(billing.running[i]) },
+              { label: "Requests", value: whole(billing.requests[i]) }], extra);
+          },
+          go: (i) => state.bill.current && i > state.bill.today ? null : `#activity?day=${billing.key(i)}`,
+        });
+      }
+      const wanted = month || null;
+      if (wanted !== state.billMonth || !state.bill) {
+        state.billMonth = wanted;
+        loadBill();
+      } else {
+        billing.render();
+        billing.load();
+        if (Date.now() - state.at.bill > 60000) loadBill();
+      }
+    },
+    key(i) { return `${state.bill.month}-${String(i + 1).padStart(2, "0")}`; },
+    render() {
+      const b = state.bill, days = b.buckets.length;
+      billing.days = days;
+      const daily = Array.from({ length: days }, (_, i) => Object.values(b.spend).reduce((sum, list) => sum + (list[i] || 0), 0));
+      const requests = Array.from({ length: days }, (_, i) => Object.values(b.requests).reduce((sum, list) => sum + (list[i] || 0), 0));
+      const last = b.current ? b.today : days - 1;
+      let total = 0;
+      const running = daily.map((v, i) => i <= last ? (total += v) : null);
+      Object.assign(billing, { daily, requests, running });
+      const spent = b.spent, budget = b.budget, name = MONTHS[+b.month.slice(5) - 1];
+
+      setText("month-name", monthName(b.month));
+      const at = b.months.indexOf(b.month);
+      $("#month-prev").disabled = at <= 0;
+      $("#month-next").disabled = b.current || at < 0 || at >= b.months.length - 1;
+      setText("subtitle", `Budget ${money(budget)} a month`);
+
+      setText("bill-spent-label", `Spent in ${name}`);
+      setText("bill-spent", money(spent));
+      setText("bill-budget", `of ${money(budget)}`);
+      meter("bill-meter", budget ? spent / budget : 0);
+      foot("bill-left", spent > budget ? `${money(spent - budget)} over` : `${money(budget - spent)} left`, spent > budget ? "bad" : "");
+      const elapsed = b.current ? Math.max(0.5, b.today + fractionOfDay()) : days;
+      const projected = b.current ? (spent / elapsed) * days : null;
+      $("#bill-key-track").hidden = !b.current;
+      if (b.current) {
+        setText("bill-track-label", "On track for");
+        setText("bill-track", money(projected));
+        const warnAt = 0.8 * budget;
+        if (spent >= warnAt) foot("bill-warning", spent >= budget ? "Over the budget" : "Past the 80% warning", "bad", null);
+        else if (projected >= warnAt) {
+          const day = Math.min(days - 1, Math.ceil((warnAt - spent) / (spent / elapsed) + b.today));
+          foot("bill-warning", `80% warning around ${dateShort(billing.key(day))}`, "", "up");
+        } else foot("bill-warning", "Under the 80% warning", "good", null);
+        setText("bill-chart-title", `${name} so far`);
+      } else {
+        const busiest = daily.indexOf(Math.max(...daily));
+        setText("bill-track-label", "Busiest day");
+        setText("bill-track", money(daily[busiest] || 0));
+        foot("bill-warning", daily[busiest] ? longDay(billing.key(busiest)) : "", "", null);
+        setText("bill-chart-title", name);
+      }
+      setText("bill-each", b.request_count ? cost(spent / b.request_count) : "—");
+      setText("bill-count", plural(b.request_count, "request"));
+      setText("bill-free", whole(b.quick));
+
+      billing.chart.update(days, {
+        values: [running], area: true, top: budget,
+        refs: [{ value: budget, label: `Budget ${money(budget)}` }, { value: 0.8 * budget, label: `80% warning · ${money(0.8 * budget)}`, warn: true }],
+        projection: b.current && last < days - 1 ? [last, running[last], days - 1, projected] : null,
+        end: b.current ? money(projected) : "",
+        daily: daily.map((v, i) => i <= last ? v : null),
+      });
+
+      billing.models();
+      // As many commands as the card beside it has room for, the rest a click away: no empty space under By model.
+      const room = Math.max(6, billing.modelRows + 2), commands = billing.allCommands ? b.commands : b.commands.slice(0, room);
+      const all = $("#bill-commands-all");
+      all.hidden = b.commands.length <= room;
+      all.textContent = billing.allCommands ? "Show fewer" : `Show all ${b.commands.length}`;
+      $("#bill-commands").replaceChildren(
+        h("thead", {}, h("tr", {}, h("th", { scope: "col", text: "Command" }), h("th", { scope: "col", class: "num", text: "Times" }),
+          h("th", { scope: "col", class: "num", text: "Each" }), h("th", { scope: "col", class: "num", text: "Cost" }))),
+        h("tbody", {}, ...(commands.length ? commands.map((c) => h("tr", {}, h("th", { scope: "row", text: c.name }),
+          h("td", { class: "num", text: whole(c.times) }), h("td", { class: "num", text: cost(c.times ? c.cost / c.times : 0) }),
+          h("td", { class: "num cost", text: cost(c.cost) }))) : [h("tr", {}, h("td", { colspan: "4", class: "empty", text: "Nothing this month." }))])));
+      $("#ledger-csv").href = `${API}/month.csv?month=${b.month}`;
+      $("#ledger-csv").setAttribute("download", `natro-${b.month}.csv`);
+    },
+    models() {
+      const b = state.bill, spent = b.spent || 1;
+      const families = {};
+      for (const m of b.models) {
+        const f = families[m.family] || (families[m.family] = { key: m.family, requests: 0, cost: 0 });
+        f.requests += m.requests;
+        f.cost += m.cost;
+      }
+      for (const source of ["voice", "jobs"]) {
+        const sum = (b.spend[source] || []).reduce((a, v) => a + v, 0);
+        if (sum) families[source] = { key: source, requests: null, cost: sum };
+      }
+      const rows = Object.values(families).sort((a, b) => b.cost - a.cost || (b.requests || 0) - (a.requests || 0));
+      billing.modelRows = rows.length;
+      $("#bill-models").replaceChildren(
+        h("thead", {}, h("tr", {}, h("th", { scope: "col", text: "Model" }), h("th", { scope: "col", class: "num", text: "Requests" }),
+          h("th", { scope: "col", class: "share", text: "Share" }), h("th", { scope: "col", class: "num", text: "Cost" }))),
+        h("tbody", {}, ...rows.map((row) => {
+          const series = SERIES_OF[row.key] || SERIES_OF.other, bar = h("span");
+          bar.style.width = `${Math.min(1, row.cost / spent) * 100}%`;
+          return h("tr", {}, h("th", { scope: "row" }, h("i", { class: `key k-${series.cls}` }), FAMILY_WORDS[row.key] || row.key),
+            h("td", { class: "num", text: row.requests == null ? "" : whole(row.requests) }),
+            h("td", { class: "share" }, h("span", { class: "sharebar" }, h("span", { class: "meter" }, bar), h("small", { text: percent(row.cost / spent) }))),
+            h("td", { class: "num cost", text: cost(row.cost) }));
+        })));
+      const t = b.token_totals || {};
+      const tokensIn = (t.input_tokens || 0) + (t.cache_creation_input_tokens || 0) + (t.cache_read_input_tokens || 0);
+      $("#bill-tokens").replaceChildren(
+        h("div", {}, h("dt", { text: "Tokens in" }), h("dd", { text: compact(tokensIn) })),
+        h("div", {}, h("dt", { text: "From the cache" }), h("dd", { text: percent(b.cache_share) })),
+        h("div", {}, h("dt", { text: "Tokens out" }), h("dd", { text: compact(t.output_tokens || 0) })));
+    },
+    params(extra) {
+      return query({ month: state.bill.month, kinds: "request", q: billing.q, device: billing.device, ...extra });
+    },
+    async load() {
+      const asked = billing.params();
+      const data = await fetched(`/logs?${asked}`);
+      if (!data || asked !== billing.params()) return;
+      billing.ledgerMonth = state.bill.month;
+      billing.ledger = data.entries;
+      billing.more = data.more;
+      billing.renderLedger();
+    },
+    async older() {
+      const last = billing.ledger[billing.ledger.length - 1];
+      if (!last) return;
+      const data = await fetched(`/logs?${billing.params({ before: last.id })}`);
+      if (!data) return;
+      billing.ledger.push(...data.entries);
+      billing.more = data.more;
+      billing.renderLedger();
+    },
+    renderLedger() {
+      const nodes = [];
+      let current = null;
+      for (const row of billing.ledger) {
+        const key = dayKey(row.time), e = row.entry;
+        if (key !== current) {
+          current = key;
+          const i = +key.slice(8, 10) - 1;
+          nodes.push(h("div", { class: "day-head" }, h("b", { text: longDay(key) }),
+            h("span", { text: `${plural(billing.requests?.[i] || 0, "request")} · ${cost(billing.daily?.[i] || 0)}` })));
+        }
+        const family = FAMILY(e.model), series = SERIES_OF[family] || SERIES_OF.other, tokens = e.tokens || {};
+        const tokensIn = (tokens.input_tokens || 0) + (tokens.cache_creation_input_tokens || 0) + (tokens.cache_read_input_tokens || 0);
+        nodes.push(h("a", { class: "line", href: `#activity?day=${key}&open=${row.id}` },
+          h("span", { class: "when", text: clock(row.time) }), icon(deviceIcon(e.device), "dev"),
+          h("span", { class: "clip", text: e.text || "(spoken)" }),
+          h("span", { class: "model" }, h("i", { class: `key k-${series.cls}` }), FAMILY_WORDS[family] || family),
+          h("span", { class: "clip", text: row.command || "" }),
+          h("span", { class: "num sub", text: tokensIn ? `${compact(tokensIn)} / ${compact(tokens.output_tokens || 0)}` : "–" }),
+          h("span", { class: "num cost", text: cost(requestCost(e)) })));
+      }
+      $("#ledger").replaceChildren(...(nodes.length ? nodes : [h("div", { class: "empty", text: billing.q ? "Nothing matches." : "No requests this month." })]));
+      $("#ledger-more").hidden = !billing.more;
+    },
+  };
+  const fractionOfDay = () => { const iso = state.live?.now; return iso ? (+iso.slice(11, 13) + +iso.slice(14, 16) / 60) / 24 : 0.5; };
+  $("#month-prev").addEventListener("click", () => step(-1));
+  $("#month-next").addEventListener("click", () => step(1));
+  function step(by) {
+    const b = state.bill, at = b.months.indexOf(b.month), next = b.months[at + by];
+    if (next) location.hash = `#billing?month=${next}`;
+  }
+  let ledgerTyping;
+  $("#ledger-q").addEventListener("input", (event) => {
+    clearTimeout(ledgerTyping);
+    ledgerTyping = setTimeout(() => { billing.q = event.target.value.trim(); billing.load(); }, 280);
+  });
+  $("#ledger-device").addEventListener("change", (event) => { billing.device = event.target.value; billing.load(); });
+  $("#ledger-more").addEventListener("click", () => billing.older());
+  $("#bill-commands-all").addEventListener("click", () => {
+    billing.allCommands = !billing.allCommands;
+    billing.render();
+  });
+
+  /* Speed */
+
+  const PART_WORDS = {
+    recognize: "Recognising speech", georgian: "Trying again in Georgian", translate_first: "Translating, first word",
+    translate: "Translating", wait: "Waiting its turn", first_token: "Model, first word", writing: "Model, writing",
+    tools: "Tools", speaking: "Device starts speaking", other: "Other", waited: "In all",
+  };
+  const GROUP_WORDS = { spoken: "Spoken", typed: "Typed", quick: "No model" };
+  const speed = {
+    enter() {
+      if (!speed.chart) {
+        speed.chart = new Lines($("#speed-chart"), {
+          series: [{ cls: "s1" }, { cls: "s2" }], axis: (v) => v === 0 ? "0" : `${+v.toFixed(1)} s`,
+          label: (i, long) => bucketLabel(i, long),
+          tip: (i, extra) => {
+            const stats = state.stats, requests = Object.values(stats.requests).reduce((sum, list) => sum + (list[i] || 0), 0);
+            return tipRows(bucketLabel(i, true), [
+              { cls: "s1", label: "Typical", value: secs(stats.seconds.median[i]) },
+              { cls: "s2", label: "Slowest 5%", value: secs(stats.seconds.p95[i]) },
+              { label: "Requests", value: whole(requests) }], extra);
+          },
+          go: (i) => `#activity?day=${dayKey(state.stats.buckets[i])}`,
+        });
+        $("#speed-legend").replaceChildren(...STAGE_GROUPS.map((g) => h("span", {}, h("i", { class: `key k-${g.cls}` }), g.label)));
+      }
+      if (state.stats) speed.render();
+      if (Date.now() - state.at.stats > 20000) loadStats();
+    },
+    render() {
+      const stats = state.stats, timing = stats.timing, groups = Object.fromEntries(timing.groups.map((g) => [g.key, g]));
+      const faster = change(stats.seconds.all_median, stats.before.median_seconds, { word: ["slower", "faster"], upIsGood: false });
+      const tiles = [
+        ["Typical reply", secs(stats.seconds.all_median), faster?.text || "", faster?.tone, faster?.arrow],
+        ["Slowest 5%", secs(stats.seconds.all_p95), "One in twenty takes longer", "", null],
+        ["Spoken", secs(groups.spoken?.median), groups.spoken ? `Typical, of ${plural(groups.spoken.count, "request")}` : "None in this range", "", null],
+        ["Typed", secs(groups.typed?.median), groups.typed ? `Typical, of ${plural(groups.typed.count, "request")}` : "None in this range", "", null],
+      ];
+      $("#speed-tiles").replaceChildren(...tiles.map(([name, value, note, tone, arrow]) => h("article", { class: "card tile" },
+        h("h2", { text: name }), h("div", { class: "figure" }, h("b", { text: value })),
+        h("p", { class: `foot${tone ? ` ${tone}` : ""}` }, ...(arrow ? [icon(arrow)] : []), note))));
+
+      speed.chart.update(stats.buckets.length, { values: [stats.seconds.median, stats.seconds.p95] });
+
+      const first = timing.first_token;
+      $("#speed-pairs").replaceChildren(...[
+        ["Model's first word", secs(first.warm), first.warm_count ? `${plural(first.warm_count, "call")} with a warm cache` : ""],
+        ["After a cold start", secs(first.cold), first.cold_count ? plural(first.cold_count, "call") : "None"],
+        ["Speech tried again in Georgian", percent(timing.georgian_share), ""],
+        ["PC starts speaking", secs(timing.speaking.pc), ""],
+        ["Phone starts speaking", secs(timing.speaking.phone), ""],
+      ].map(([name, value, note]) => h("div", {}, h("dt", { text: name }), h("dd", {}, value, note ? h("small", { text: note }) : null))));
+
+      const longest = Math.max(1e-6, ...timing.groups.map((g) => Object.values(g.stages).reduce((a, b) => a + b, 0)));
+      $("#speed-groups").replaceChildren(...(timing.groups.length ? timing.groups.map((g) => {
+        const parts = grouped(g.stages), sum = parts.reduce((a, p) => a + p.value, 0);
+        const bar = track(parts, sum);
+        bar.style.width = `${(sum / longest) * 100}%`;
+        return h("div", { class: "hbar" }, h("b", { text: GROUP_WORDS[g.key] || g.key }),
+          h("div", {}, bar, h("div", { class: "times" }, ...parts.filter((p) => p.value > 0).map((p) =>
+            h("span", { title: p.label }, h("i", { class: `key k-${p.cls}` }), h("span", { class: "sr-only", text: `${p.label} ` }), secs(p.value))))),
+          h("span", { text: secs(sum) }));
+      }) : [h("div", { class: "empty", text: "No timed requests in this range yet." })]));
+
+      const parts = timing.parts.filter((p) => p.count);
+      $("#speed-parts").replaceChildren(
+        h("thead", {}, h("tr", {}, h("th", { scope: "col", text: "Part" }), h("th", { scope: "col", class: "num", text: "Requests" }),
+          h("th", { scope: "col", class: "num", text: "Typical" }), h("th", { scope: "col", class: "num", text: "Slowest 5%" }))),
+        h("tbody", {}, ...parts.map((p) => h("tr", {}, h("th", { scope: "row", text: PART_WORDS[p.key] || p.key }),
+          h("td", { class: "num", text: whole(p.count) }), h("td", { class: "num", text: secs(p.median) }), h("td", { class: "num", text: secs(p.p95) })))));
+
+      $("#speed-slowest").replaceChildren(...(timing.slowest.length ? timing.slowest.slice(0, 6).map((r) => {
+        const parts = grouped(r.stages), bar = h("span", { class: "bar-mini" }, ...parts.filter((p) => p.value > 0).map((p) => {
+          const node = h("i", { class: p.cls });
+          node.style.flex = `${p.value} 1 0`;
+          return node;
+        }));
+        const most = parts.reduce((a, p) => p.value > a.value ? p : a, parts[0]);
+        return h("li", {}, h("a", { class: "slow", href: `#activity?day=${dayKey(r.time)}` },
+          h("span", { class: "what" }, h("b", { text: r.text || "(spoken)" }), h("span", { text: `${whenWords(r.time)} · ${DEVICE_WORDS[r.device] || r.device} · mostly ${most.label.toLowerCase()}` })),
+          h("b", { text: secs(r.waited) }), bar));
+      }) : [h("li", { class: "empty", text: "No timed requests in this range yet." })]));
+    },
+  };
+
+  /* System */
+
+  const system = {
+    enter() { if (state.live) system.render(); },
+    render() {
+      const live = state.live, service = live.service, host = live.host || {}, process = service.process || {};
+      const chip = $("#sys-state");
+      chip.className = state.reachable === false ? "chip bad" : "chip good";
+      chip.replaceChildren(icon(state.reachable === false ? "cross" : "check"), state.reachable === false ? "Unreachable" : "Running");
+      $("#sys-service").replaceChildren(...[
+        ["Up for", duration(since(service.started))],
+        ["Started", whenWords(service.started)],
+        ["Version", service.version ? `${service.version.commit} · ${dateShort(dayKey(service.version.date))}` : "—"],
+        ["Memory", process.memory ? `${bytes(process.memory)}${process.memory_max ? ` of ${bytes(process.memory_max)}` : ""}` : "—"],
+        ["Natro's CPU", process.cpu != null ? percent(process.cpu, 1) : "—"],
+        ["Voice", service.voice ? "On" : "Off"],
+        ["Model", service.model || "—"],
+      ].map(([name, value]) => h("div", {}, h("dt", { text: name }), h("dd", { text: value }))));
+
+      setText("sys-host-name", [host.name, host.cores ? `${host.cores} cores` : null].filter(Boolean).join(" · "));
+      const memoryUsed = host.memory ? host.memory.total - (host.memory.available ?? 0) : null;
+      $("#sys-meters").replaceChildren(
+        bigMeter("CPU", host.cpu != null ? percent(host.cpu) : "—", host.cpu),
+        bigMeter("Memory", host.memory ? `${bytes(memoryUsed)} of ${bytes(host.memory.total)}` : "—", host.memory ? memoryUsed / host.memory.total : null),
+        bigMeter("Disk", host.disk ? `${bytes(host.disk.used)} of ${bytes(host.disk.total)}` : "—", host.disk ? host.disk.used / host.disk.total : null));
+      $("#sys-host").replaceChildren(...[
+        ["System", host.system || "—"],
+        ["Load", host.load ? host.load.map((v) => v.toFixed(2)).join(" · ") : "—"],
+        ["Up", host.uptime ? duration(host.uptime) : "—"],
+      ].map(([name, value]) => h("div", {}, h("dt", { text: name }), h("dd", { text: value }))));
+
+      $("#sys-devices").replaceChildren(...live.devices.map((d) => h("div", { class: "device" },
+        h("span", { class: "ic" }, icon(deviceIcon(d.name))),
+        h("div", { class: "clip" },
+          h("h3", {}, DEVICE_WORDS[d.name] || capital(d.label), h("span", { class: d.online ? "chip good" : "chip" }, h("span", { class: d.online ? "dot" : "dot off" }), d.online ? "Online" : "Offline")),
+          h("div", { class: "facts" },
+            h("div", {}, h("small", { text: d.online ? "Connected" : "Last seen" }), h("b", { text: d.online ? whenWords(d.since) : whenWords(d.seen) })),
+            h("div", {}, h("small", { text: "Tools" }), h("b", { text: d.tools != null ? whole(d.tools) : "—" })),
+            h("div", {}, h("small", { text: "Last request" }), h("b", { text: d.used ? whenWords(d.used) : "—" }))),
+          d.abilities?.length ? h("div", { class: "abilities" }, ...d.abilities.map((a) => tag(a.replace("_", " ")))) : null))));
+
+      listInto("sys-reminders", "sys-reminders-count", live.reminders, (r) => item("bell", r.text,
+        [r.next ? whenWords(r.next) : "Not scheduled", r.repeat].filter(Boolean).join(" · "), r.on ? tag(DEVICE_WORDS[r.on] || r.on) : tag("All devices")), "No reminders");
+      listInto("sys-routines", "sys-routines-count", live.routines, (r) => item("routine", r.name || r.task,
+        `${capital(r.repeat)}${r.next ? ` · next ${lowerWhen(r.next)}` : ""}`, r.last?.at ? tag(`Ran ${dayWords(dayKey(r.last.at)).toLowerCase()}`) : null), "No routines");
+      listInto("sys-jobs", "sys-jobs-count", live.jobs, (j) => item("job", j.title,
+        j.state === "running" ? `${j.step || "Working"} · ${j.minutes} min` : `${whenWords(j.finished || j.started)} · ${j.minutes} min`,
+        h("span", { class: j.state === "running" ? "chip good" : "chip", text: capital(j.state) })), "No background jobs");
+      listInto("sys-watchers", "sys-watchers-count", live.watchers, (w) => item("eye", capital(w.text), w.once ? "Once" : "Every time",
+        w.urgent ? tag("Urgent", "no") : tag("Watching", "yes")), "No watchers");
+      const backups = live.backups;
+      $("#sys-backups").replaceChildren(
+        h("div", {}, h("dt", { text: "Last backup" }), h("dd", {}, backups ? whenWords(backups.last) : "None", backups ? h("small", { text: bytes(backups.size) }) : null)),
+        h("div", {}, h("dt", { text: "Backups kept" }), h("dd", { text: backups ? whole(backups.count) : "0" })),
+        h("div", {}, h("dt", { text: "Waiting for a device" }), h("dd", {}, whole(live.pending), h("small", { text: "Asked while it was offline" }))));
+    },
+  };
+  function bigMeter(name, value, share) {
+    const bar = h("span", { class: share >= 0.9 ? "over" : share >= 0.75 ? "near" : "" });
+    bar.style.width = `${Math.min(1, share || 0) * 100}%`;
+    return h("div", {}, h("span", {}, name, h("b", { text: value })), h("div", { class: "meter" }, bar));
   }
 
-  async function refreshLive() {
-    state.lastLive = Date.now();
+  /* Loading */
+
+  async function loadLive() {
+    state.at.live = Date.now();
     try {
       state.live = await get("/live");
       state.reachable = true;
     } catch {
       state.reachable = false;
     }
-    renderStatus();
+    renderState();
     if (!state.live) return;
-    if (state.view === "overview") {
-      renderHero(state.live);
-      renderNow(state.live);
-    }
-    if (state.view === "system") renderSystem();
+    if (state.view === "home") home.renderLive();
+    if (state.view === "system") system.render();
+    if (state.view === "home") setText("subtitle", longDay(today()));
   }
-
-  async function refreshStats(animate) {
-    state.lastStats = Date.now();
-    document.querySelectorAll(".chart, .kpis, .hero").forEach((node) => node.classList.add("stale"));
-    try {
-      state.stats = await get(`/stats?range=${state.range}`);
-      state.animate = animate;
-      if (state.view === "overview") renderOverview();
-      if (state.view === "usage") renderUsage();
-      state.animate = false;
-      stamp();
-    } catch { /* kept as it was, dimmed until it loads */
-    } finally {
-      document.querySelectorAll(".stale").forEach((node) => { if (node.id !== "log-list") node.classList.remove("stale"); });
-    }
+  async function loadStats() {
+    state.at.stats = Date.now();
+    const range = state.range;
+    const stats = await fetched(`/stats?range=${range}`);
+    if (!stats || range !== state.range) return;
+    state.stats = stats;
+    if (state.view === "home") home.renderStats();
+    if (state.view === "speed") speed.render();
   }
-
-  function stamp() {
-    state.updated = new Date();
-    if (state.view !== "system") $("#updated").textContent = `Updated ${hhmmss(state.updated)}`;
-  }
-
-  function renderStatus() {
-    const node = $("#status"), text = $(".status-text", node);
-    node.classList.toggle("online", state.reachable === true);
-    node.classList.toggle("down", state.reachable === false);
-    if (state.reachable && state.live) {
-      text.textContent = `Online · up ${duration((Date.now() - new Date(state.live.service.started)) / 1000)}`;
-    } else if (state.reachable === false) {
-      text.textContent = "Can't reach Natro";
+  async function loadYear() {
+    state.at.year = Date.now();
+    const year = await fetched("/year");
+    if (!year) return;
+    state.year = year;
+    if (state.view === "activity") {
+      activity.heat.update(year, activity.day);
+      renderYearTitle();
+      activity.render();
     }
   }
-
-  /* Views, tabs and the range */
-
-  function placePill(container, active, pill) {
-    if (!active) return;
-    const first = !pill.style.width;  // where it starts: no slide in from the left
-    if (first) pill.classList.add("instant");
-    pill.style.width = `${active.offsetWidth}px`;
-    pill.style.transform = `translateX(${active.offsetLeft}px)`;
-    if (first) requestAnimationFrame(() => requestAnimationFrame(() => pill.classList.remove("instant")));
+  function renderYearTitle() {
+    const counts = state.year.counts, total = counts.reduce((a, b) => a + b, 0);
+    let longest = 0, run = 0;
+    for (const c of counts) { run = c ? run + 1 : 0; longest = Math.max(longest, run); }
+    let current = 0;
+    for (let i = counts.length - 1; i >= 0 && counts[i]; i--) current++;
+    if (!counts[counts.length - 1]) for (let i = counts.length - 2; i >= 0 && counts[i]; i--) current++;  // today's may be yet to come
+    const busiest = counts.indexOf(Math.max(...counts));
+    setText("year-title", `${plural(total, "request")} in the last year`);
+    setText("year-stats", total ? `Busiest day ${dateShort(shiftKey(state.year.start, busiest))} (${whole(counts[busiest])}) · Longest streak ${plural(longest, "day")} · Current streak ${plural(current, "day")}` : "");
+  }
+  async function loadBill() {
+    state.at.bill = Date.now();
+    const month = state.billMonth;
+    const bill = await fetched(`/month?${query({ month })}`);
+    if (!bill || month !== state.billMonth) return;
+    state.bill = bill;
+    if (state.view === "billing") {
+      billing.render();
+      if (billing.ledgerMonth !== bill.month) billing.load();  // a refresh leaves the pages already loaded alone
+    }
   }
 
-  function show(view) {
-    if (!VIEWS.includes(view)) view = "overview";
+  function renderState() {
+    const node = $("#state"), pill = $("#online-pill"), live = state.live, down = state.reachable === false;
+    $(".dot", node).className = down ? "dot down" : live ? "dot pulse" : "dot";
+    $(".state-text", node).textContent = down ? "Can't reach Natro" : live ? "Natro is online" : "Connecting…";
+    $(".state-sub", node).textContent = !down && live
+      ? `Up ${duration(since(live.service.started))}${live.service.version ? ` · ${live.service.version.commit}` : ""}` : "";
+    pill.className = down ? "pill-online down" : "pill-online";
+    pill.replaceChildren(h("span", { class: "dot" }), down ? "Offline" : "Online");
+  }
+
+  /* Views, the range, the clock */
+
+  const TITLES = {
+    home: ["Home", () => state.live ? longDay(today()) : ""],
+    activity: ["Activity", () => "Every request and event, newest first"],
+    billing: ["Billing", () => state.bill ? `Budget ${money(state.bill.budget)} a month` : ""],
+    speed: ["Speed", () => "From your words to Natro's answer"],
+    system: ["System", () => "Live, every 5 seconds"],
+  };
+  const PAGES = { home, activity, billing, speed, system };
+
+  function route() {
+    const [name, search] = location.hash.slice(1).split("?");
+    const view = VIEWS.includes(name) ? name : "home";
+    const changed = view !== state.view;
     state.view = view;
-    for (const name of VIEWS) $(`#view-${name}`).hidden = name !== view;
-    document.querySelectorAll(".tabs a").forEach((tab) => tab.setAttribute("aria-selected", String(tab.dataset.view === view)));
-    placePill($(".tabs"), $(`.tabs a[data-view="${view}"]`), $(".tab-pill"));
-    $("#range").hidden = view === "system";
-    $("#updated").textContent = view === "system" ? "Live: every 5 seconds"
-      : state.updated ? `Updated ${hhmmss(state.updated)}` : "";
-    hideTip();
-    state.animate = true;
-    if (view === "overview") renderOverview();
-    if (view === "usage") renderUsage();
-    if (view === "system") renderSystem();
-    state.animate = false;
-    if (view === "logs") loadLogs();
-    if ((view === "overview" || view === "usage") && Date.now() - state.lastStats > 20000) refreshStats(true);
-    if (Date.now() - state.lastLive > 3000) refreshLive();
+    state.params = new URLSearchParams(search || "");
+    for (const page of VIEWS) $(`#view-${page}`).hidden = page !== view;
+    $$(".nav a, .tabs a").forEach((link) => {
+      if (link.dataset.view === view) link.setAttribute("aria-current", "page");
+      else link.removeAttribute("aria-current");
+    });
+    setText("title", TITLES[view][0]);
+    setText("subtitle", TITLES[view][1]());
+    document.title = `${TITLES[view][0]} · Natro Dashboard`;
+    $("#range").hidden = !["home", "speed"].includes(view);
+    $("#month-nav").hidden = view !== "billing";
+    hideTip(true);
+    if (changed) scrollTo(0, 0);
+    PAGES[view].enter(state.params);
+    if (Date.now() - state.at.live > 3000) loadLive();
   }
 
   function setRange(range) {
     state.range = range;
-    remember("range", range);
-    document.querySelectorAll("#range button").forEach((button) => button.setAttribute("aria-checked", String(button.dataset.range === range)));
-    placePill($("#range"), $(`#range button[data-range="${range}"]`), $(".seg-pill"));
+    save("range", range);
+    $$("#range button").forEach((button) => button.setAttribute("aria-checked", String(button.dataset.range === range)));
   }
-
   $("#range").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-range]");
     if (!button || button.dataset.range === state.range) return;
     setRange(button.dataset.range);
-    refreshStats(true);
-    if (state.view === "logs") loadLogs();
+    loadStats();
   });
   $("#range").addEventListener("keydown", (event) => {
     if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
-    const buttons = [...document.querySelectorAll("#range button")];
-    const now = buttons.findIndex((button) => button.dataset.range === state.range);
-    const next = buttons[(now + (event.key === "ArrowLeft" ? -1 : 1) + buttons.length) % buttons.length];
+    const buttons = $$("#range button"), at = buttons.findIndex((b) => b.dataset.range === state.range);
+    const next = buttons[(at + (event.key === "ArrowLeft" ? -1 : 1) + buttons.length) % buttons.length];
     next.focus();
     next.click();
   });
 
-  addEventListener("hashchange", () => show(location.hash.slice(1)));
-  addEventListener("resize", () => {
-    placePill($(".tabs"), $(`.tabs a[data-view="${state.view}"]`), $(".tab-pill"));
-    placePill($("#range"), $(`#range button[data-range="${state.range}"]`), $(".seg-pill"));
-  });
+  addEventListener("hashchange", route);
+  phone.addEventListener("change", route);  // fewer labels on a phone's charts, more on a wider screen
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") {
-      refreshLive();
-      if (state.view === "overview" || state.view === "usage") refreshStats(false);
-      if (state.view === "logs" && LOG.live) tailLogs();
-    }
+    if (document.visibilityState === "visible") tick(true);
   });
-  addEventListener("scroll", hideTip, { passive: true });
 
-  // One clock for every refresh: live state every 5 s (15 s off the pages that show it), charts every minute,
-  // the log's tail every 3 s. Nothing while the page is hidden.
-  setInterval(() => {
+  // One clock for every refresh, and nothing while the page is hidden: live state every 5 s where it's shown (15 s
+  // elsewhere, for the menu's status), charts every minute, the log's tail every 3 s, the year every 5 minutes.
+  function tick(now) {
     if (document.visibilityState !== "visible") return;
-    const now = Date.now(), liveEvery = state.view === "system" || state.view === "overview" ? 5000 : 15000;
-    if (now - state.lastLive >= liveEvery) refreshLive();
-    if ((state.view === "overview" || state.view === "usage") && now - state.lastStats >= 60000) refreshStats(false);
-    if (state.view === "logs" && LOG.live && now - LOG.lastTail >= 3000) tailLogs();
-    renderStatus();
-  }, 1000);
+    const t = Date.now(), view = state.view, live = view === "home" || view === "system" ? 5000 : 15000;
+    if (now || t - state.at.live >= live) loadLive();
+    if ((view === "home" || view === "speed") && (now || t - state.at.stats >= 60000)) loadStats();
+    if (view === "home") home.latest(now);
+    if (view === "activity") {
+      if (now || t - state.at.tail >= 3000) activity.tail();
+      if (t - state.at.year >= 300000) loadYear();
+    }
+    if (view === "billing" && state.bill?.current && (now || t - state.at.bill >= 60000)) loadBill();
+  }
+  setInterval(tick, 1000);
 
-  buildKpis();
-  setRange(["24h", "7d", "30d", "month"].includes(state.range) ? state.range : "7d");
-  show(location.hash.slice(1) || "overview");
-  if (state.view !== "overview" && state.view !== "usage") refreshStats(false);
+  setRange(["24h", "7d", "30d", "month"].includes(saved("range", "7d")) ? saved("range", "7d") : "7d");
+  route();
+  loadYear();
 })();

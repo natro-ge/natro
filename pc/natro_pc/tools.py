@@ -42,10 +42,11 @@ class PCTool:
     personal: bool = False
     confirm: bool = False
     final: bool = False  # its result is a fine spoken reply on its own ("Opened Spotify.")
+    hidden: bool = False  # not offered to the model: only the brain calls it (send_message, after his yes)
 
     def spec(self):
         return {"name": self.name, "description": self.description, "personal": self.personal,
-                "confirm": self.confirm, "final": self.final,
+                "confirm": self.confirm, "final": self.final, "hidden": self.hidden,
                 "input_schema": {"type": "object", "properties": self.properties, "required": self.required}}
 
 

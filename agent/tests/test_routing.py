@@ -32,7 +32,7 @@ def test_a_plain_request_is_answered_by_haiku_with_everything(tmp_path):
     assert reply.text == "Paris." and reply.model == HAIKU
     # The same instructions and tools whichever model answers: the memory, personal and risky tools too.
     request = claude.requests[0]
-    assert SECRET in request["system"][0]["text"]
+    assert SECRET in request["system"][-1]["text"]
     assert {"remember", "web_search", "pc_force_close_app"} <= {tool["name"] for tool in request["tools"]}
 
 
@@ -78,7 +78,8 @@ def test_over_budget_every_request_asks_first(tmp_path):
     ("open Chrome", False), ("play On Repeat on Spotify", False), ("weather in Tbilisi tomorrow", False),
     ("what's 15% of 80?", False), ("remember that I like jazz", True), ("what's in my calendar today?", True),
     ("read my latest email", True), ("add eggs to the shopping note", True), ("delete that file", True),
-    ("call Nino", True), ("what do you know about me?", True),
+    ("call Nino", True), ("what do you know about me?", True), ("DM Nino that I'm outside", True),
+    ("tell Nino on insta I'm late", True), ("Instagram Andria: see you at 8", True),
 ])
 def test_personal_or_risky(request_text, personal):
     assert personal_or_risky(request_text) is personal

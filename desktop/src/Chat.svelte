@@ -47,8 +47,8 @@
   }
   // A request he made on the phone while the PC was off, to run or skip.
   type Queued = { id: string; text: string; from: string; time: number }
-  // A message from the phone that what's typed answers (the reply box's Reply).
-  type Replying = { id: string; to: string }
+  // A message from the phone that what's typed answers (the reply box's "answer in the chat"), quoted over the box.
+  type Replying = { id: string; from: string; app: string; text: string }
   type Shown = {
     exchanges: Exchange[]
     listening: boolean
@@ -108,6 +108,8 @@
   let draft = $state('')
   let notice = $state('')
   let replying = $state<Replying | null>(null)
+  // How tall the quoted message is: a notice goes above it.
+  let quoteHeight = $state(0)
   // The microphone's loudness, 0 to 1, smoothed for the eye.
   let level = $state(0)
   let stage: HTMLElement | undefined = $state()
@@ -120,6 +122,11 @@
       .flatMap((e) => e.questions)
       .find((q) => !q.answer),
   )
+  // What he typed to her before, oldest first (chat.rs keeps it), and where Up and Down are in it:
+  // at typed.length, the box holds what he was writing (unsent).
+  let typed: string[] = []
+  let recalled = 0
+  let unsent = ''
   // Following the newest bubble, unless the owner scrolled up.
   let following = true
   let heard = 0
@@ -173,7 +180,29 @@
     draft = ''
     following = true
     if (!(await invoke<boolean>('chat_send', { text }))) draft = text // offline: keep it
+    await loadTyped()
     focusField()
+  }
+
+  async function loadTyped() {
+    typed = await invoke<string[]>('chat_history')
+    recalled = typed.length
+    unsent = ''
+  }
+
+  /** Up and Down, as in a terminal: what he typed before, while the caret is on the box's first
+   *  line (going down, its last). False when the caret just moves in the text instead. */
+  function recall(step: -1 | 1) {
+    if (!field || field.selectionStart !== field.selectionEnd) return false
+    const caret = field.selectionStart
+    const edge = step < 0 ? !draft.slice(0, caret).includes('\n') : !draft.slice(caret).includes('\n')
+    const next = recalled + step
+    if (!edge || next < 0 || next > typed.length) return false
+    if (recalled === typed.length) unsent = draft
+    recalled = next
+    draft = next === typed.length ? unsent : typed[next]
+    tick().then(() => field?.setSelectionRange(draft.length, draft.length))
+    return true
   }
 
   function stopReplying() {
@@ -307,6 +336,9 @@
       event.preventDefault()
       send()
     }
+    const alone = !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey && !event.isComposing
+    const arrow = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0
+    if (alone && arrow && recall(arrow)) event.preventDefault()
   }
 
   /** Links in her replies open in the browser (the window never navigates). */
@@ -404,6 +436,7 @@
       }),
       listen<number>('level', ({ payload }) => (heard = loudness(payload))),
     ]
+    loadTyped()
     // The chat may have opened while this page was still loading.
     Promise.all(unlisten).then(async () => {
       const showing = await invoke<ChatEvent | null>('chat_state')
@@ -542,15 +575,24 @@
 
   <div class="bottom">
     {#if replying}
-      <div class="replying" data-hit transition:fade={{ duration: 140 }}>
-        <span>Replying to <strong>{replying.to}</strong>, from your phone</span>
-        <button aria-label="Don't reply" title="Don't reply (Esc)" onclick={stopReplying}>
+      <div class="replying" data-hit bind:clientHeight={quoteHeight} transition:fade={{ duration: 140 }}>
+        <div class="quoted">
+          <span class="whom">Answering <strong>{replying.from}</strong> · {replying.app}, from your phone</span>
+          {#if replying.text}<span class="words">{replying.text}</span>{/if}
+        </div>
+        <button aria-label="Don't answer" title="Don't answer (Esc)" onclick={stopReplying}>
           <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 2.5l5 5M7.5 2.5l-5 5" /></svg>
         </button>
       </div>
     {/if}
     {#if notice}
-      <div class="notice" class:raised={replying} transition:fade={{ duration: 180 }}>{notice}</div>
+      <div
+        class="notice"
+        style:bottom={replying ? `calc(100% + ${quoteHeight + 12}px)` : null}
+        transition:fade={{ duration: 180 }}
+      >
+        {notice}
+      </div>
     {/if}
     {#if menu}
       <!-- svelte-ignore a11y_interactive_supports_focus -->
@@ -595,7 +637,7 @@
             bind:this={field}
             bind:value={draft}
             rows="1"
-            placeholder={replying ? `Your answer to ${replying.to}` : waiting ? 'Answer Natro: yes or no' : 'Ask Natro…'}
+            placeholder={replying ? `Your answer to ${replying.from}` : waiting ? 'Answer Natro: yes or no' : 'Ask Natro…'}
             aria-label="Message to Natro"
             onkeydown={fieldKeydown}
             onpaste={pasted}
@@ -1285,24 +1327,62 @@
     animation-delay: calc(50ms + var(--at) * 35ms);
   }
 
-  /* Answering a message from the phone: a pill over the box, as the notice is (which goes above it then). */
+  /* Answering a message from the phone: it's quoted over the box (who, the app, its words), with a green edge
+     as his own bubbles; a notice goes above it. */
   .replying {
     position: absolute;
     bottom: calc(100% + 6px);
-    left: 50%;
-    translate: -50% 0;
+    left: 14px;
+    right: 14px;
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 6px;
-    padding: 3px 4px 3px 14px;
+    box-sizing: border-box;
+    padding: 8px 6px 9px 14px;
     border: 1px solid var(--border);
-    border-radius: 15px;
+    border-radius: 16px;
     background: var(--glass-dense);
     box-shadow: var(--shadow);
     font-size: 13px;
+    overflow: hidden;
+  }
+  .replying::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 4px;
+    background: var(--green);
+  }
+  .quoted {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .whom {
+    overflow: hidden;
+    color: var(--text-dim);
+    font-size: 12px;
     white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .whom strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+  /* Its words: two lines at most. */
+  .quoted .words {
+    flex: none;
+    max-height: 2.8em;
+    overflow: hidden;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
   }
   .replying button {
+    flex: none;
     display: grid;
     place-items: center;
     width: 22px;
@@ -1339,9 +1419,6 @@
     font-size: 13px;
     font-weight: 500;
     white-space: nowrap;
-  }
-  .notice.raised {
-    bottom: calc(100% + 44px);
   }
 
   @keyframes pop {

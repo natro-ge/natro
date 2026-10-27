@@ -6,9 +6,11 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import java.io.ByteArrayOutputStream
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Records 16 kHz mono 16-bit PCM, the format Natro's voice pipeline takes: while the mic button is
@@ -97,7 +99,9 @@ class Recorder {
 /** Speaks Natro's replies with the phone's own text-to-speech (free, offline). */
 class Speaker(context: Context) : TextToSpeech.OnInitListener {
     private val tts = TextToSpeech(context, this)
-    private val waiting = mutableListOf<String>()
+    private val waiting = mutableListOf<Pair<String, (() -> Unit)?>>()
+    /** What to call when an utterance starts playing, by its id. */
+    private val starting = ConcurrentHashMap<String, () -> Unit>()
     @Volatile private var ready = false
 
     /** Whether it's speaking (the wake word doesn't listen meanwhile, or Natro could wake herself). */
@@ -106,14 +110,36 @@ class Speaker(context: Context) : TextToSpeech.OnInitListener {
     override fun onInit(status: Int) {
         if (status != TextToSpeech.SUCCESS) return
         tts.language = Locale.US
+        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String) {
+                starting.remove(utteranceId)?.invoke()
+            }
+
+            override fun onDone(utteranceId: String) {
+                starting.remove(utteranceId)
+            }
+
+            override fun onStop(utteranceId: String, interrupted: Boolean) {
+                starting.remove(utteranceId)
+            }
+
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String) {
+                starting.remove(utteranceId)
+            }
+        })
         ready = true
-        synchronized(waiting) { waiting.forEach(::say); waiting.clear() }
+        synchronized(waiting) { waiting.forEach { (text, onStart) -> say(text, onStart) }; waiting.clear() }
     }
 
-    fun say(text: String) {
+    /** onStart is called once it starts playing (on the speech engine's thread), not at all if it doesn't. */
+    fun say(text: String, onStart: (() -> Unit)? = null) {
         if (text.isBlank()) return
-        if (!ready) synchronized(waiting) { waiting += text } else
-            tts.speak(text, TextToSpeech.QUEUE_ADD, null, UUID.randomUUID().toString())
+        if (!ready) synchronized(waiting) { waiting += text to onStart } else {
+            val id = UUID.randomUUID().toString()
+            onStart?.let { starting[id] = it }
+            tts.speak(text, TextToSpeech.QUEUE_ADD, null, id)
+        }
     }
 
     fun stop() {

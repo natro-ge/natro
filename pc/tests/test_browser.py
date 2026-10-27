@@ -123,8 +123,105 @@ def test_tabs():
 
 def test_offered_only_with_the_extensions_token(monkeypatch):
     monkeypatch.delenv(browser.TOKEN, raising=False)
-    assert tools() == []
-    offered = {tool.name: tool for tool in tools(Browser(FakePlaywright()))}
+    # Without it only the brain's send_message is there: Natro's own Edge needs no extension.
+    assert [tool.name for tool in tools(sender=Browser(FakePlaywright()))] == ["send_message"]
+    offered = {tool.name: tool for tool in tools(Browser(FakePlaywright()), Browser(FakePlaywright()))
+               if not tool.hidden}
     assert set(offered) == {"browser_open", "browser_page", "browser_act", "browser_act_risky", "browser_tabs"}
     assert all(tool.personal for tool in offered.values())
     assert [name for name, tool in offered.items() if tool.confirm] == ["browser_act_risky"]
+
+
+CHAT = """### Page
+- Page URL: {url}
+### Snapshot
+```yaml
+- main [ref=e1]:
+  - link "{who}" [ref=e2] [cursor=pointer]:
+    - /url: /nino.k/
+  - text: nino.k
+{messages}
+  - textbox "Message..." [ref=e9]{typed}
+{send}```"""
+
+
+class FakeChat:
+    """A chat in Instagram's web page: what's typed in its box goes on Send or Enter, and shows in the chat."""
+
+    def __init__(self, who="Nino Kapanadze"):
+        self.who, self.typed, self.sent, self.calls = who, "", [], []
+
+    def call(self, name, args):
+        self.calls.append((name, args))
+        if name == "browser_type":
+            self.typed = args["text"]
+        if name in ("browser_click", "browser_press_key") and self.typed:
+            self.sent.append(self.typed)
+            self.typed = ""
+        url = next((a["url"] for n, a in reversed(self.calls) if n == "browser_navigate"), "")
+        return CHAT.format(url=url, who=self.who, typed=f": {self.typed}" if self.typed else "",
+                           messages="\n".join(f"  - generic [ref=m{i}]: {text}" for i, text in enumerate(self.sent)),
+                           send='  - button "Send" [ref=e10]\n' if self.typed else "")
+
+
+@pytest.fixture
+def quick(monkeypatch):
+    monkeypatch.setattr(browser, "CHAT_SECONDS", 0)
+    monkeypatch.setattr(browser, "SEEN_SECONDS", 0)
+    monkeypatch.setattr(browser.time, "sleep", lambda seconds: None)
+
+
+def test_a_message_from_edge_when_the_phone_is_offline(quick):
+    chat = FakeChat()
+    said = Browser(chat).send_message("instagram", "Running late", name="Nino Kapanadze",
+                                      chat="thread_shortcut_1234567890_3402", username="nino.k")
+    assert said == "Sent to Nino Kapanadze on Instagram."
+    assert [call for call in chat.calls if call[0] != "browser_snapshot"] == [
+        ("browser_navigate", {"url": "https://www.instagram.com/direct/t/3402/"}),
+        ("browser_type", {"element": "textbox Message...", "target": "e9", "text": "Running late", "submit": False}),
+        ("browser_click", {"element": "button Send", "target": "e10"})]
+    assert chat.sent == ["Running late"]
+    assert browser.chat_urls("messenger", facebook="100012345678901", username="andria.t") == [
+        "https://www.messenger.com/t/100012345678901", "https://www.messenger.com/t/andria.t"]
+    assert browser.chat_urls("instagram", username="nino.k") == ["https://ig.me/m/nino.k"]
+    assert browser.chat_urls("messenger", chat="thread_shortcut_GROUP:42") == ["https://www.messenger.com/t/42"]
+    assert browser.chat_urls("messenger", chat="thread_shortcut_ADVANCED_CRYPTO_ONE_TO_ONE:7", facebook="1") == [
+        "https://www.messenger.com/t/1", "https://www.messenger.com/e2ee/t/7"]
+
+
+def test_someone_elses_chat_gets_nothing(quick):
+    chat = FakeChat(who="Giorgi")
+    with pytest.raises(ToolError, match="didn't open in Edge, or isn't plainly theirs, so nothing was sent"):
+        Browser(chat).send_message("instagram", "Hi", name="Nino Kapanadze", chat="3402")
+    assert not any(name == "browser_type" for name, _ in chat.calls) and chat.sent == []
+    with pytest.raises(ToolError, match="Instagram and Messenger only"):
+        Browser(chat).send_message("whatsapp", "Hi", name="Nino")
+
+
+def test_sending_is_in_natros_own_hidden_edge_closed_after():
+    chat = FakeChat()
+    send = next(tool for tool in tools(Browser(FakePlaywright()), Browser(chat)) if tool.name == "send_message")
+    send.run(app="instagram", text="Hi", name="Nino Kapanadze", chat="thread_shortcut_1_3402")
+    assert chat.sent == ["Hi"] and chat.calls[-1] == ("browser_close", {})
+    hidden = browser.hidden_edge(browser.SEND_PROFILE).args
+    assert hidden == ["--browser", "msedge", "--headless", "--user-data-dir", str(browser.SEND_PROFILE)]
+    assert "--extension" in browser.his_edge("token").args and "--headless" not in browser.his_edge("token").args
+
+
+def test_edges_send_message_is_the_brains_alone():
+    offered = {tool.name: tool for tool in tools(Browser(FakePlaywright()), Browser(FakePlaywright()))}
+    spec = offered["send_message"].spec()
+    assert spec["hidden"] and spec["confirm"] and spec["personal"]
+
+
+def test_a_pin_page_stops_it_and_is_never_the_box(quick):
+    class PinPage(FakeChat):
+        def call(self, name, args):
+            self.calls.append((name, args))
+            return ('### Page\n- Page URL: https://www.messenger.com/e2ee/t/7\n### Snapshot\n```yaml\n'
+                    '- heading "Enter your PIN" [ref=e1]\n- textbox "PIN" [ref=e2]\n```')
+
+    page = PinPage()
+    with pytest.raises(ToolError, match="isn't signed in to Messenger .* Nothing was sent"):
+        Browser(page).send_message("messenger", "Hi", name="Andria Beridze", facebook="100012345678901")
+    assert not any(name == "browser_type" for name, _ in page.calls)

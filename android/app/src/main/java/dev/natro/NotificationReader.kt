@@ -13,7 +13,8 @@ import java.util.Locale
  * Notification access (the Natro app has a button). Everything it reads is personal: only Claude
  * gets it. New ones are matched here against what he asked Natro to watch for (NotificationWatch), and
  * only those that fit a rule go to the brain; so do messages, for the PC to show (Messages), while "Show
- * messages on the PC" is on.
+ * messages on the PC" is on. Instagram's and Messenger's keep their chat's Reply, and name the chat to the
+ * brain's address book once a day (Sending).
  */
 class NotificationReader : NotificationListenerService() {
     override fun onNotificationPosted(item: StatusBarNotification) {
@@ -27,6 +28,7 @@ class NotificationReader : NotificationListenerService() {
         if (rule != null && NotificationWatch.firstTime("${item.key}|$title|$body")) {
             Natro.notificationMatched(rule.id, app, title, body)
         }
+        Sending.seen(item, title)
         Prefs.init(this)
         if (!Prefs.messagesToPc.value || !Messages.isMessage(item)) return
         val (who, words) = Messages.latest(item, title, body) ?: return

@@ -9,21 +9,21 @@ from natro_agent.mcp_client import MCPServers, expand
 from natro_agent.tools import ToolError
 
 
-def test_capabilities_say_which_devices_are_offline():
+def test_capabilities_list_the_tools_and_where_to_see_whats_online():
     pc = DryRunDevice("pc", "PC", PC_TOOLS)
-    text = capabilities(pc.tools(), [pc])
-    assert "Your owner's PC is connected." in text
-    assert "phone is offline" in text
+    text = capabilities(pc.tools())
+    assert "Each message's first line says which are online" in text and "queue_for_device" in text
     assert ("Tools from the PC: pc_act, pc_act_risky, pc_close_app, pc_find, pc_force_close_app, pc_list_open_apps, "
             "pc_open_app, pc_open_file, pc_open_link, pc_read_file, pc_run_command, pc_run_command_risky, pc_screen, "
             "pc_screenshot, pc_search_file_contents, pc_search_files, pc_switch_window, pc_wait_for.") in text
-    assert "no tools yet" in capabilities([], [])
+    assert "no tools yet" in capabilities([])
 
 
-def test_system_prompt_is_the_same_for_the_same_devices():
+def test_system_prompt_is_the_same_for_the_same_tools():
+    # Not which devices are online (each request's first line says): it's cached for an hour.
     pc = DryRunDevice("pc", "PC", PC_TOOLS)
-    assert system_prompt(pc.tools(), [pc]) == system_prompt(list(reversed(pc.tools())), [pc])
-    assert system_prompt([], []).startswith("You are Natro")
+    assert system_prompt(pc.tools()) == system_prompt(list(reversed(pc.tools())))
+    assert system_prompt([]).startswith("You are Natro")
 
 
 def test_expand_reads_the_environment(monkeypatch):

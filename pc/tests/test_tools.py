@@ -144,7 +144,10 @@ def test_tool_descriptions_for_the_brain(monkeypatch):
     monkeypatch.setattr(commands.PowerShell, "warm_up", lambda self: None)
     monkeypatch.setattr(uia.Desktop, "warm_up", lambda self: None)
     monkeypatch.setattr(uia, "available", lambda: True)
-    specs = {tool.name: tool.spec() for tool in all_tools()}
+    every = {tool.name: tool.spec() for tool in all_tools()}
+    # Only the brain calls these (send_message: Natro's own hidden Edge, after his yes to its own question).
+    assert {name for name, spec in every.items() if spec["hidden"]} == {"send_message"}
+    specs = {name: spec for name, spec in every.items() if not spec["hidden"]}
     screen = {"screen", "find", "act", "act_risky", "switch_window", "wait_for", "screenshot"}
     assert set(specs) == {"open_app", "close_app", "force_close_app", "list_open_apps", "search_files",
                           "search_file_contents", "read_file", "open_file", "open_link", "run_command",

@@ -105,8 +105,8 @@ fun SettingsScreen(setup: List<SetupStep>, back: () -> Unit, openWakeTest: () ->
                 LinkRow("Test the wake word", "Say it a few times and see which ones Natro catches.", enabled = power,
                     onClick = openWakeTest)
                 Line()
-                SwitchRow("Speak replies", "Natro says her answers out loud.", checked = speak,
-                    onChange = Prefs::setSpeakReplies)
+                SwitchRow("Speak replies", "Natro says her answers out loud. Off, only what you ask her to say out loud.",
+                    checked = speak, onChange = Prefs::setSpeakReplies)
                 Line()
                 SwitchRow("Show replies as text", "Her answer opens from the bubble over other apps; tap it to fold it back.",
                     checked = show, onChange = Prefs::setShowReplies)

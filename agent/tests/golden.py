@@ -10,6 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from natro_agent.aloud import Aloud
 from natro_agent.briefing import Briefing
 from natro_agent.convert import Converter
 from natro_agent.dryrun import PC_TOOLS, DryRunDevice
@@ -18,10 +19,13 @@ from natro_agent.history import History
 from natro_agent.jobs import Jobs
 from natro_agent.google_tools import SCOPES, Google
 from natro_agent.memory import Memory
+from natro_agent.pdf import PdfTools
 from natro_agent.notes import Notes
 from natro_agent.pending import PendingRequests
+from natro_agent.people import People
 from natro_agent.reminders import Reminders
 from natro_agent.routines import Routines
+from natro_agent.sending import Sending
 from natro_agent.spotify import Spotify
 from natro_agent.travel import Travel
 from natro_agent.watchers import Watchers
@@ -33,18 +37,21 @@ PHONE_TOOLS_KT = Path(__file__).resolve().parents[2] / "android/app/src/main/jav
 
 
 def own_tools(folder):
-    """Natro's own tools, the server's (files between devices), and the cloud ones (Google, Spotify), signed in."""
+    """Natro's own tools, the server's (files between devices, saying out loud), and the cloud ones (Google,
+    Spotify), signed in."""
     google_api = MagicMock(scopes=SCOPES)  # signed in with every permission, so Drive and Docs are offered
     search = WebSearch(key="tvly-test", post=lambda url, body, key: {"results": []})
     transfers = Transfers(folder / "transfers", {})
+    converter = Converter(transfers)
     return (Memory(folder / "memory").tools() + Notes(folder / "notes").tools() + search.tools()
             + WebPage(get=MagicMock()).tools() + History(folder / "logs").tools()
             + Travel(key="maps-key", home="Home", post=MagicMock()).tools()
-            + transfers.tools() + Converter(transfers).tools() + PendingRequests(folder / "pending.json", {}).tools()
+            + transfers.tools() + converter.tools() + PdfTools(converter).tools() + PendingRequests(folder / "pending.json", {}).tools()
             + Reminders(folder / "reminders.json", {}).tools() + Weather(home="Tbilisi", get=MagicMock()).tools()
             + Briefing(folder / "briefing.json").tools() + Jobs().tools()
             + Routines(folder / "routines.json").tools()
-            + Watchers(folder / "watchers.json", {}, google=MagicMock()).tools()
+            + Watchers(folder / "watchers.json", {}, google=MagicMock()).tools() + Aloud({}).tools()
+            + People(folder / "people.md").tools() + Sending(People(folder / "people.md"), {}).tools()
             + Google(google_api).tools() + Spotify(MagicMock()).tools())
 
 
@@ -59,14 +66,14 @@ def pc_specs():
 
 
 def phone_specs():
-    """The phone's tool descriptions, read from PhoneTools.kt: name, personal, confirm, final."""
+    """The phone's tool descriptions, read from PhoneTools.kt: name, personal, confirm, final, hidden."""
     source = PHONE_TOOLS_KT.read_text(encoding="utf-8")
     start = source.index("private val tools = listOf(")
     end = source.index("/** The tools as the hello describes them. */")
     pieces = re.split(r'\n\s*Tool\("', source[start:end])[1:]
     specs = []
     for piece in pieces:
-        flags = {flag: f"{flag} = true" in piece for flag in ("personal", "confirm", "final")}
+        flags = {flag: f"{flag} = true" in piece for flag in ("personal", "confirm", "final", "hidden")}
         specs.append({"name": re.match(r"[a-z_]+", piece).group(), "description": "A phone tool.",
                       "input_schema": {"type": "object", "properties": {}, "required": []}, **flags})
     return specs

@@ -53,10 +53,11 @@ class Speaker:
     def speaking(self):
         return self._busy.is_set()
 
-    def say(self, text):
+    def say(self, text, on_start=None):
+        """on_start is called once its first sound plays (not at all if it isn't said)."""
         if self.tts and not self.muted and text.strip():
             self._busy.set()
-            self._queue.put(text)
+            self._queue.put((text, on_start))
 
     def wait(self):
         """Until everything queued has been spoken."""
@@ -64,9 +65,9 @@ class Speaker:
 
     def _run(self):
         while True:
-            text = self._queue.get()
+            text, on_start = self._queue.get()
             try:
-                self._speak(text)
+                self._speak(text, on_start)
             except Exception as e:
                 print(f"(Couldn't speak: {e})")
             finally:
@@ -74,14 +75,14 @@ class Speaker:
                 if self._queue.unfinished_tasks == 0:
                     self._busy.clear()
 
-    def _speak(self, text):
+    def _speak(self, text, on_start=None):
         sentences = queue.Queue()
 
         def generated(samples, progress):
             sentences.put(np.array(samples, dtype=np.float32))
             return 1  # keep going; 0 stops (despite what the docstring says)
 
-        player = threading.Thread(target=self._play, args=(sentences,))
+        player = threading.Thread(target=self._play, args=(sentences, on_start))
         player.start()
         try:
             self.tts.generate(text, sid=self.voice, speed=1.0, callback=generated)
@@ -89,7 +90,10 @@ class Speaker:
             sentences.put(None)
             player.join()
 
-    def _play(self, sentences):
+    def _play(self, sentences, on_start=None):
         with sd.OutputStream(samplerate=self.tts.sample_rate, channels=1, dtype="float32") as stream:
             while (samples := sentences.get()) is not None:
+                if on_start:
+                    on_start()
+                    on_start = None
                 stream.write(samples.reshape(-1, 1))

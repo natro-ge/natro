@@ -25,18 +25,19 @@ use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut};
 use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::Graphics::Dwm::{
-    DWM_WINDOW_CORNER_PREFERENCE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
+    DWM_WINDOW_CORNER_PREFERENCE, DWMWA_CLOAK, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
     DwmSetWindowAttribute,
 };
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, RDW_ALLCHILDREN,
+    RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW, RedrawWindow,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
     GWL_EXSTYLE, GetCursorPos, GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST,
     SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_HIDEWINDOW, SWP_NOACTIVATE,
     SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetWindowLongPtrW, SetWindowPos,
-    WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+    WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
 };
 
 use crate::audio::{MIN_SAMPLES, has_speech};
@@ -678,15 +679,38 @@ pub(crate) fn prepare_overlay(
         );
     }
     // The page only loads once its window has been shown: show it off the screen
-    // until the page says it's there, so the first opening isn't blank.
-    set_window_pos(hwnd, -32000, -32000, w, h, SWP_SHOWWINDOW);
+    // until the page says it's there, so the first opening isn't blank. There the
+    // page takes the scale of the nearest screen (with two, maybe the other one's,
+    // 125%), and it only looks again when its window changes size, which a move to
+    // a screen at the same size doesn't do: the dock showed at 125% on a 100%
+    // screen, its ✕ cut off. So it waits a pixel bigger than it ever shows.
+    set_window_pos(hwnd, -32000, -32000, w + 1, h + 1, SWP_SHOWWINDOW);
     Ok(())
 }
 
 /// Moves the window without activating it. Async, so a thread other than the
 /// window's never waits on the main thread (which may be waiting on the dock).
+///
+/// A move to a screen at another scale makes Windows (through tao) resize the window
+/// to look the same size there: the size given here, which is for that screen already,
+/// would be scaled twice (the dock too big on a 125% screen, too small back on a 100%
+/// one). So the move goes first, then the size, in that order on the window's thread.
 pub(crate) fn set_window_pos(hwnd: HWND, x: i32, y: i32, w: i32, h: i32, flags: SET_WINDOW_POS_FLAGS) {
     unsafe {
+        if !flags.contains(SWP_NOMOVE) && !flags.contains(SWP_NOSIZE) {
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                x,
+                y,
+                0,
+                0,
+                SET_WINDOW_POS_FLAGS(flags.0 & !SWP_SHOWWINDOW.0)
+                    | SWP_NOSIZE
+                    | SWP_NOACTIVATE
+                    | SWP_ASYNCWINDOWPOS,
+            );
+        }
         let _ = SetWindowPos(
             hwnd,
             Some(HWND_TOPMOST),
@@ -727,6 +751,47 @@ pub(crate) fn set_click_through(hwnd: HWND, through: bool) {
         if wanted != style {
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, wanted);
         }
+    }
+}
+
+/// A click-through window is layered (prepare_overlay), and Windows lets a click through a layered
+/// window wherever its own surface is see-through. Nothing draws on that surface (WebView2 draws the
+/// page apart from it), so left alone it's see-through nearly everywhere, and clicks on the chat went
+/// to the app behind: its Yes closed it, which answered no. Shown where it is but cloaked (so it can't
+/// be seen), the window stops being layered for a moment, is painted, and is layered again: its
+/// surface is then solid, and only WS_EX_TRANSPARENT (set_click_through) decides. It ends hidden
+/// (shown again at once, it would be white). In place: off the screen it could take another
+/// monitor's scale. On the window's own thread, the main one: that's where it paints.
+pub(crate) fn solid_hit_surface(hwnd: HWND) {
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let layered = WS_EX_LAYERED.0 as isize;
+        if style & layered == 0 {
+            return;
+        }
+        cloak(hwnd, true);
+        let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
+        let _ = SetWindowPos(hwnd, None, 0, 0, 0, 0, flags | SWP_SHOWWINDOW);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style & !layered);
+        let repaint = RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN;
+        let _ = RedrawWindow(Some(hwnd), None, None, repaint);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style);
+        let _ = RedrawWindow(Some(hwnd), None, None, repaint);
+        let _ = SetWindowPos(hwnd, None, 0, 0, 0, 0, flags | SWP_HIDEWINDOW);
+        cloak(hwnd, false);
+    }
+}
+
+/// Whether the window is drawn: cloaked, it's there for Windows but can't be seen.
+fn cloak(hwnd: HWND, cloaked: bool) {
+    let value = windows::core::BOOL::from(cloaked);
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAK,
+            (&value as *const windows::core::BOOL).cast(),
+            size_of::<windows::core::BOOL>() as u32,
+        );
     }
 }
 

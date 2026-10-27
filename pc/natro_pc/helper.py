@@ -8,7 +8,8 @@ The desktop app starts it (no console window) and talks to it in JSON lines:
   app to helper:  {"type": "tool", "id": "c1", "name": "...", "args": {...}}
   helper to app:  {"type": "tool_result", "id": "c1", "ok": true, "result": "...", "picture": {...}}
                                                                picture: only with a screenshot (tools.Picture)
-  app to helper:  {"type": "say", "text": "..."}               speak it (Kokoro), after anything already queued
+  app to helper:  {"type": "say", "text": "...", "id": "r1"}  speak it (Kokoro), after anything already queued
+  helper to app:  {"type": "spoken", "id": "r1"}               its first sound plays (only for a say with an id)
   app to helper:  {"type": "app", "id": "a1", "name": "Spotify"}
   helper to app:  {"type": "app", "id": "a1", "ok": true, "result": "<AppID>"}   the Start menu app, for its icon
 
@@ -66,7 +67,8 @@ def main():
         elif message.get("type") == "app":
             threading.Thread(target=find_app, daemon=True, args=(message.get("id"), message.get("name", ""))).start()
         elif message.get("type") == "say":
-            speaker.say(message.get("text", ""))
+            id = message.get("id")
+            speaker.say(message.get("text", ""), on_start=(lambda id=id: send(type="spoken", id=id)) if id else None)
 
 
 if __name__ == "__main__":

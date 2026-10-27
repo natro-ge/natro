@@ -36,6 +36,24 @@ def test_files_show_only_the_name():
     assert describe("pc_read_file", {"path": r"C:\Users\Tuxa\Documents\plan.docx"})["text"] == "Reading plan.docx"
 
 
+def test_pdf_steps_say_what_happens_to_it():
+    assert describe("edit_pdf", {"action": "merge", "paths": ["a.pdf", "b.pdf"]}) == {"text": "Merging PDFs",
+                                                                                      "icon": "files"}
+    assert describe("edit_pdf", {"action": "ocr"})["text"] == "Reading a scan"
+    assert describe("edit_pdf", {})["text"] == "Working on a PDF"
+
+
+def test_saying_out_loud_says_where():
+    assert describe("say_out_loud", {"text": "Good morning."}) == {"text": "Saying it out loud", "icon": "volume"}
+    assert describe("say_out_loud", {"text": "Dinner's ready.", "device": "pc"})["text"] == "Saying it on the PC"
+
+
+def test_messaging_names_whom_and_the_app():
+    assert describe("send_message", {"to": "Nino", "text": "Hi."}) == {"text": "Messaging Nino", "icon": "message",
+                                                                       "app": "Instagram"}
+    assert describe("send_message", {"to": "Andria", "app": "messenger"})["app"] == "Messenger"
+
+
 def test_unknown_tools_still_say_something():
     assert describe("github_create_issue", {}) == {"text": "Github create issue", "icon": "work"}
     assert describe("phone_new_tool", {}) == {"text": "New tool", "icon": "work"}

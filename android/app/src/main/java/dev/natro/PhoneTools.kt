@@ -53,6 +53,8 @@ class PhoneTools(private val context: Context) {
         val confirm: Boolean = false,
         // Its result is a fine spoken reply on its own ("Flashlight on."): the brain may skip wording one.
         val final: Boolean = false,
+        // Not offered to the model: only the brain calls it (send_message, after his yes to its own question).
+        val hidden: Boolean = false,
         // Text for the brain, or a ToolPicture (text, and a picture for the chat).
         val run: (JSONObject) -> Any,
     )
@@ -101,6 +103,18 @@ class PhoneTools(private val context: Context) {
         ), listOf("text"), personal = true, confirm = true, final = true) {
             Messages.reply(context, it.optString("key"), it.optString("to"), it.optString("app"), it.getString("text"))
         },
+        Tool("send_message", "Send a message on Instagram or Messenger, after his yes to the brain's own question " +
+            "(agent/natro_agent/sending.py): by her notification's Reply, one kept, sharing into her chat, or her " +
+            "username's link.", props(
+            "app" to string("instagram or messenger."),
+            "text" to string("The message."),
+            "name" to string("Whom, as the app shows them."),
+            "chat" to string("Her chat's id, from its notifications."),
+            "facebook" to string("Messenger: her Facebook id."),
+            "username" to string("Her username."),
+            "group" to JSONObject().put("type", "boolean"),
+            "screen" to JSONObject().put("type", "boolean").put("description", "False: only the ways that show nothing."),
+        ), listOf("app", "text"), personal = true, confirm = true, hidden = true) { Sending.send(context, it) },
         Tool("contacts", "Find people in the phone's contacts by name (saved in Georgian or Latin letters): their " +
             "numbers.", props("name" to string("The name, as he says it.")), listOf("name"), personal = true) {
             contacts(it.getString("name"))
@@ -174,7 +188,8 @@ class PhoneTools(private val context: Context) {
     /** The tools as the hello describes them. */
     fun specs(): JSONArray = JSONArray(tools.map { tool ->
         JSONObject().put("name", tool.name).put("description", tool.description).put("personal", tool.personal)
-            .put("confirm", tool.confirm).put("final", tool.final).put("input_schema", JSONObject().put("type", "object")
+            .put("confirm", tool.confirm).put("final", tool.final).put("hidden", tool.hidden)
+            .put("input_schema", JSONObject().put("type", "object")
                 .put("properties", tool.properties).put("required", JSONArray(tool.required)))
     })
 

@@ -77,11 +77,14 @@ pub fn run() {
             reply::reply_state,
             reply::reply_size,
             reply::reply_close,
+            reply::reply_send,
+            reply::reply_keyboard,
             reply::reply_show,
             reply::reply_open,
             chat::chat_state,
             chat::chat_hits,
             chat::chat_send,
+            chat::chat_history,
             chat::chat_stop_replying,
             chat::chat_mic,
             chat::chat_answer,
@@ -131,7 +134,7 @@ pub fn run() {
             }
             let helper = Arc::new(Helper::start(&config));
             helper.speaking.store(switches.speak, std::sync::atomic::Ordering::SeqCst);
-            let chat = Chat::new(test_clip.clone());
+            let chat = Chat::new(&config.home, test_clip.clone());
             let dock = Dock::new(app.handle(), test_clip, test_text, test_ask);
             dock.prepare(app.handle())?;
             let keys = dock.keys(); // Esc, shared with the reply box

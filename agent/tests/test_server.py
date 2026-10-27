@@ -23,8 +23,10 @@ class FakeVoice:
         self.results = list(results)
         self.recordings = []
 
-    def process(self, pcm, on_english=None):
+    def process(self, pcm, on_english=None, timing=None):
         self.recordings.append(pcm)
+        if timing is not None:
+            timing.update(recognize=0.5, translate=0.25, translate_first=0.125)
         georgian, english, cost = self.results.pop(0)
         if on_english and english:
             on_english(english)
@@ -179,7 +181,8 @@ def test_health_and_device_list():
         return body, set(agent.devices), [tool.name for tool in agent.offered_tools()]
 
     body, devices, tools = run(session(server, device))
-    assert body == b"ok\n" and devices == {"pc"} and tools == ["pc_force_close_app"]
+    # The server's own say_out_loud (aloud.py), then the PC's.
+    assert body == b"ok\n" and devices == {"pc"} and tools == ["say_out_loud", "pc_force_close_app"]
 
 
 @pytest.mark.parametrize("english, yes", [

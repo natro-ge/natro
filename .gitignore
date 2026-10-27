@@ -35,3 +35,5 @@ briefing.json
 routines.json
 # What he asked Natro to watch for, and what she told him (watchers.py).
 watchers.json
+# The tools his devices offered when last connected (agent/natro_agent/tools.py, KnownTools).
+devices.json

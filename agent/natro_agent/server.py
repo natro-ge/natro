@@ -14,7 +14,7 @@ Device to Natro:
   {"type": "hello", "device": "pc", "label": "PC", "token": "...", "tools": [...], "files": true,
    "chat": true, "queue": true, "reminders": true, "jobs": true,
    "alerts": true, "watch_notifications": true, "questions": true,
-   "phone_messages": true}                                          first; tools as in tools.device_tools;
+   "phone_messages": true, "say": true}                             first; tools as in tools.device_tools;
                                                                     files: it can send and receive files;
                                                                     chat: it shows the shared chat (chats.py);
                                                                     queue: it asks about requests kept for
@@ -28,7 +28,8 @@ Device to Natro:
                                                                     asks Natro's questions that are asked on
                                                                     another device too, to answer them there;
                                                                     phone_messages: it shows the messages that
-                                                                    come to the phone (below)
+                                                                    come to the phone (below); say: it says
+                                                                    what it's told to out loud (aloud.py)
   {"type": "text", "id": "r1", "text": "open Chrome"}               a typed request, in English
   {"type": "audio", "id": "r2"} + recording                         a spoken request, in Georgian
   {"type": "audio", "id": "r3", "answer_to": "q1"} + recording      a spoken yes or no to a question
@@ -46,6 +47,9 @@ Device to Natro:
   {"type": "chat_clear"}                                            New chat: on both devices, and Natro
                                                                     starts a new conversation
   {"type": "cancel", "id": "r2"}                                    stop a request: no more tool calls, no reply
+  {"type": "spoken", "id": "r2", "seconds": 1.2}                    it started saying that request's reply this
+                                                                    long after the reply came (for the dashboard:
+                                                                    timing.py)
 Natro to device:
   {"type": "welcome", "spent": 0.42, "budget": 15}                  hello accepted; this month's spending (USD)
   {"type": "english", "id": "r2", "text": "..."}                    the translation, in pieces as it's written;
@@ -55,8 +59,10 @@ Natro to device:
   {"type": "step", "id": "r1", "text": "Opening Spotify", "icon": "app", "app": "Spotify"}
                                                                     what she's doing (steps.py; "app" optional)
   {"type": "reply", "id": "r1", "text": "...", "model": "...", "cost": 0.004, "seconds": 2.1,
-   "spent": 0.43, "budget": 15, "tools": [...]}                    show and speak it; tools: what ran, for
-                                                                    the PC app's verbose records
+   "spent": 0.43, "budget": 15, "tools": [...], "said": true}      show and speak it; tools: what ran, for
+                                                                    the PC app's verbose records; said (only
+                                                                    when true): it was said out loud already
+                                                                    (say), so don't speak it again
   {"type": "confirm", "id": "q1", "question": "...", "details": "...", "request": "pc:r3"}
                                                                     ask the owner yes or no; request: the chat
                                                                     entry it's for ("natro:jb1": a background
@@ -78,16 +84,21 @@ Natro to device:
   reminder_snoozed after the device's reminder_snooze. Background jobs (jobs.py): job_done, titled for a
   routine's run (routines.py), and kept for a device that shows jobs when none is online. Watchers
   (watchers.py): alert, watch_rules; from the device, notification_matched. The Settings window's keys
-  (keys.py): keys, both ways.
+  (keys.py): keys, both ways. Saying something out loud when he asks, whatever "Speak replies" says
+  (aloud.py): say.
+  A chat on Instagram or Messenger wrote (people.py): person, for Natro's address book, which send_message
+  (sending.py) finds people in.
   Messages that come to the phone (WhatsApp, texts...), for the devices that show them, to answer there; the
-  phone answers in the message's own app (its reply_message tool):
+  phone answers in the message's own app (its reply_message tool), from its notification or, once that's gone, a
+  Reply it kept:
   {"type": "phone_message", "key": "...", "app": "WhatsApp", "title": "Nino", "text": "...", "reply": true}
                                                                     (phone to Natro) a message came; reply: it
                                                                     can be answered from its notification
   {"type": "phone_message_gone", "key": "..."}                     (phone to Natro) its notification went
   {"type": "phone_message", "id": "pm1", "app": "WhatsApp", "title": "Nino", "text": "...", "reply": true,
    "device": "phone", "label": "phone"}                            (Natro to device) show it
-  {"type": "phone_message_gone", "id": "pm1"}                       (Natro to device) it's read or gone
+  {"type": "phone_message_gone", "id": "pm1"}                       (Natro to device) it's read or gone (his
+                                                                    answer typed meanwhile still goes)
   {"type": "message_reply", "id": "r5", "to": "pm1", "text": "..."}  (device to Natro) his answer, typed: a
                                                                     request answered with reply or error
   {"type": "error", "id": "r2", "message": "..."}
@@ -137,8 +148,10 @@ from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
 from natro_agent import identity, log
+from natro_agent.aloud import SAID, Aloud
 from natro_agent.chats import SharedChat
 from natro_agent.convert import Converter, available as converters
+from natro_agent.pdf import PdfTools
 from natro_agent.config import ROOT, load_env, timezone
 from natro_agent.dashboard import Dashboard
 from natro_agent.files import Transfers
@@ -146,10 +159,13 @@ from natro_agent.jobs import MAX_STEPS as JOB_STEPS, RUNNING, Jobs, lead, short
 from natro_agent.keys import RESTART_CODE, Keys
 from natro_agent.mcp_client import MCPServers
 from natro_agent.pending import PendingRequests
+from natro_agent.people import People
 from natro_agent.reminders import Reminders
 from natro_agent.routines import QUIET_REPLY, Routines, is_quiet
+from natro_agent.sending import Sending
 from natro_agent.setup import build_agent, google_account
-from natro_agent.tools import Device, ToolError, WithPictures, device_tools
+from natro_agent.timing import Timing
+from natro_agent.tools import Device, KnownTools, ToolError, WithPictures, device_tools
 from natro_agent.travel import Travel
 from natro_agent.watchers import Watchers
 
@@ -203,14 +219,29 @@ class Voice:
         self.translator = Translator(terms=load_wordlist())
         self._lock = threading.Lock()  # one recording at a time; the translator keeps context
 
-    def process(self, pcm, on_english=None):
-        """Returns (georgian, english, cost). Blocks: run it in a thread."""
+    def process(self, pcm, on_english=None, timing=None):
+        """Returns (georgian, english, cost). Blocks: run it in a thread.
+
+        timing, a dict, gets how long each part took, in seconds (Timing.voice: recognize, georgian when Google
+        heard English and the recording was recognized again as Georgian only, translate, translate_first until
+        the translation's first words).
+        """
+        timing = {} if timing is None else timing
         with self._lock:
             before = self.recognizer.cost + self.translator.cost
             if not self.has_speech(pcm):
                 return "", "", 0.0
-            heard, as_georgian = self.recognizer.transcribe(pcm)
-            english = self.translator.translate(heard, as_georgian=as_georgian, on_text=on_english) if heard else ""
+            heard, as_georgian = self.recognizer.transcribe(pcm, timing)
+            if not heard:
+                return as_georgian or heard, "", self.recognizer.cost + self.translator.cost - before
+            started = time.monotonic()
+
+            def first_words(piece):
+                timing.setdefault("translate_first", time.monotonic() - started)
+                if on_english:
+                    on_english(piece)
+            english = self.translator.translate(heard, as_georgian=as_georgian, on_text=first_words)
+            timing["translate"] = time.monotonic() - started
             return as_georgian or heard, english, self.recognizer.cost + self.translator.cost - before
 
 
@@ -231,6 +262,7 @@ class RemoteDevice(Device):
         self.watch_notifications = bool(hello.get("watch_notifications"))
         self.questions = bool(hello.get("questions"))
         self.phone_messages = bool(hello.get("phone_messages"))
+        self.say = bool(hello.get("say"))
         self.since = time.time()  # when it connected, for the dashboard
         # Set by the server: Natro asked a question (id, text, details), and it's over (id, his yes or no, or None
         # when it went unanswered); a tool's result came with a picture; the chat entry of the request being handled.
@@ -320,12 +352,13 @@ class Server:
     pending.PendingRequests, for requests kept for an offline device (None: none kept). reminders: a
     reminders.Reminders (None: no reminders), whose clock (its run) the caller runs. jobs: a jobs.Jobs, for
     background jobs (None: none). watchers: a watchers.Watchers (None: none), whose checks (its run) the caller
-    runs. converter: a convert.Converter, for converting his files (None: none). keys: a keys.Keys, for the
+    runs. converter: a convert.Converter, for converting his files and working on his PDFs (None: none). keys: a keys.Keys, for the
     Settings window's keys (None: none). routines: a routines.Routines (None: none; they need jobs), whose clock
-    (its run) the caller runs."""
+    (its run) the caller runs. people: a people.People, the address book for messaging anyone on Instagram and
+    Messenger (None: no send_message)."""
 
     def __init__(self, agent, voice=None, token=None, transfers=None, pending=None, reminders=None, jobs=None,
-                 watchers=None, converter=None, keys=None, routines=None):
+                 watchers=None, converter=None, keys=None, routines=None, people=None):
         self.agent = agent
         self.voice = voice
         self.token = token
@@ -333,6 +366,9 @@ class Server:
         if transfers:
             agent.own_tools += transfers.tools()
         self.chat = SharedChat(agent.devices)
+        self.aloud = Aloud(agent.devices)
+        agent.own_tools += self.aloud.tools()
+        self.aloud.asking = _from.get
         self.pending = pending
         if pending:
             agent.own_tools += pending.tools()
@@ -358,12 +394,18 @@ class Server:
             agent.own_tools += watchers.tools()
             watchers.deliver = self._alert
         if converter:
-            agent.own_tools += converter.tools()
+            agent.own_tools += converter.tools() + PdfTools(converter).tools()
             converter.tell = self._tell
         self.keys = keys
+        self.people = people
+        if people:
+            sending = Sending(people, agent.devices)
+            sending.request = _entry.get
+            agent.own_tools += people.tools() + sending.tools()
         self._used = {}  # device name -> when (monotonic) he last made a request on it
         self._questions = {}  # (device name, question id) -> its question_elsewhere, while Natro waits for an answer
-        # The phone's messages shown on other devices: id -> {"device", "key", "app", "title"}, the newest last.
+        # The phone's messages shown on other devices: id -> {"device", "key", "app", "title"}, the newest last;
+        # kept once their notification goes ("gone"), as the phone may still answer them with a Reply it kept.
         self._messages = collections.OrderedDict()
         self._message_ids = itertools.count(1)
         self._tasks = set()
@@ -444,6 +486,12 @@ class Server:
                     self._phone_message(device, data)
                 elif kind == "phone_message_gone":
                     self._phone_message_gone(device, str(data.get("key") or ""))
+                elif kind == "person" and self.people:
+                    try:
+                        self.people.seen(data.get("app"), data.get("name"), data.get("chat"), data.get("facebook"),
+                                         bool(data.get("group")))
+                    except OSError as e:  # the address book can't be written: the phone stays connected
+                        log.write("error", step="people", error=repr(e))
                 elif kind == "message_reply":
                     self._start(self._message_reply(device, data), running, data.get("id"))
                 elif kind == "reminder_snooze" and self.reminders:
@@ -457,6 +505,8 @@ class Server:
                 elif kind == "audio":
                     pcm = await connection.recv()
                     self._start(self.audio_request(device, data, pcm), running, data.get("id"))
+                elif kind == "spoken":
+                    self._spoken(device, data)
                 elif kind == "cancel":
                     if task := running.pop(data.get("id"), None):
                         task.cancel()
@@ -477,6 +527,7 @@ class Server:
 
     async def audio_request(self, device, data, pcm):
         id = data.get("id")
+        timing = Timing()
         if self.voice is None:
             device.post(type="error", id=id, message="Voice isn't set up on the server (see voice/).")
             return
@@ -492,7 +543,7 @@ class Server:
             loop.call_soon_threadsafe(post_english)
 
         try:
-            georgian, english, voice_cost = await asyncio.to_thread(self.voice.process, pcm, on_english)
+            georgian, english, voice_cost = await asyncio.to_thread(self.voice.process, pcm, on_english, timing.voice)
         except Exception as e:
             log.write("error", device=device.name, error=repr(e), step="voice")
             device.post(type="error", id=id, message=f"The voice pipeline failed: {e}")
@@ -510,21 +561,27 @@ class Server:
             device.post(type="reply", id=id, text="I didn't catch that.", model="none", cost=round(voice_cost, 5),
                         **self._month())
         else:
-            await self._respond(device, id, english, voice_cost, heard=georgian, spoken=True)
+            await self._respond(device, id, english, voice_cost, heard=georgian, spoken=True, timing=timing)
 
     def _count_voice(self, device, voice_cost, **fields):
         """Voice spending that didn't become a request still counts toward the month."""
         self.agent.ledger.add(voice_cost)
         log.write("voice", device=device.name, voice_cost=round(voice_cost, 6), **fields)
 
-    async def _respond(self, device, id, english, voice_cost, heard="", spoken=False, shown=None, queued=None):
-        """Natro answers a request; the chat on every device shows it (as shown: the request as he made it)."""
+    async def _respond(self, device, id, english, voice_cost, heard="", spoken=False, shown=None, queued=None,
+                       timing=None):
+        """Natro answers a request; the chat on every device shows it (as shown: the request as he made it).
+        timing: the Timing (timing.py) started when it came in (one starts now if not), logged once the reply is
+        out."""
+        timing = timing or Timing()
         entry = self.chat.start(device, id, asked=shown or english, heard=heard, spoken=spoken, queued=queued)
         self._used[device.name] = time.monotonic()
+        said = []  # what say_out_loud said on this device for it
 
         def started():  # Natro has turned to this request (she does his one at a time)
             _entry.set(entry)
             _from.set(device)
+            SAID.set(said)
 
         def piece(text):
             device.post(type="reply_text", id=id, text=text)
@@ -536,16 +593,28 @@ class Server:
 
         try:
             reply = await self.agent.respond(english, device, voice_cost=voice_cost, on_text=piece, on_step=step,
-                                             on_start=started)
+                                             on_start=started, timing=timing)
         except asyncio.CancelledError:
             self.chat.replied(entry, "", problem="Cancelled")
             raise
         finally:
             _entry.set(None)
             _from.set(None)
+            SAID.set(None)
         self.chat.replied(entry, reply.text)
+        # Said out loud already, at his asking: not again.
         device.post(type="reply", id=id, text=reply.text, model=reply.model, cost=round(reply.cost + voice_cost, 5),
-                    seconds=round(reply.seconds, 2), tools=tools_used(reply), **self._month())
+                    seconds=round(reply.seconds, 2), tools=tools_used(reply), **self._month(),
+                    **({"said": True} if said else {}))
+        log.write("timing", device=device.name, id=id, text=english[:200], spoken=spoken, model=reply.model,
+                  **timing.record())
+
+    @staticmethod
+    def _spoken(device, data):
+        """The device started saying a reply: seconds after it came (its speech's start, for the dashboard)."""
+        seconds = data.get("seconds")
+        if isinstance(seconds, (int, float)) and not isinstance(seconds, bool) and 0 <= seconds < 600:
+            log.write("spoken", device=device.name, id=str(data.get("id") or ""), seconds=round(seconds, 3))
 
     def _answer(self, device, data):
         """His yes or no: to a question of this device's, or (device) of the other's, which is then told."""
@@ -620,10 +689,11 @@ class Server:
         log.write("message", event="shown", app=message["app"], devices=[viewer.name for viewer in viewers])
 
     def _phone_message_gone(self, device, key):
-        """A message's notification went from the phone (read, answered, dismissed): the others let go of it."""
+        """A message's notification went from the phone (read, answered, dismissed): the others let go of it. An
+        answer he was typing meanwhile still goes, through a Reply the phone kept."""
         for id, message in list(self._messages.items()):
-            if message["device"] == device.name and message["key"] == key:
-                del self._messages[id]
+            if message["device"] == device.name and message["key"] == key and not message.get("gone"):
+                message["gone"] = True
                 for other in list(self.agent.devices.values()):
                     if getattr(other, "phone_messages", False):
                         other.post(type="phone_message_gone", id=id)
@@ -717,6 +787,7 @@ class Server:
         entry = self.chat.job(job.id, job.task, routine=job.title if job.routine else "")
         _entry.set(entry)
         _from.set(self.agent.devices.get(job.asked_on))
+        SAID.set(None)  # started from one of his requests: its reply isn't the job's
         now = datetime.now(timezone())
         if job.routine:
             what = (f"A routine he set up, \"{job.title}\": it runs by itself now, at {now:%H:%M}, and he isn't "
@@ -919,13 +990,15 @@ async def run():
     watchers = Watchers(ROOT / "watchers.json", devices, google, travel)
     agent = await build_agent(servers, reminders=reminders, google=google, travel=travel)
     agent.devices = devices
+    agent.known_tools = KnownTools(ROOT / "devices.json")  # the service's alone: the typed chat's dry-run PC isn't his
     token = os.environ.get("NATRO_DEVICE_TOKEN")
     if not token:
         print("NATRO_DEVICE_TOKEN is not set: any device that can reach this address may connect.")
     transfers = Transfers(ROOT / "transfers", agent.devices)
     server = Server(agent, make_voice(), token, transfers, PendingRequests(ROOT / "pending.json", agent.devices),
                     reminders, Jobs(), watchers, Converter(transfers),
-                    Keys(ROOT / ".env", ROOT / "tokens" / "settings-pin.json"), Routines(ROOT / "routines.json"))
+                    Keys(ROOT / ".env", ROOT / "tokens" / "settings-pin.json"), Routines(ROOT / "routines.json"),
+                    People(ROOT / "memory" / "people.md"))
     print(f"Converters: {', '.join(name for name, there in converters().items() if there) or 'none'}")
     host, port = os.environ.get("NATRO_LISTEN", DEFAULT_LISTEN).rsplit(":", 1)
     dashboard = Dashboard(server, host)
@@ -945,7 +1018,7 @@ async def run():
             server.keys.restart = restart
             print(f"Natro is listening on {host}:{port}; the dashboard is http://{host}:{port}/dashboard")
             clocks = [asyncio.create_task(server.reminders.run()), asyncio.create_task(server.watchers.run()),
-                      asyncio.create_task(server.routines.run())]
+                      asyncio.create_task(server.routines.run()), asyncio.create_task(agent.keep_warm())]
             try:
                 await listener.serve_forever()
             except asyncio.CancelledError:

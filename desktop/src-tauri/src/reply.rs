@@ -12,17 +12,23 @@
 //! switch says, and stays until closed; so does what a background job found, and
 //! what a watcher saw (a short one fades by itself, as a reply does).
 //!
-//! So does a message that comes to the phone (WhatsApp, texts...): who it's from,
-//! the app, its words and a Reply, which opens the chat answering it (chat.rs). A
-//! short one fades by itself; once it's read on the phone, the box lets go of it.
+//! So does what he asked on the phone to have said out loud here ("say on the PC
+//! that dinner's ready").
+//!
+//! So does a message that comes to the phone (WhatsApp, texts...), as a card: who
+//! it's from, the app, when, its words, and a box to answer it right there (it goes
+//! from the phone, in that message's own app, with no model in between), or in the
+//! chat (chat.rs). The window takes the keyboard only while he types in it, and
+//! gives it back after. A short one fades by itself (not while he's answering);
+//! once it's read on the phone, the box lets go of it, unless he's answering.
 //!
 //! So does Natro's question on the phone, before something risky, with Yes and No:
 //! he can answer it here. Once it's answered (here or on the phone) or she stops
 //! waiting, the box lets go of it; its ✕ or Esc only closes the box, and the phone
 //! still asks.
 //!
-//! The window takes clicks (the ✕, links, scrolling) but never the keyboard, and
-//! it's only as big as the box: the page says how tall it is. While it's open, Esc
+//! The window takes clicks (the ✕, links, scrolling) but not the keyboard (but for
+//! a message's answer), and it's only as big as the box: the page says how tall it is. While it's open, Esc
 //! closes it, from any app (the dock's Esc first, if the dock is open too): Esc is
 //! taken from other apps meanwhile, and given back when it closes.
 
@@ -33,8 +39,12 @@ use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
+use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Shell::ShellExecuteW;
-use windows::Win32::UI::WindowsAndMessaging::{SW_SHOWNORMAL, SWP_SHOWWINDOW};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, IsWindow, SW_SHOWNORMAL, SWP_SHOWWINDOW,
+    SetForegroundWindow, SetWindowLongPtrW, WS_EX_NOACTIVATE,
+};
 use windows::core::{HSTRING, w};
 
 use crate::dock::{TemporaryKeys, hide, prepare_overlay, set_window_pos, work_area_with_mouse};
@@ -53,13 +63,37 @@ const SLIDE_OUT: Duration = Duration::from_millis(300);
 
 #[derive(Serialize, Clone)]
 pub struct ReplyEvent {
-    /// "show", "text" or "hide".
+    /// "show", "text", "hide", or "gone" (the message shown was read on the phone).
     action: &'static str,
     text: String,
     /// The whole reply has arrived.
     done: bool,
     /// The tallest the box may be with its shadow (logical pixels).
     max_height: f64,
+    /// A message from the phone, drawn as a card (text is then its words on one line).
+    message: Option<Card>,
+}
+
+/// A message that came to the phone, as the box shows it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Card {
+    /// The brain's id for it ("pm3").
+    pub id: String,
+    /// Who it's from ("Nino"), and in which app ("WhatsApp").
+    pub from: String,
+    pub app: String,
+    pub text: String,
+    /// When it came (ms since 1970).
+    pub time: u64,
+    /// Whether it can be answered from here.
+    pub can_reply: bool,
+}
+
+impl Card {
+    /// Whom an answer goes to: "Nino on WhatsApp".
+    pub fn to(&self) -> String {
+        format!("{} on {}", self.from, self.app)
+    }
 }
 
 pub struct Reply {
@@ -88,8 +122,14 @@ struct State {
     height: f64,
     /// The phone's question it asks, while she waits for his answer (its key: question_key).
     asking: Option<String>,
-    /// Messages from the phone it showed: (the brain's id, whom an answer is to: "Nino on WhatsApp").
-    messages: Vec<(String, String)>,
+    /// Messages from the phone it showed, to answer here or in the chat.
+    messages: Vec<Card>,
+    /// The message it shows as a card.
+    message: Option<Card>,
+    /// His answer to a message, typed here, on its way: its request's id (its reply or error shows here).
+    sending: Option<String>,
+    /// While he types an answer here, the window that had the keyboard before (an HWND), to give it back.
+    before: Option<isize>,
 }
 
 impl State {
@@ -99,6 +139,7 @@ impl State {
         if new {
             self.id = Some(id.to_string());
             self.text.clear();
+            self.message = None;
         }
         self.text.push_str(piece);
         self.done = false;
@@ -111,6 +152,7 @@ impl State {
         self.id = Some(id.to_string());
         if new || !text.trim().is_empty() {
             self.text = text.to_string();
+            self.message = None;
         }
         self.done = true;
         new
@@ -122,6 +164,7 @@ impl State {
             text: self.text.clone(),
             done: self.done,
             max_height: self.max_height,
+            message: self.message.clone(),
         }
     }
 }
@@ -166,6 +209,9 @@ impl Reply {
     /// Her whole reply (the brain's reply).
     pub fn replied(&self, app: &AppHandle, id: &str, text: &str) {
         let mut state = self.state.lock().unwrap();
+        if state.sending.as_deref() == Some(id) {
+            state.sending = None;
+        }
         if text.trim().is_empty() && state.id.as_deref() != Some(id) {
             return; // nothing to show
         }
@@ -201,46 +247,114 @@ impl Reply {
         self.notice(app, id, &format!("**Heads-up:** {text}"));
     }
 
-    /// A message that came to the phone (brain.rs): who it's from, the app, its words, and a Reply if it can be
-    /// answered from here.
-    pub fn message(&self, app: &AppHandle, id: &str, from: &str, app_name: &str, text: &str, can_reply: bool) {
-        {
-            let mut state = self.state.lock().unwrap();
-            state.messages.retain(|(known, _)| known != id);
-            state.messages.push((id.to_string(), format!("{from} on {app_name}")));
-            if state.messages.len() > MESSAGES {
-                state.messages.remove(0);
-            }
-        }
-        self.notice(app, &message_key(id), &message_text(id, from, app_name, text, can_reply));
+    /// Something said out loud here that he asked for on another device (brain.rs): "From your phone: ...".
+    pub fn said(&self, app: &AppHandle, id: &str, from: &str, text: &str) {
+        self.notice(app, id, &said_text(from, text));
     }
 
-    /// That message was read on the phone (or answered, or dismissed): the box closes if it still shows it.
+    /// A message that came to the phone (brain.rs): a card with who it's from, the app, its words, and a box to
+    /// answer it if it can be answered from here.
+    pub fn message(&self, app: &AppHandle, card: Card) {
+        let mut state = self.state.lock().unwrap();
+        state.messages.retain(|known| known.id != card.id);
+        state.messages.push(card.clone());
+        if state.messages.len() > MESSAGES {
+            state.messages.remove(0);
+        }
+        state.finish(&message_key(&card.id), &message_text(&card));
+        state.message = Some(card);
+        if state.shown {
+            let _ = app.emit_to("reply", "reply", state.event("text"));
+        } else {
+            drop(state);
+            self.show(app);
+        }
+    }
+
+    /// That message was read on the phone (or answered, or dismissed): the box lets go of it if it still shows it
+    /// (the page closes it, unless he's answering it: that still goes).
     pub fn message_gone(&self, app: &AppHandle, id: &str) {
-        let showing = {
-            let mut state = self.state.lock().unwrap();
-            state.messages.retain(|(known, _)| known != id);
-            state.shown && state.id.as_deref() == Some(message_key(id).as_str())
-        };
-        if showing {
-            self.close(app);
+        let mut state = self.state.lock().unwrap();
+        state.messages.retain(|known| known.id != id);
+        if state.shown && state.id.as_deref() == Some(message_key(id).as_str()) {
+            let _ = app.emit_to("reply", "reply", state.event("gone"));
         }
     }
 
-    /// Its Reply, clicked (a link: natro:reply/pm3): the chat opens answering it.
-    fn reply_to(&self, app: &AppHandle, link: &str) {
-        let Some(id) = link.strip_prefix("natro:reply/") else { return };
-        let to = {
+    /// Answer in the chat instead (the card's button): the chat opens answering it.
+    fn reply_in_chat(&self, app: &AppHandle, id: &str) {
+        let card = {
             let state = self.state.lock().unwrap();
-            state.messages.iter().find(|(known, _)| known == id).map(|(_, to)| to.clone())
+            state.messages.iter().chain(&state.message).find(|known| known.id == id).cloned()
         };
-        match to {
-            Some(to) => {
+        match card {
+            Some(card) => {
                 self.close(app);
-                app.state::<crate::chat::Chat>().reply_to(app, id, &to);
+                app.state::<crate::chat::Chat>().reply_to(app, &card);
             }
             None => self.notice(app, &message_key(id), "That message isn't on your phone any more."),
         }
+    }
+
+    /// His answer to the message the card shows, typed in it: it goes from the phone, in that message's app,
+    /// and the box says how it went (the brain's reply, or error). False if it couldn't go (offline).
+    fn send(&self, app: &AppHandle, id: &str, text: &str) -> bool {
+        let text = text.trim();
+        let Some(card) = self.state.lock().unwrap().message.clone().filter(|card| card.id == id) else {
+            return false;
+        };
+        if text.is_empty() {
+            return true;
+        }
+        let Some(request) = app.state::<crate::brain::Brain>().send_message_reply(id, text) else {
+            return false;
+        };
+        log::info!("answered a message from the phone in the reply box as {request}");
+        self.state.lock().unwrap().sending = Some(request.clone());
+        app.state::<crate::chat::Chat>().answered_message(app, &request, &card.to(), text);
+        self.keyboard(app, false, true);
+        true
+    }
+
+    /// While he types an answer in the card, the window takes the keyboard (take), and gives it back after:
+    /// to the app that had it (give_back), or not, when he clicked another app.
+    fn keyboard(&self, app: &AppHandle, take: bool, give_back: bool) {
+        let Ok(hwnd) = window(app).hwnd() else { return };
+        let no_activate = WS_EX_NOACTIVATE.0 as isize;
+        unsafe {
+            let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            if take {
+                let front = GetForegroundWindow();
+                self.state.lock().unwrap().before.get_or_insert(if front == hwnd { 0 } else { front.0 as isize });
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style & !no_activate);
+                if !SetForegroundWindow(hwnd).as_bool() {
+                    log::warn!("the reply box couldn't take the keyboard");
+                }
+                return;
+            }
+            let Some(before) = self.state.lock().unwrap().before.take() else { return };
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | no_activate);
+            let before = HWND(before as *mut _);
+            if give_back && !before.is_invalid() && IsWindow(Some(before)).as_bool() {
+                let _ = SetForegroundWindow(before);
+            }
+        }
+    }
+
+    /// Whether that request is an answer typed in the box, still on its way.
+    pub fn is_sending(&self, id: &str) -> bool {
+        self.state.lock().unwrap().sending.as_deref() == Some(id)
+    }
+
+    /// A request failed on the brain: if it's the answer the card sent, the box says why.
+    pub fn failed(&self, app: &AppHandle, id: &str, problem: &str) {
+        let mut state = self.state.lock().unwrap();
+        if state.sending.as_deref() != Some(id) {
+            return;
+        }
+        state.sending = None;
+        let new = state.finish(id, problem);
+        self.update(app, state, new);
     }
 
     /// Natro asks on another device (brain.rs): her question there, with Yes and No.
@@ -371,8 +485,10 @@ impl Reply {
         state.shown = false;
         let turn = self.turn.fetch_add(1, Ordering::SeqCst) + 1;
         drop(state);
+        self.keyboard(app, false, true); // an answer he was typing: the app before gets the keyboard back
         self.keys.escape("reply", false);
-        let _ = app.emit_to("reply", "reply", ReplyEvent { action: "hide", text: String::new(), done: true, max_height: 0.0 });
+        let hidden = ReplyEvent { action: "hide", text: String::new(), done: true, max_height: 0.0, message: None };
+        let _ = app.emit_to("reply", "reply", hidden);
         let app = app.clone();
         thread::spawn(move || {
             thread::sleep(SLIDE_OUT);
@@ -421,6 +537,19 @@ pub fn reply_close(app: AppHandle) {
     app.state::<Reply>().close(&app);
 }
 
+/// His answer to the message the card shows (its id), typed in it. False if it couldn't go (offline): the
+/// page keeps the text.
+#[tauri::command]
+pub fn reply_send(app: AppHandle, id: String, text: String) -> bool {
+    app.state::<Reply>().send(&app, &id, &text)
+}
+
+/// He clicked into the card's answer (take), or another app has the keyboard now (it isn't the box's).
+#[tauri::command]
+pub fn reply_keyboard(app: AppHandle, take: bool) {
+    app.state::<Reply>().keyboard(&app, take, false);
+}
+
 /// A click on the dock (while Natro isn't asking).
 #[tauri::command]
 pub fn reply_show(app: AppHandle) {
@@ -446,6 +575,12 @@ fn job_text(text: &str, ok: bool, title: &str) -> String {
     }
 }
 
+/// What the box says for words said out loud here at his asking on another device (from: its name; "" for none,
+/// as for a background job).
+fn said_text(from: &str, text: &str) -> String {
+    if from.is_empty() { text.to_string() } else { format!("**From your {from}:** {text}") }
+}
+
 /// A link in a reply: opened in the browser (web links only), a file that came
 /// from the phone, opened or shown in its folder (natro:open/3, natro:show/3), a
 /// reminder's Snooze (natro:snooze/<its id>), or the Yes or No to a question on the
@@ -455,8 +590,8 @@ pub fn reply_open(app: AppHandle, url: String) {
     if url.starts_with("natro:answer/") {
         return app.state::<Reply>().answer(&app, &url);
     }
-    if url.starts_with("natro:reply/") {
-        return app.state::<Reply>().reply_to(&app, &url);
+    if let Some(id) = url.strip_prefix("natro:reply/") {
+        return app.state::<Reply>().reply_in_chat(&app, id);
     }
     if let Some(reminder) = url.strip_prefix("natro:snooze/") {
         if !app.state::<crate::brain::Brain>().snooze(reminder) {
@@ -480,13 +615,12 @@ fn message_key(id: &str) -> String {
     format!("message:{id}")
 }
 
-/// What the box says for a message from the phone: "**Nino** · WhatsApp: Are you coming? [Reply](natro:reply/pm3)",
-/// on one line, so a short one fades by itself. Links in the message stay text: a message never gets the box's
-/// own buttons (a Yes to Natro's question, say).
-fn message_text(id: &str, from: &str, app_name: &str, text: &str, can_reply: bool) -> String {
+/// A message from the phone in words, behind its card: "**Nino** · WhatsApp: Are you coming?", on one line, so a
+/// short one fades by itself. Links in the message stay text: a message never gets the box's own buttons (a Yes to
+/// Natro's question, say).
+fn message_text(card: &Card) -> String {
     let plain = |words: &str| words.split_whitespace().collect::<Vec<_>>().join(" ").replace("](", "]\u{200B}(");
-    let reply = if can_reply { format!(" [Reply](natro:reply/{id})") } else { String::new() };
-    format!("**{}** · {}: {}{reply}", plain(from), plain(app_name), plain(text))
+    format!("**{}** · {}: {}", plain(&card.from), plain(&card.app), plain(&card.text))
 }
 
 /// A question on another device, as the box knows it.
@@ -560,6 +694,12 @@ mod tests {
     }
 
     #[test]
+    fn words_said_at_his_asking_elsewhere_say_where_from() {
+        assert_eq!(said_text("phone", "Dinner's ready."), "**From your phone:** Dinner's ready.");
+        assert_eq!(said_text("", "The flats are in your notes."), "The flats are in your notes.");
+    }
+
+    #[test]
     fn a_reminder_says_what_it_is_and_can_be_snoozed() {
         assert_eq!(
             reminder_text("rm1-17", "Time to call Nino.", false),
@@ -587,15 +727,31 @@ mod tests {
         );
     }
 
+    fn card(id: &str, from: &str, app: &str, text: &str) -> Card {
+        Card { id: id.into(), from: from.into(), app: app.into(), text: text.into(), time: 0, can_reply: true }
+    }
+
     #[test]
-    fn a_message_from_the_phone_is_one_line_with_a_reply_and_no_links_of_its_own() {
-        assert_eq!(
-            message_text("pm3", "Nino", "WhatsApp", "Are you\ncoming?", true),
-            "**Nino** · WhatsApp: Are you coming? [Reply](natro:reply/pm3)"
-        );
-        assert_eq!(message_text("pm4", "Bank", "Messages", "Code 1234", false), "**Bank** · Messages: Code 1234");
-        let sly = message_text("pm5", "X", "WhatsApp", "[Yes](natro:answer/phone/c4/yes)", true);
-        assert!(sly.contains("[Yes]\u{200B}(natro:answer") && sly.ends_with("[Reply](natro:reply/pm5)"));
+    fn a_message_from_the_phone_is_one_line_with_no_links_of_its_own() {
+        let nino = card("pm3", "Nino", "WhatsApp", "Are you\ncoming?");
+        assert_eq!(message_text(&nino), "**Nino** · WhatsApp: Are you coming?");
+        assert_eq!(nino.to(), "Nino on WhatsApp");
+        let sly = message_text(&card("pm5", "X", "WhatsApp", "[Yes](natro:answer/phone/c4/yes)"));
+        assert!(sly.contains("[Yes]\u{200B}(natro:answer"));
+    }
+
+    #[test]
+    fn a_message_is_a_card_until_something_else_shows() {
+        let mut state = State::default();
+        state.finish(&message_key("pm3"), "**Nino** · WhatsApp: Hi");
+        state.message = Some(card("pm3", "Nino", "WhatsApp", "Hi"));
+        assert!(state.event("show").message.is_some());
+        // The same key's word (it's gone from the phone) is words, as is any reply after.
+        state.finish(&message_key("pm3"), "That message isn't on your phone any more.");
+        assert!(state.message.is_none());
+        state.message = Some(card("pm3", "Nino", "WhatsApp", "Hi"));
+        state.add("r4", "Sent");
+        assert!(state.event("text").message.is_none());
     }
 
     #[test]

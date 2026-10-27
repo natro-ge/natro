@@ -93,7 +93,8 @@ object Messages {
 
     /**
      * Answer a message in its own app, through its notification's reply box. key: the notification's (the PC's
-     * Reply), or blank: then the newest message from `to` (and `app`, if given). Returns what was done.
+     * Reply; once it's gone, a Reply kept for its chat: Sending), or blank: then the newest message from `to` (and
+     * `app`, if given). Returns what was done.
      */
     fun reply(context: Context, key: String, to: String, app: String, text: String): String {
         val reader = NotificationReader.current
@@ -103,26 +104,35 @@ object Messages {
             .filter { it.packageName != context.packageName && replyAction(it) != null }
             .sortedByDescending { it.postTime }
         val item = if (key.isNotBlank()) {
-            open.firstOrNull { it.key == key } ?: throw ToolFailure("That message's notification is gone from the " +
-                "phone (it was read or dismissed), so it can't be answered from there.")
+            open.firstOrNull { it.key == key } ?: return Sending.replyKept(context, key, text)
+                ?: throw ToolFailure("That message's notification is gone from the phone (it was read or " +
+                    "dismissed), so it can't be answered from there.")
         } else {
             open.firstOrNull { fits(shownAs(it), reader.appName(it.packageName), it.packageName, to, app) }
                 ?: throw ToolFailure("There's no message from \"$to\" on the phone that can be answered from its " +
                     "notification (it may have been read). Its notifications now:\n${reader.describe(10)}")
         }
-        val action = replyAction(item)!!
+        if (!answer(context, replyAction(item)!!, text)) {
+            throw ToolFailure("${reader.appName(item.packageName)} doesn't take answers from that notification any more.")
+        }
+        return "Sent to ${Text.short(shownAs(item), 60)} on ${reader.appName(item.packageName)}."
+    }
+
+    /** Type text into a notification's reply box (its Reply, or one kept) and send it: false if the app no longer
+     * takes answers from it. */
+    fun answer(context: Context, action: Notification.Action, text: String): Boolean {
         val inputs = action.remoteInputs.orEmpty()
         val results = Bundle().apply { inputs.filter { it.allowFreeFormInput }.forEach { putCharSequence(it.resultKey, text) } }
         val intent = Intent().addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
         RemoteInput.addResultsToIntent(inputs, intent, results)
         RemoteInput.setResultsSource(intent, RemoteInput.SOURCE_FREE_FORM_INPUT)
         remember(text)
-        try {
+        return try {
             action.actionIntent.send(context, 0, intent)
+            true
         } catch (e: PendingIntent.CanceledException) {
-            throw ToolFailure("${reader.appName(item.packageName)} doesn't take answers from that notification any more.")
+            false
         }
-        return "Sent to ${Text.short(shownAs(item), 60)} on ${reader.appName(item.packageName)}."
     }
 
     /** Who a notification is from, as it shows. */

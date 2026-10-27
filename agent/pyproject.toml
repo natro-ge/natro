@@ -12,8 +12,11 @@ dependencies = [
     "requests",
     # Time zones on Windows, which has no system zone database.
     "tzdata",
-    # Reading PDFs from Google Drive.
-    "pypdf",
+    # Reading PDFs from Google Drive, and working on his PDFs (pdf.py; crypto: locking and unlocking them).
+    # Compressing, JPGs and OCR use Ghostscript and OCRmyPDF, installed on the VPS with apt.
+    "pypdf[crypto]",
+    # Watermarks and page numbers (pdf.py).
+    "reportlab",
     # Repeating reminders (RRULEs).
     "python-dateutil",
     # Converting pictures (convert.py), HEIC from a phone too. Documents, audio and video use
@@ -36,7 +39,7 @@ packages = ["natro_agent"]
 
 [tool.setuptools.package-data]
 # The dashboard's page (dashboard.py).
-natro_agent = ["web/*"]
+natro_agent = ["web/*", "web/fonts/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

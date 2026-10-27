@@ -4,6 +4,7 @@ import pytest
 from conftest import FakeClient, Owner, message, run, text, tool_use
 from natro_agent import quick
 from natro_agent.agent import Agent
+from natro_agent.notes import Notes
 from natro_agent.tools import Tool, ToolError
 
 
@@ -72,10 +73,31 @@ def test_bare_words_only_outside_a_conversation():
     assert quick.command("Next song.", in_conversation=True) == ("spotify_control", {"action": "next"})
 
 
-def test_simple_requests():
-    assert quick.simple("Okay, Natro. Play Yellow by Coldplay.")
-    assert not quick.simple("Open Spotify and play Kendrick's Fear.")
-    assert not quick.simple("Turn the volume up, I can't hear it.")
+@pytest.mark.parametrize("said, one_thing", [
+    ("Okay, Natro. Play Yellow by Coldplay.", True),
+    ("Open Spotify and play Kendrick's Fear.", False),
+    ("Turn the volume up, I can't hear it.", False),
+    ("Claude, open it.", True),  # a word and a comma before it
+    ("Okay, Natro, pause it.", True),
+    # His own words to note, add, remind him of or say may have "and"s and commas, and be long.
+    ("Remind me that I need to change the FK relay in about three days.", True),
+    ("Make a note that we need to change the Natro design. We should set it up as if Natro is on the website, and it "
+     "should be interactive, not just a plain showcase.", True),
+    ("add natro feature list task: when I press yes manually in chat it sends no. and I need to fix that", True),
+    ("add natro feature to design reply box well when messages come from phone", True),
+    ("Say on PC loud, who came in here?", True),
+    ('say "who came in here? show yourself, then leave!"', True),
+    ("[He asked for this on his other device while this PC was offline, and has just said to go ahead.] open "
+     "Calculator", True),
+    # ... but not another thing to do.
+    ("Remind me to call mom, then open Spotify.", False),
+    ("Make a note that the jam is gone and play some music.", False),
+    ("add a task: buy milk, also set an alarm for 7", False),
+    ('say "hi" and open Spotify', False),
+    ("set an alarm for 6:30 and play music", False),  # a time's colon isn't where his words start
+])
+def test_simple_requests(said, one_thing):
+    assert quick.simple(said) == one_thing
 
 
 def test_quick_command_needs_no_model():
@@ -103,6 +125,17 @@ def test_simple_request_ends_with_a_final_tools_result():
     reply = run(agent.respond("play the next one", Owner()))  # not a quick phrase, but simple
     assert reply.text == "Skipped to the next track." and len(claude.requests) == 1
     assert agent.session.messages[-1] == {"role": "assistant", "content": "Skipped to the next track."}
+
+
+def test_a_note_ends_with_the_notes_own_words(tmp_path):
+    notes = {tool.name: tool for tool in Notes(tmp_path).tools()}
+    assert sorted(name for name, tool in notes.items() if tool.final) == ["notes_edit", "notes_write"]
+    claude = FakeClient(message(tool_use("t1", "notes_write", title="Natro design", mode="create",
+                                         text="Interactive, like Natro on the website, and different."),
+                                stop="tool_use"))
+    agent = Agent(list(notes.values()), client=claude)
+    reply = run(agent.respond("Make a note that the Natro design should be interactive, and different.", Owner()))
+    assert reply.text == "Created the note 'Natro design'." and len(claude.requests) == 1
 
 
 def test_several_things_get_the_second_model_call():

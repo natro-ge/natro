@@ -15,9 +15,10 @@ The conversation stays one, whichever answers.
 
 Claude's prompt cache and its thinking blocks are tied to the exact
 conversation, so within a Claude conversation the instructions and the tool list
-never change and messages are only ever appended. A background job (jobs.py) runs on a
-worker: a copy of the agent with a conversation of its own, beside his requests. A device that disconnects
-mid-conversation keeps its tools in the list; calling them returns "offline".
+never change and messages are only ever appended. They're the same from one conversation to the next too, whichever
+devices are online: an offline device's tools stay listed as it last offered them (calling one returns "offline"),
+and while he's about the cached copy is read again before its hour runs out (keep_warm). A background job (jobs.py)
+runs on a worker: a copy of the agent with a conversation of its own, beside his requests.
 A cancelled request is taken back off the end, so the conversation is as it was
 before it (and its cached start still applies).
 """
@@ -27,6 +28,7 @@ import json
 import os
 import re
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 
@@ -35,7 +37,8 @@ import anthropic
 from natro_agent import costs, identity, log, pictures, quick, steps
 from natro_agent.config import monthly_budget, timezone
 from natro_agent.models import CHEAP_MODEL, DEFAULT_MODEL, FALLBACK_MODEL, STRONGER, cost, options
-from natro_agent.tools import ToolError, WithPictures, result_text
+from natro_agent.timing import Timing
+from natro_agent.tools import KnownTools, ToolError, WithPictures, result_text
 
 # A follow-up within this time continues the conversation (it matches how long
 # Claude keeps the conversation in its prompt cache; the instructions and tools stay an hour).
@@ -58,12 +61,23 @@ CONFIRM_SECONDS = 60
 MANY_CHANGES = 5
 # Longer tool results are cut, to keep requests small.
 RESULT_CHARS = 20000
+# Both models' cached instructions are kept from running out (an hour after they were last read) for this long
+# after his last request, while it's between these hours his time, by reading them again WARM_EVERY minutes after
+# the last read. On his requests of 20-26 Oct it would have left 8 of 217 starting cold instead of 42, and the
+# cache's cost at $0.18 a day instead of $0.35.
+WARM_FOR_HOURS = 6
+WARM_FROM, WARM_UNTIL = 8, 1  # 08:00 to 01:00
+WARM_EVERY_MINUTES = 55
 # A picture he sends goes with his next request if it comes within this time (he sent it to ask about it).
 PICTURE_MINUTES = 10
 MOST_PICTURES = 4
 # NATRO_CHECK_HISTORY=1 makes Claude reject any edit to a past conversation (see models.options).
 CHECK_HISTORY = os.environ.get("NATRO_CHECK_HISTORY") == "1"
 TOKEN_KINDS = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens")
+
+# How a tool that asks in its own words (Tool.own_question: send_message) asks the owner: await ASK.get()(question,
+# details) is his yes, asked as any question of the request (or the job) running it is. Set for each tool call.
+ASK = ContextVar("ask", default=None)
 
 # Words that mark a request as personal or risky: it goes to Sonnet (unless it's about the PC or a screen).
 # Broad on purpose: a wrong guess here only costs a little money.
@@ -76,7 +90,7 @@ PERSONAL_HINTS = re.compile(
     r"travel|how long to|how long does it take|leave for|drive to|by bus|by metro|routes?|directions|navigat\w*|"
     r"get to|metro|bus|buses|in (?:google )?maps|on (?:the )?map|location|where am i|where i am|from here|"
     r"schedule|meeting|appointment|events?|files?|documents?|docs?|drive|sheets?|spreadsheets?|folders?|photos?|"
-    r"messages?|sms|texts?|whatsapp|messenger|telegram|viber|repl(?:y|ies)|"
+    r"messages?|sms|texts?|whatsapp|messenger|telegram|viber|repl(?:y|ies)|instagram|insta|dms?|"
     r"notifications?|contacts?|call|delete|remove|send|share|pay|password|bank|address|about me|my name|"
     # What's on a screen and what a command says are personal too.
     r"screens?|screenshot|click|scroll|commands?|powershell|terminal|ipconfig|dark mode|light mode|brightness|"
@@ -147,6 +161,14 @@ class Reply:
 
 
 @dataclass
+class Warmth:
+    """When each model last read Natro's instructions (time.monotonic() at a call's start: any call reads them, or
+    writes them if they weren't cached), and when he last asked something. The workers (jobs) share it."""
+    used: dict = field(default_factory=dict)
+    asked: float = None
+
+
+@dataclass
 class Changes:
     """The owner's items one request has added or changed so far, and whether he allowed many."""
     made: int = 0
@@ -156,7 +178,7 @@ class Changes:
 class Session:
     """A conversation with Claude: fixed instructions and tools, and messages that only grow."""
 
-    def __init__(self, model, tools, devices, memory=None):
+    def __init__(self, model, tools, memory=None):
         self.last_used = time.monotonic()
         self.model = model  # the model answering the request now
         self.failed = set()  # models whose API failed in this conversation: their fallback answers instead
@@ -165,12 +187,15 @@ class Session:
         self.personal = False
         self.tools = {tool.name: tool for tool in tools}
         self.tool_definitions = [tool.definition() for tool in sorted(tools, key=lambda tool: tool.name)]
-        # The cache marker lets the next conversation reuse the cached instructions and tools, for an hour: most
+        # The cache markers let the next conversation reuse the cached instructions and tools, for an hour: most
         # conversations start within an hour of the one before, and writing the ~25,000 tokens again each time
         # was most of the spending (2026-10-20). An hour's write costs 2x the input price (5 minutes': 1.25x);
-        # a read 0.1x. The conversation itself is cached for 5 minutes (_stream), after this.
-        self.system = [{"type": "text", "text": identity.system_prompt(tools, devices, memory=memory),
-                        "cache_control": {"type": "ephemeral", "ttl": "1h"}}]
+        # a read 0.1x. What she remembers has a marker of its own after them, so a fact remembered or forgotten
+        # writes only itself again. The conversation itself is cached for 5 minutes (_stream), after these.
+        an_hour = {"type": "ephemeral", "ttl": "1h"}
+        self.system = [{"type": "text", "text": identity.system_prompt(tools), "cache_control": an_hour}]
+        if memory is not None:
+            self.system.append({"type": "text", "text": identity.memory_prompt(memory), "cache_control": an_hour})
         self.messages = []
 
     @property
@@ -248,13 +273,15 @@ class Agent:
     """
 
     def __init__(self, tools=(), model=DEFAULT_MODEL, client=None, budget=None, memory=None,
-                 cheap_model=CHEAP_MODEL):
+                 cheap_model=CHEAP_MODEL, known_tools=None):
         self.client = client or anthropic.AsyncAnthropic()
         self.model = model
         self.cheap_model = cheap_model
         self.own_tools = list(tools)  # Natro's own and the MCP servers'
         self.memory = memory
         self.devices = {}  # name -> Device, while connected
+        self.known_tools = known_tools or KnownTools()  # what his devices offered, for while they're offline
+        self.warmth = Warmth()
         # What happened since the last request that Natro should know (a picture he sent): told with the next one.
         self.notes = []
         # The same, but personal (a reminder that went off): told with the next request a model answers (a quick
@@ -265,6 +292,7 @@ class Agent:
         self._on_step = lambda step: None  # the request being handled's (one at a time: _busy)
         self._asked = []  # the questions asked so far in the request being handled
         self._done = []  # what its tools did so far (told to Claude if it's cancelled)
+        self._timing = Timing()  # how long its parts take (timing.py)
         # A background job finished or an alert was shown: the next request counts as personal (Sonnet answers it),
         # and is told what it found (private_notes).
         self.personal_next = False
@@ -276,6 +304,8 @@ class Agent:
 
     def connect(self, device):
         self.devices[device.name] = device
+        if device.name in identity.KNOWN_DEVICES:
+            self.known_tools.update(device)
 
     def worker(self, max_steps=MAX_STEPS):
         """An agent for a background job (jobs.py): the same tools, devices, memory, models and spending, with a
@@ -287,7 +317,7 @@ class Agent:
         worker.personal_next = True
         worker.notes, worker.private_notes, worker.pictures = [], [], []
         worker._busy = asyncio.Lock()
-        worker._on_step, worker._asked, worker._done = (lambda step: None), [], []
+        worker._on_step, worker._asked, worker._done, worker._timing = (lambda step: None), [], [], Timing()
         worker.max_steps = max_steps
         return worker
 
@@ -316,27 +346,34 @@ class Agent:
             del self.devices[device.name]
 
     def offered_tools(self):
-        """Every tool on offer right now: Natro's own and the connected devices'."""
+        """Every tool on offer: Natro's own, each of his devices' (an offline one's as it last offered them, so the
+        list is the same whichever are online), and any other connected device's (a test one)."""
         tools = list(self.own_tools)
+        for name, label in identity.KNOWN_DEVICES.items():
+            device = self.devices.get(name)
+            listed = (device.tools() if device else []) or self.known_tools.tools(name)
+            tools += [replace(tool, run=self._on_device(name, label, tool)) for tool in listed]
         for device in self.devices.values():
-            tools += [replace(tool, run=self._while_connected(device, tool)) for tool in device.tools()]
+            if device.name not in identity.KNOWN_DEVICES:
+                tools += [replace(tool, run=self._on_device(device.name, device.label, tool)) for tool in device.tools()]
         return tools
 
-    def _while_connected(self, device, tool):
+    def _on_device(self, name, label, tool):
+        """Runs tool on the device called name as it is connected when it's called (its app may have restarted, or
+        the network blinked, since the tool was listed: its tool of the same name)."""
         async def run_on_device(args):
-            current = self.devices.get(device.name)
+            current = self.devices.get(name)
             if current is None:
-                raise ToolError(f"Your owner's {device.label} is offline right now.")
-            if current is device:
-                return await tool.run(args)
-            # The device reconnected (its app restarted, or the network blinked): its tool of the same name.
+                raise ToolError(f"Your owner's {label} is offline right now: queue_for_device keeps the request "
+                                "for when it's back.")
             same = next((t for t in current.tools() if t.name == tool.name), None)
             if same is None:
-                raise ToolError(f"Your owner's {device.label} no longer offers {tool.name}.")
+                raise ToolError(f"Your owner's {label} no longer offers {tool.name}.")
             return await same.run(args)
         return run_on_device
 
-    async def respond(self, text, device, on_text=None, voice_cost=0.0, on_step=None, on_start=None, context=""):
+    async def respond(self, text, device, on_text=None, voice_cost=0.0, on_step=None, on_start=None, context="",
+                      timing=None):
         """Handle one request (English text) from a device and return Natro's reply.
 
         on_text receives what she writes in pieces as it is written, including her words before and between
@@ -345,13 +382,18 @@ class Agent:
         doing as each tool starts (steps.describe: {"text": "Opening Spotify", ...}). voice_cost is what
         recognizing and translating the request cost, for the monthly total. on_start is called once she
         turns to it (she handles one request at a time; others wait). context: a line from the system put
-        before the request (a background job's), not used to route it.
+        before the request (a background job's), not used to route it. timing: a Timing (timing.py) to fill with
+        how long its parts take.
 
         Cancelling the task that runs this (the owner cancelled on the device) stops the request where
         it is and leaves the conversation as it was before it.
         """
         on_text = on_text or (lambda piece: None)
+        waiting = time.monotonic()
+        self.warmth.asked = waiting
         async with self._busy:
+            self._timing = timing or Timing()
+            self._timing.wait = time.monotonic() - waiting
             if on_start:
                 on_start()
             self._on_step = on_step or (lambda step: None)
@@ -415,7 +457,8 @@ class Agent:
             return None
         name, args = found
         reply = Reply("", "none (quick)")
-        content, failed, _ = await self._call_tool(tools, name, args, device, "", reply)
+        with self._timing.step():
+            content, failed, _ = await self._call_tool(tools, name, args, device, "", reply)
         if failed:
             return None  # a model may know better (say, the phone's media rather than Spotify)
         reply.text = first_line(content)
@@ -440,7 +483,7 @@ class Agent:
 
     def _claude_session(self):
         memory = self.memory.prompt_section() if self.memory else None
-        return Session(self.model, self.offered_tools(), list(self.devices.values()), memory)
+        return Session(self.model, self.offered_tools(), memory)
 
     async def _claude_turn(self, session, request, device, on_text, simple=False, model=None):
         if self.ledger.over_budget and not await self._ask(
@@ -491,10 +534,11 @@ class Agent:
             first = {}
             for block in tool_uses:
                 first.setdefault(call_key(block), block.id)
-            results = await asyncio.gather(*(self._use_tool(session, block, device, text_of(content), reply,
-                                                            declined=block.id in declined)
-                                             if first[call_key(block)] == block.id else repeated(block)
-                                             for block in tool_uses))
+            with self._timing.step():
+                results = await asyncio.gather(*(self._use_tool(session, block, device, text_of(content), reply,
+                                                                declined=block.id in declined)
+                                                 if first[call_key(block)] == block.id else repeated(block)
+                                                 for block in tool_uses))
             session.messages.append({"role": "user", "content": list(results)})
             last = len(said)
             failing = failing + 1 if all(result["is_error"] for result in results) else 0
@@ -596,10 +640,56 @@ class Agent:
                        cache_control={"type": "ephemeral"}, **options(model, CHECK_HISTORY))
         if session.tool_definitions:
             request["tools"] = session.tool_definitions
+        started, first_token = time.monotonic(), None
+        self.warmth.used[model] = started
         async with self.client.beta.messages.stream(**request) as stream:
-            async for piece in stream.text_stream:
-                on_text(piece)
-            return await stream.get_final_message()
+            async for event in stream:
+                if first_token is None and event.type == "content_block_start":
+                    first_token = time.monotonic() - started  # its thinking or words start: the prompt is read
+                if event.type == "text":
+                    on_text(event.text)
+            response = await stream.get_final_message()
+        self._timing.call(model, response.usage, first_token, time.monotonic() - started)
+        return response
+
+    def warm_due(self, now=None, local=None):
+        """The models whose cached instructions should be read now, so they don't run out while he's about (see
+        WARM_FOR_HOURS): none when he hasn't asked anything for that long, at night, or over the budget."""
+        now = time.monotonic() if now is None else now
+        local = local or datetime.now(timezone())
+        asked = self.warmth.asked
+        if asked is None or now - asked > WARM_FOR_HOURS * 3600 or self.ledger.over_budget:
+            return []
+        if WARM_UNTIL <= local.hour < WARM_FROM:  # the hours run past midnight
+            return []
+        return [model for model in dict.fromkeys((self.model, self.cheap_model))
+                if now - self.warmth.used.get(model, float("-inf")) >= WARM_EVERY_MINUTES * 60]
+
+    async def warm(self, model):
+        """Read the instructions and tools a new conversation would start with on model (writing them if they
+        weren't cached), so they stay cached another hour. max_tokens 0: nothing is written back, only the prompt
+        read; thinking and effort as a real request's, as they're part of what's cached."""
+        session = self._claude_session()
+        request = dict(model=model, max_tokens=0, system=session.system,
+                       messages=[{"role": "user", "content": "warmup"}], **options(model, CHECK_HISTORY))
+        if session.tool_definitions:
+            request["tools"] = session.tool_definitions
+        self.warmth.used[model] = time.monotonic()
+        response = await self.client.beta.messages.create(**request)
+        spent = cost(model, response.usage)
+        self.ledger.add(spent)
+        log.write("warm", model=model, cost=round(spent, 6),
+                  tokens={kind: getattr(response.usage, kind) or 0 for kind in TOKEN_KINDS})
+
+    async def keep_warm(self):
+        """Until cancelled: each minute, warms the models warm_due names."""
+        while True:
+            await asyncio.sleep(60)
+            for model in self.warm_due():
+                try:
+                    await self.warm(model)
+                except anthropic.APIError as e:
+                    log.write("model_error", model=model, error=repr(e), warming=True)
 
     async def _many_changes(self, changes, tools, tool_uses, device, question):
         """Ask once before a request's changes go past MANY_CHANGES. Returns the ids of the calls he declined."""
@@ -642,13 +732,19 @@ class Agent:
         shown = []
         if tool is None:
             content, is_error = f"There is no tool named {name!r}.", True
-        elif declined or tool.confirm and not await self._ask(device, question or plain_question(tool.name, args),
-                                                              f"{tool.name} {json.dumps(args, ensure_ascii=False)}"):
+        elif declined or tool.confirm and not tool.own_question and not await self._ask(
+                device, question or plain_question(tool.name, args),
+                f"{tool.name} {json.dumps(args, ensure_ascii=False)}"):
             content, is_error = "Your owner said no, so this was not done.", False
             call["declined"] = True
         else:
             self._show_step(tool.name, args)
+            ASK.set(lambda question, details: self._ask(device, question, details))
+            began, asked = time.monotonic(), self._timing.asking
             content, is_error, shown = await self._run(tool, args)
+            # Without waiting for his yes, when it asked in its own words.
+            self._timing.tool(tool.name, tool.source, time.monotonic() - began - (self._timing.asking - asked),
+                              not is_error)
             if not is_error:
                 self._done.append(f"{tool.name} {json.dumps(args, ensure_ascii=False)[:160]}: "
                                   f"{first_line(content)[:160]}")
@@ -667,12 +763,14 @@ class Agent:
 
     async def _run(self, tool, args):
         """Returns (text for the model, whether it failed, its pictures)."""
+        # A tool that asks in its own words: its question's time too, and its tries on another device (send_message).
+        seconds = TOOL_SECONDS + (CONFIRM_SECONDS + 2 * TOOL_SECONDS if tool.own_question else 0)
         try:
-            result = await asyncio.wait_for(tool.run(args), TOOL_SECONDS)
+            result = await asyncio.wait_for(tool.run(args), seconds)
         except ToolError as e:
             return str(e), True, []
         except asyncio.TimeoutError:
-            return f"{tool.name} took longer than {TOOL_SECONDS} seconds and was stopped.", True, []
+            return f"{tool.name} took longer than {seconds} seconds and was stopped.", True, []
         except Exception as e:
             return f"{tool.name} failed: {type(e).__name__}: {e}", True, []
         return result_text(result), False, list(result.pictures) if isinstance(result, WithPictures) else []
@@ -680,8 +778,9 @@ class Agent:
     async def _ask(self, device, question, details):
         """Ask the owner on the device; no answer within CONFIRM_SECONDS counts as no."""
         self._asked.append(question)
-        async with self._asking:
-            try:
-                return await asyncio.wait_for(device.confirm(question, details), CONFIRM_SECONDS)
-            except asyncio.TimeoutError:
-                return False
+        with self._timing.asked():
+            async with self._asking:
+                try:
+                    return await asyncio.wait_for(device.confirm(question, details), CONFIRM_SECONDS)
+                except asyncio.TimeoutError:
+                    return False

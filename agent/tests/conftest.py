@@ -46,13 +46,12 @@ class FakeStream:
     async def __aexit__(self, *exc):
         return False
 
-    @property
-    def text_stream(self):
-        async def pieces():
-            for block in self.response.content:
-                if block.type == "text":
-                    yield block.text
-        return pieces()
+    async def __aiter__(self):
+        """The events the agent reads: each block's start, and a text event for each block of words."""
+        for block in self.response.content:
+            yield SimpleNamespace(type="content_block_start", content_block=block)
+            if block.type == "text":
+                yield SimpleNamespace(type="text", text=block.text)
 
     async def get_final_message(self):
         return self.response
@@ -64,14 +63,20 @@ class FakeClient:
     def __init__(self, *replies):
         self.replies = list(replies)
         self.requests = []
-        self.beta = SimpleNamespace(messages=SimpleNamespace(stream=self.stream))
+        self.beta = SimpleNamespace(messages=SimpleNamespace(stream=self.stream, create=self.create))
 
     def stream(self, **request):
+        return FakeStream(self.create_now(**request))
+
+    async def create(self, **request):
+        return self.create_now(**request)
+
+    def create_now(self, **request):
         self.requests.append(copy.deepcopy(request))
         reply = self.replies.pop(0)
         if isinstance(reply, Exception):
             raise reply
-        return FakeStream(reply)
+        return reply
 
 
 class Owner(Device):

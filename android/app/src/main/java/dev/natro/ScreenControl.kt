@@ -145,6 +145,12 @@ class ScreenControl : AccessibilityService() {
         return after("Pressed $key.")
     }
 
+    /** Tap an element found some other way (Sending's Send): itself or the nearest parent that taps. */
+    fun click(node: AccessibilityNodeInfo) {
+        val target = clickableSelfOrParent(node) ?: node
+        if (!target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) tapAt(target)
+    }
+
     private fun element(number: Int): AccessibilityNodeInfo {
         val node = elements.getOrNull(number - 1) ?: throw ToolFailure("There's no [$number]: read the screen first.")
         if (!node.refresh()) throw screenChanged()

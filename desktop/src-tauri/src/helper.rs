@@ -12,7 +12,7 @@ use std::process::{ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use tokio::sync::{oneshot, watch};
@@ -26,14 +26,19 @@ const TOOL_WAIT: Duration = Duration::from_secs(60);
 /// Finding an app by name (the first time, the Start menu is read: a second or two).
 const APP_WAIT: Duration = Duration::from_secs(10);
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+/// Replies whose first sound is awaited, at most (one that's never said, as Kokoro isn't there, is let go).
+const MOST_AWAITED: usize = 10;
 
 /// Tool calls waiting for their result, by id: whether it worked, the text, and a picture (or null).
 type Waiting = Arc<Mutex<HashMap<String, oneshot::Sender<(bool, String, Value)>>>>;
+/// Replies being said: their id, when they came, and what to tell with the seconds until their first sound.
+type Awaited = Arc<Mutex<Vec<(String, Instant, Box<dyn FnOnce(f64) + Send>)>>>;
 
 pub struct Helper {
     stdin: Mutex<Option<ChildStdin>>,
     tools: watch::Receiver<Option<Vec<Value>>>,
     waiting: Waiting,
+    awaited: Awaited,
     ids: AtomicU64,
     /// The tray's "Speak replies".
     pub speaking: AtomicBool,
@@ -43,6 +48,7 @@ impl Helper {
     pub fn start(config: &Config) -> Helper {
         let (found_tools, tools) = watch::channel(None);
         let waiting: Waiting = Arc::default();
+        let awaited: Awaited = Arc::default();
         let python = config.home.join(".venv").join("Scripts").join("python.exe");
         let child = Command::new(&python)
             .args(["-m", "natro_pc.helper"])
@@ -57,7 +63,7 @@ impl Helper {
         let stdin = match child {
             Ok(mut child) => {
                 let (stdout, stderr) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
-                let pending = waiting.clone();
+                let (pending, saying) = (waiting.clone(), awaited.clone());
                 thread::spawn(move || {
                     for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                         let Ok(message) = serde_json::from_str::<Value>(&line) else {
@@ -74,6 +80,14 @@ impl Helper {
                                         message["result"].as_str().unwrap_or_default().to_string();
                                     let ok = message["ok"].as_bool().unwrap_or(false);
                                     let _ = waiter.send((ok, result, message["picture"].clone()));
+                                }
+                            }
+                            Some("spoken") => {
+                                let id = message["id"].as_str().unwrap_or_default();
+                                let mut saying = saying.lock().unwrap();
+                                if let Some(i) = saying.iter().position(|(said, _, _)| said == id) {
+                                    let (_, came, tell) = saying.remove(i);
+                                    tell(came.elapsed().as_secs_f64());
                                 }
                             }
                             _ => {}
@@ -101,6 +115,7 @@ impl Helper {
             stdin: Mutex::new(stdin),
             tools,
             waiting,
+            awaited,
             ids: AtomicU64::new(1),
             speaking: AtomicBool::new(true),
         }
@@ -154,7 +169,28 @@ impl Helper {
 
     /// Speak, after anything already being said (unless "Speak replies" is off).
     pub fn say(&self, text: &str) {
-        if self.speaking.load(Ordering::SeqCst) && !text.trim().is_empty() {
+        if self.speaking.load(Ordering::SeqCst) {
+            self.say_anyway(text);
+        }
+    }
+
+    /// Speak a reply (unless "Speak replies" is off); tell gets the seconds from now until its first sound.
+    pub fn say_reply(&self, text: &str, id: &str, tell: impl FnOnce(f64) + Send + 'static) {
+        if !self.speaking.load(Ordering::SeqCst) || text.trim().is_empty() {
+            return;
+        }
+        {
+            let mut awaited = self.awaited.lock().unwrap();
+            awaited.push((id.to_string(), Instant::now(), Box::new(tell)));
+            let extra = awaited.len().saturating_sub(MOST_AWAITED);
+            awaited.drain(..extra);
+        }
+        self.write(json!({"type": "say", "text": text, "id": id}));
+    }
+
+    /// Speak even with "Speak replies" off: he asked for it ("say out loud ...").
+    pub fn say_anyway(&self, text: &str) {
+        if !text.trim().is_empty() {
             self.write(json!({"type": "say", "text": text}));
         }
     }

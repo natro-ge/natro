@@ -166,7 +166,7 @@ class Recognizer:
         text = re.sub(r"\s*\{\}\s*", "", " ".join(t for t in texts if t))
         return text, picked
 
-    def transcribe(self, pcm):
+    def transcribe(self, pcm, timing=None):
         """Transcribe a whole recording at once. Returns (text, as_georgian).
 
         Google picks one language for a whole recording. A Georgian request that
@@ -176,10 +176,19 @@ class Recognizer:
         again as Georgian only, and as_georgian is that text (otherwise None).
         Claude then decides which one is right: the speaker may really have
         spoken English.
+
+        timing, a dict, gets the seconds each recognition took: recognize, and
+        georgian when the retry ran.
         """
+        timing = {} if timing is None else timing
+        started = time.monotonic()
         text, picked = self.recognize(pcm)
+        timing["recognize"] = time.monotonic() - started
         if any(code.startswith("en") for code in picked):
-            return text, self.recognize(pcm, languages=["ka-GE"])[0]
+            started = time.monotonic()
+            as_georgian = self.recognize(pcm, languages=["ka-GE"])[0]
+            timing["georgian"] = time.monotonic() - started
+            return text, as_georgian
         return text, None
 
     def listen(self, source):

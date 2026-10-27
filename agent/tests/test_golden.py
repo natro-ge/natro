@@ -31,6 +31,7 @@ SECRET = "Tuxa's sister is Nino."
 # got only these, went (2026-10-20); the list keeps each tool's flags deliberate.
 NOT_PERSONAL_TOOLS = {
     "web_search", "weather", "web_page",
+    "say_out_loud",  # says what she was going to reply anyway, or what he asked her to say
     "pc_open_app", "pc_close_app", "pc_list_open_apps", "pc_open_link",
     "spotify_play", "spotify_control", "spotify_now_playing", "spotify_like", "spotify_add_to_playlist",
     "spotify_create_playlist",  # makes an empty one and says only its name and URI: nothing of his is read
@@ -38,12 +39,15 @@ NOT_PERSONAL_TOOLS = {
     "phone_flashlight", "phone_volume",
 }
 
-# Tools that must ask first.
+# Tools that must ask first. Those in OWN_QUESTION ask in their own words, once they know what to ask.
 ASK_FIRST_TOOLS = {
     "pc_force_close_app", "calendar_delete_event", "tasks_delete", "gmail_send", "docs_replace",
     "forget", "notes_delete", "phone_call", "phone_send_sms", "phone_reply_message", "phone_tap_risky",
     "pc_run_command_risky", "pc_act_risky", "pc_browser_act_risky",
+    "send_message",  # asks in its own words: whom, where and what, before anything opens
+    "people_forget",
 }
+OWN_QUESTION = {"send_message"}
 
 # A tool whose name says it deletes, sends, calls, kills or pays must be on the list above.
 RISKY_NAME = re.compile(r"delete|send|call|force|replace|risky|forget|pay|buy", re.IGNORECASE)
@@ -65,12 +69,13 @@ PERSONAL_REQUESTS = [
     "how long does it take to get to the airport", "when should I leave for the dentist",
     "how do I get to Vake Park from here", "open it in Maps", "where am I",
     "every weekday at 8, brief me", "what routines do I have", "run my morning routine now",
+    "message Nino on Instagram: running 10 min late", "DM Nino that I'm outside", "Nino's Instagram is nino.k",
 ]
 
 # Plain requests: Haiku answers them.
 PLAIN_REQUESTS = ["open Chrome", "what's the capital of France", "play Yellow", "turn the flashlight on",
                  "what's 15 percent of 80", "set a timer for ten minutes", "weather in Tbilisi tomorrow",
-                 "what does the article at https://example.com/news say"]
+                 "what does the article at https://example.com/news say", "say out loud good morning"]
 
 
 # --- Setup --------------------------------------------------------------------------------------
@@ -131,9 +136,16 @@ def test_screen_and_message_tools_are_personal(tmp):
             "phone_search_files", "pc_run_command", "pc_run_command_risky", "pc_screen", "pc_find", "pc_act",
             "pc_act_risky", "pc_switch_window", "pc_wait_for", "pc_screenshot", "phone_screenshot",
             "queue_for_device", "remind", "reminders_list", "reminders_cancel", "briefing", "start_job",
-            "jobs_list", "jobs_cancel", "routine_add", "routines_list", "routines_cancel", "routines_run", "watch", "watchers_list", "watchers_cancel", "convert_file", "history_search", "travel_time", "travel_routes", "travel_plan", "phone_location",
+            "jobs_list", "jobs_cancel", "routine_add", "routines_list", "routines_cancel", "routines_run", "watch", "watchers_list", "watchers_cancel", "convert_file", "edit_pdf", "history_search", "travel_time", "travel_routes", "travel_plan", "phone_location",
             "phone_open_maps", "pc_browser_open",
-            "pc_browser_page", "pc_browser_act", "pc_browser_act_risky", "pc_browser_tabs"} <= personal
+            "pc_browser_page", "pc_browser_act", "pc_browser_act_risky", "pc_browser_tabs", "send_message",
+            "people_save", "people_forget"} <= personal
+
+
+def test_the_devices_sending_is_never_offered(tmp):
+    # Only the server's send_message calls them, after his yes to its own question.
+    names = {tool.name for tool in golden.all_tools(tmp)}
+    assert "send_message" in names and not {"phone_send_message", "pc_send_message"} & names
 
 
 # --- 1. Haiku for plain requests, Sonnet for personal or risky ones ----------------------------
@@ -163,7 +175,7 @@ def test_sonnet_keeps_a_conversation_once_it_turned_personal(tmp):
     world.ask("what do you know about me")
     world.ask("thanks")
     assert [request["model"] for request in world.claude.requests] == [HAIKU, SONNET, SONNET]
-    assert all(SECRET in request["system"][0]["text"] for request in world.claude.requests)
+    assert all(SECRET in request["system"][-1]["text"] for request in world.claude.requests)
 
 
 def test_over_budget_every_request_asks_first(tmp):
@@ -174,7 +186,12 @@ def test_over_budget_every_request_asks_first(tmp):
 
 # --- 2. Risky actions always ask ----------------------------------------------------------------
 
-@pytest.mark.parametrize("tool_name", sorted(ASK_FIRST_TOOLS))
+def test_tools_that_ask_in_their_own_words(tmp):
+    own = {tool.name for tool in golden.all_tools(tmp) if tool.own_question}
+    assert own == OWN_QUESTION and own <= ASK_FIRST_TOOLS
+
+
+@pytest.mark.parametrize("tool_name", sorted(ASK_FIRST_TOOLS - OWN_QUESTION))
 def test_risky_tool_asks_and_no_stops_it(tmp, tool_name):
     world = World(tmp, claude=[message(text("I'll do that."), tool_use("t1", tool_name), stop="tool_use"),
                                message(text("OK, I left it."))])
@@ -185,7 +202,28 @@ def test_risky_tool_asks_and_no_stops_it(tmp, tool_name):
         "Your owner said no, so this was not done."
 
 
-@pytest.mark.parametrize("tool_name", sorted(ASK_FIRST_TOOLS))
+def test_sending_a_message_asks_in_its_own_words_and_no_stops_it(tmp):
+    # The real send_message, with a phone that would send it: her sentence before it isn't the question.
+    from natro_agent.people import People
+    from natro_agent.sending import Sending
+
+    people = People(tmp / "people.md")
+    people.seen("instagram", "Nino Kapanadze", "3402")
+    phone = golden.Recording("phone", "phone", [{"name": "send_message", "hidden": True}], [])
+    sending = Sending(people, {"phone": phone})
+    for answer in (False, True):
+        world = World(tmp, claude=[message(text("I'll message Nino."), tool_use("t1", "send_message", to="Nino",
+                                                                               text="Late."), stop="tool_use"),
+                                   message(text("OK."))])
+        world.agent.own_tools = [tool for tool in world.agent.own_tools if tool.name != "send_message"]             + sending.tools()
+        phone.all_calls = world.calls
+        phone.call_tool = lambda name, args: phone._run(name, args)
+        world.ask("message Nino on Instagram: late", answer=answer)
+        assert [question for question, _ in world.owner.questions] == ['Send "Late." to Nino Kapanadze on Instagram?']
+        assert len(world.calls) == answer
+
+
+@pytest.mark.parametrize("tool_name", sorted(ASK_FIRST_TOOLS - OWN_QUESTION))
 def test_risky_tool_runs_once_after_a_yes(tmp, tool_name):
     world = World(tmp, claude=[message(text("I'll do that."), tool_use("t1", tool_name, x="1"), stop="tool_use"),
                                message(text("Done."))])
@@ -232,9 +270,9 @@ def test_a_device_that_is_offline_is_said_to_be_offline(tmp):
     world = World(tmp, claude=[message(text("Your PC is offline."))], devices=("phone",))
     world.ask("open Chrome", answer=True)
     request = world.claude.requests[0]
-    assert "Your owner's PC is offline" in request["system"][0]["text"]
+    assert "Each message's first line says which are online" in request["system"][0]["text"]
     assert "online: phone" in request["messages"][-1]["content"]
-    assert not any(tool["name"].startswith("pc_") for tool in request["tools"])
+    assert not any(tool["name"].startswith("pc_") for tool in request["tools"])  # it never connected
 
 
 def test_no_devices_means_no_device_tools_and_it_says_so(tmp):
@@ -243,7 +281,22 @@ def test_no_devices_means_no_device_tools_and_it_says_so(tmp):
     request = world.claude.requests[0]
     assert "online: no devices" in request["messages"][-1]["content"]
     assert not any(tool["name"].startswith(("pc_", "phone_")) for tool in request["tools"])
-    assert "phone is offline" in request["system"][0]["text"]
+
+
+def test_a_device_that_went_offline_keeps_its_tools_and_they_say_so(tmp):
+    # Its tools stay listed, so the instructions and tools are the ones cached while it was online.
+    world = World(tmp, claude=[message(text("Hi.")), message(tool_use("t1", "pc_open_app", app="Chrome"),
+                                                             stop="tool_use"), message(text("Your PC is offline."))])
+    world.ask("hi")
+    world.agent.disconnect(world.agent.devices["pc"])
+    world.agent.new_conversation()
+    world.ask("open Chrome")
+    online, offline = world.claude.requests[0], world.claude.requests[1]
+    assert offline["system"] == online["system"] and offline["tools"] == online["tools"]
+    assert "online: phone" in offline["messages"][-1]["content"]
+    result = world.claude.requests[2]["messages"][-1]["content"][0]
+    assert result["is_error"] and "offline" in result["content"] and "queue_for_device" in result["content"]
+    assert world.calls == []
 
 
 def test_a_tool_on_a_device_that_just_left_returns_an_error_not_a_success(tmp):
@@ -276,6 +329,11 @@ NAVIGATE = ("phone_open_maps", {"link": "https://www.google.com/maps/dir/?api=1&
                                 "navigate": True})
 RESTAURANT = ("history_search", {"words": "restaurant", "start": "2026-10-13", "end": "2026-10-13"})
 PDF_TO_WORD = ("convert_file", {"from_device": "pc", "path": "C:/Users/Tuxa/Downloads/report.pdf", "to": "docx"})
+COMPRESS_PDF = ("edit_pdf", {"action": "compress", "from_device": "pc", "paths": ["C:/Users/Tuxa/Downloads/report.pdf"]})
+GOOD_MORNING = ("say_out_loud", {"text": "Good morning."})
+DINNER_ON_PC = ("say_out_loud", {"text": "Dinner's ready.", "device": "pc"})
+MESSAGE_NINO = ("send_message", {"to": "Nino", "text": "Running 10 min late.", "app": "instagram"})
+MESSAGE_NINO_LATE = ("send_message", {"to": "Nino", "text": "I'm running late."})
 
 FLATS_JOB = ("start_job", {"task": "Find three flats in Tbilisi under 600 dollars a month and put them in a note."})
 MORNING_ROUTINE = ("routine_add", {"name": "Morning briefing", "task": "Brief me.", "at": "2026-10-20T08:00",
@@ -300,12 +358,17 @@ JOURNEYS = [
     ("every weekday at 8, brief me", [MORNING_ROUTINE], [MORNING_ROUTINE], "sonnet"),
     ("always tell me when Nino emails", [WATCH_NINO], [WATCH_NINO], "sonnet"),
     ("make my newest PDF a Word file", [NEWEST_PDF, PDF_TO_WORD], [NEWEST_PDF, PDF_TO_WORD], "sonnet"),
+    ("compress my newest PDF", [NEWEST_PDF, COMPRESS_PDF], [NEWEST_PDF, COMPRESS_PDF], "haiku"),
     ("what was that restaurant I asked about on Tuesday", [RESTAURANT], [RESTAURANT], "sonnet"),
     ("how long to the airport by bus", [AIRPORT_BY_BUS], [AIRPORT_BY_BUS], "sonnet"),
     ("what are my options to get to the airport with fewer changes", [AIRPORT_OPTIONS], [AIRPORT_OPTIONS], "sonnet"),
     ("plan my trip to the airport, first metro then bus", [METRO_THEN_BUS], [METRO_THEN_BUS], "sonnet"),
     ("how do I get to Vake Park from here", [HERE, VAKE_FROM_HERE], [HERE, VAKE_FROM_HERE], "sonnet"),
     ("navigate me there", [NAVIGATE], [NAVIGATE], "sonnet"),
+    ("say out loud good morning", [GOOD_MORNING], [GOOD_MORNING], "haiku"),
+    ("say on the PC that dinner's ready", [DINNER_ON_PC], [DINNER_ON_PC], "haiku"),
+    ("message Nino on Instagram: running 10 min late", [MESSAGE_NINO], [MESSAGE_NINO], "sonnet"),
+    ("message Nino I'm running late", [MESSAGE_NINO_LATE], [MESSAGE_NINO_LATE], "sonnet"),
 ]
 
 

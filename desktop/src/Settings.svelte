@@ -51,7 +51,7 @@
   const CLOSING_MILLIS = 160
 
   const SWITCHES: { name: keyof Switches; label: string; note: string }[] = [
-    { name: 'speak', label: 'Speak replies', note: 'Natro says her replies out loud on this PC' },
+    { name: 'speak', label: 'Speak replies', note: 'Natro says her replies out loud on this PC; off, only what you ask her to say out loud' },
     { name: 'replies', label: 'Show replies as text', note: 'In a box by the clock, while the chat is closed' },
   ]
 
