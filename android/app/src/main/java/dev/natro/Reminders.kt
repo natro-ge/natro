@@ -9,7 +9,7 @@ import android.content.Intent
 import androidx.core.app.NotificationCompat
 
 /**
- * A reminder going off (agent/natro_agent/reminders.py): a notification, whichever device says it out loud, with
+ * A reminder going off (server/natro_agent/reminders.py): a notification, whichever device says it out loud, with
  * Snooze (it comes back in 10 minutes, from the brain) and Done. It also shows in the shared chat.
  */
 object ReminderNotices {

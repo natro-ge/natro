@@ -19,7 +19,7 @@
 //! closed the dock asks, out loud. A reply that arrives while the chat is closed
 //! shows in the reply box (reply.rs), and in the chat when it opens again.
 //!
-//! The chat is shared with the phone (agent/natro_agent/chats.py): what he asks
+//! The chat is shared with the phone (server/natro_agent/chats.py): what he asks
 //! there shows here too, with her reply, as the brain sends it (chat_entry), and a
 //! new chat on either clears both. Pictures show in it: screenshots Natro takes for
 //! him, and ones he sends (pasted, or the picture button); a click opens one. While
@@ -115,9 +115,9 @@ pub struct Exchange {
     sent: bool,
     /// A reminder that went off: Natro's words alone, with no request.
     reminder: bool,
-    /// A background job's task (agent/natro_agent/jobs.py): Natro's work on it, then what she found.
+    /// A background job's task (server/natro_agent/jobs.py): Natro's work on it, then what she found.
     job: String,
-    /// Something a watcher saw (agent/natro_agent/watchers.py): her words alone, as a reminder's.
+    /// Something a watcher saw (server/natro_agent/watchers.py): her words alone, as a reminder's.
     alert: bool,
 }
 
@@ -344,7 +344,7 @@ impl Log {
         self.answer_for("", question, answer)
     }
 
-    /// An entry of the shared chat, as the brain sends it (agent/natro_agent/chats.py). The PC's own
+    /// An entry of the shared chat, as the brain sends it (server/natro_agent/chats.py). The PC's own
     /// requests show here as they happen, so from those only the pictures are taken; the rest (the
     /// phone's, and the PC's from before this app started) show as the brain has them.
     fn entry(&mut self, entry: &Value) -> Option<Exchange> {
@@ -441,7 +441,7 @@ impl Log {
 }
 
 /// Whether a typed answer means yes; anything unclear is no. The brain's is_yes
-/// (agent/natro_agent/server.py), with Georgian too.
+/// (server/natro_agent/server.py), with Georgian too.
 fn is_yes(text: &str) -> bool {
     const YES: [&str; 15] = [
         "yes", "yeah", "yep", "sure", "ok", "okay", "confirm", "correct", "right", "go", "do",

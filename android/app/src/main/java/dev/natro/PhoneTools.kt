@@ -34,7 +34,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * The phone's tools, as Natro's brain sees them (sent in the hello; see agent/natro_agent/server.py).
+ * The phone's tools, as Natro's brain sees them (sent in the hello; see shared/PROTOCOL.md).
  *
  * Apps, alarms, media, flashlight and volume are neither personal nor risky. Notifications,
  * contacts, texts, files, the screen, where the phone is and the routes it opens in Maps are
@@ -104,7 +104,7 @@ class PhoneTools(private val context: Context) {
             Messages.reply(context, it.optString("key"), it.optString("to"), it.optString("app"), it.getString("text"))
         },
         Tool("send_message", "Send a message on Instagram or Messenger, after his yes to the brain's own question " +
-            "(agent/natro_agent/sending.py): by her notification's Reply, one kept, sharing into her chat, or her " +
+            "(server/natro_agent/sending.py): by her notification's Reply, one kept, sharing into her chat, or her " +
             "username's link.", props(
             "app" to string("instagram or messenger."),
             "text" to string("The message."),

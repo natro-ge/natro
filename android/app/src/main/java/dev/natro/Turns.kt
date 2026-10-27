@@ -8,7 +8,7 @@ import org.json.JSONObject
  * it (what she heard, her steps, the tools that ran, her questions, the model and the cost) is kept
  * with it, folded away under the reply.
  *
- * id is the request's id, as the brain knows it. The chat is shared with the PC (agent/natro_agent/chats.py):
+ * id is the request's id, as the brain knows it. The chat is shared with the PC (server/natro_agent/chats.py):
  * a request made there is a turn From.Other, as the brain sends it, its id the brain's ("pc:r3"). (From.Pc:
  * a request made on the PC that used the phone's tools, from a brain that didn't share the chat.)
  */
@@ -42,11 +42,11 @@ data class Turn(
     val sent: Boolean = false,
     /** A reminder that went off: her words alone, with no request. */
     val reminder: Boolean = false,
-    /** A background job's task (agent/natro_agent/jobs.py): her work on it as it goes, then what she found. */
+    /** A background job's task (server/natro_agent/jobs.py): her work on it as it goes, then what she found. */
     val job: String = "",
-    /** A routine's name (agent/natro_agent/routines.py), on the job that is its run. */
+    /** A routine's name (server/natro_agent/routines.py), on the job that is its run. */
     val routine: String = "",
-    /** Something a watcher saw (agent/natro_agent/watchers.py): her words alone, as a reminder's. */
+    /** Something a watcher saw (server/natro_agent/watchers.py): her words alone, as a reminder's. */
     val alert: Boolean = false,
 ) {
     enum class From { Typed, Spoken, Pc, Other }

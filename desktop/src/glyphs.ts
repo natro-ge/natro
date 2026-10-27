@@ -1,4 +1,4 @@
-// Small line pictures for the dock's steps, by kind (agent/natro_agent/steps.py).
+// Small line pictures for the dock's steps, by kind (server/natro_agent/steps.py).
 // Drawn on a 16 × 16 grid with the text's color; an app's own icon is used instead when the PC has the app.
 export const GLYPHS: Record<string, string> = {
   app: '<rect x="2" y="2" width="5" height="5" rx="1.3"/><rect x="9" y="2" width="5" height="5" rx="1.3"/><rect x="2" y="9" width="5" height="5" rx="1.3"/><rect x="9" y="9" width="5" height="5" rx="1.3"/>',

@@ -42,9 +42,9 @@ data class ReplyText(val id: String, val text: String, val done: Boolean)
 /**
  * Natro on the phone: the connection to her brain on the VPS (over Tailscale), the chat, what the
  * bubble says, recording, speaking, and the phone's tools. The messages are the ones in
- * agent/natro_agent/server.py; files between the phone and the PC are Transfers'.
+ * server/natro_agent/server.py; files between the phone and the PC are Transfers'.
  *
- * The chat is shared with the PC and lives on the brain, in memory (agent/natro_agent/chats.py):
+ * The chat is shared with the PC and lives on the brain, in memory (server/natro_agent/chats.py):
  * nothing of it is kept on the phone. Its pictures (screenshots, ones he sends) come with it. A new
  * chat here clears the PC's too. Requests he made on the PC while the phone was offline come when it
  * connects (Kept), to run or skip. Reminders that go off are notifications (ReminderNotices), spoken here when
@@ -312,7 +312,7 @@ object Natro {
                 bubbleShows(BubbleKind.Asking, Text.short(text, 90))
                 if (Prefs.speakReplies.value) speaker?.say(text)
             }
-            // Something he asked to have said out loud (agent/natro_agent/aloud.py): said even with Speak replies
+            // Something he asked to have said out loud (server/natro_agent/aloud.py): said even with Speak replies
             // off, here or asked for on the PC.
             "say" -> speaker?.say(data.optString("text"))
             "tool_call" -> scope.launch {
@@ -324,7 +324,7 @@ object Natro {
                 if (pending.remove(id) && pending.isEmpty()) bubbleEnds(BubbleKind.Problem, "Something went wrong", PROBLEM_MILLIS)
             }
             "cancelled" -> if (cancelling == id) cancelling = null
-            // The shared chat (agent/natro_agent/chats.py).
+            // The shared chat (server/natro_agent/chats.py).
             "chat_entry" -> data.optJSONObject("entry")?.let { entry -> turns.update { Chat.entry(it, entry) } }
             "chat_all" -> turns.update { Chat.all(it, data.optJSONArray("entries")) }
             "chat_picture" -> picture = data
@@ -597,13 +597,13 @@ object Natro {
             .put("title", Text.short(title, 200)).put("text", Text.short(text, 600)))
     }
 
-    /** A message came on the phone: for the PC to show (agent/natro_agent/server.py; lost if Natro is offline). */
+    /** A message came on the phone: for the PC to show (server/natro_agent/server.py; lost if Natro is offline). */
     fun phoneMessage(key: String, app: String, from: String, text: String, reply: Boolean) {
         send(JSONObject().put("type", "phone_message").put("key", key).put("app", app).put("title", from)
             .put("text", text).put("reply", reply))
     }
 
-    /** A chat on Instagram or Messenger wrote: for the brain's address book (agent/natro_agent/people.py; never what
+    /** A chat on Instagram or Messenger wrote: for the brain's address book (server/natro_agent/people.py; never what
      * it says). False if Natro is offline. */
     fun person(app: String, name: String, chat: String, facebook: String, group: Boolean): Boolean =
         send(JSONObject().put("type", "person").put("app", app).put("name", name).put("chat", chat)

@@ -1,7 +1,8 @@
 //! Where Natro's files are, and its settings from .env.
 //!
-//! Like the Python PC app (pc/natro_pc/config.py): `.env`, `models/` and `.venv/`
-//! are at the top of the repository; NATRO_HOME overrides where that is.
+//! As the Python helper (desktop/helper/natro_pc/config.py): `.env`, `models/`, `tokens/`,
+//! `logs/` and `settings.json` are in %LOCALAPPDATA%\Natro, or NATRO_HOME. The
+//! helper's `.venv/` is in the repository, found above the program.
 
 use std::collections::HashMap;
 use std::env;
@@ -9,18 +10,24 @@ use std::path::{Path, PathBuf};
 
 pub struct Config {
     pub home: PathBuf,
+    /// The repository: the folder with the helper's `.venv`.
+    pub repo: PathBuf,
     values: HashMap<String, String>,
 }
 
 impl Config {
     pub fn load() -> Config {
-        let home = env::var_os("NATRO_HOME")
-            .map(PathBuf::from)
-            .or_else(find_home)
-            .unwrap_or_else(|| PathBuf::from("."));
+        let home = match env::var_os("NATRO_HOME") {
+            Some(dir) => PathBuf::from(dir),
+            None => env::var_os("LOCALAPPDATA")
+                .map(|dir| PathBuf::from(dir).join("Natro"))
+                .unwrap_or_else(|| PathBuf::from(".")),
+        };
+        let repo = find_repo().unwrap_or_else(|| home.clone());
         let text = std::fs::read_to_string(home.join(".env")).unwrap_or_default();
         Config {
             home,
+            repo,
             values: parse_env(&text),
         }
     }
@@ -34,13 +41,13 @@ impl Config {
     }
 }
 
-/// The nearest folder with a .env, above the program or the current folder.
-fn find_home() -> Option<PathBuf> {
+/// The nearest folder with a .venv, above the program or the current folder.
+fn find_repo() -> Option<PathBuf> {
     let starts = [env::current_exe().ok(), env::current_dir().ok()];
     starts.into_iter().flatten().find_map(|start| {
         start
             .ancestors()
-            .find(|dir| dir.join(".env").is_file())
+            .find(|dir| dir.join(".venv").is_dir())
             .map(Path::to_path_buf)
     })
 }

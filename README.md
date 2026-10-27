@@ -103,7 +103,7 @@ Natro is actively developed and used day to day. The core assistant, Windows app
 | Component | Status |
 |---|---|
 | Server-side agent, memory, routing, and confirmations | Working |
-| Windows voice assistant and PC tools (`pc/`) | Working |
+| Windows voice assistant and PC tools (`desktop/helper/`) | Working |
 | Android assistant and device tools | Working |
 | Google and Spotify integrations | Working |
 | File transfer, reminders, and background jobs | Working |
@@ -125,9 +125,9 @@ Natro is modular: start with text chat, then add voice, connected accounts, a se
 ### 1. Clone and configure
 
 ```powershell
-git clone https://github.com/tuxa4life/Natro.git
-cd Natro
-powershell -ExecutionPolicy Bypass -File scripts\setup-pc.ps1 -SkipModels
+git clone https://github.com/natro-ge/natro.git
+cd natro
+powershell -ExecutionPolicy Bypass -File desktop\setup-pc.ps1 -SkipModels
 ```
 
 Add your Anthropic key to `.env`:
@@ -136,7 +136,7 @@ Add your Anthropic key to `.env`:
 ANTHROPIC_API_KEY=your_key_here
 ```
 
-Then edit `agent/identity/NATRO.md` to personalize the assistant, and set `NATRO_TIMEZONE` in `.env`.
+Then edit `server/identity/NATRO.md` to personalize the assistant, and set `NATRO_TIMEZONE` in `.env`.
 
 ### 2. Run text chat
 
@@ -186,7 +186,7 @@ Alternatively, start the tray application:
 | Routes and travel times | Configure `GOOGLE_MAPS_API_KEY`, `NATRO_HOME_ADDRESS`, and `NATRO_TRAVEL_MODE` |
 | Google Calendar, Tasks, Gmail, Drive, Docs | Enable the APIs, configure OAuth, and run `natro_agent.google_signin` |
 | Spotify | Configure `SPOTIFY_CLIENT_ID` and run `natro_agent.spotify_signin`; Premium is required for playback control |
-| Additional tools | Configure MCP servers in `agent/config/mcp.json` |
+| Additional tools | Configure MCP servers in `server/config/mcp.json` |
 
 Integration-specific setup, Android installation, and server deployment are described in the sections below and in the linked project documentation.
 
@@ -195,7 +195,7 @@ Integration-specific setup, Android installation, and server deployment are desc
 To keep Natro available while your PC is off, deploy the agent to an always-on Linux server. A small instance (around 2 vCPU and 4 GB RAM) is sufficient for the current setup.
 
 1. Install Tailscale on the server, PC, and phone, using the same account.
-2. Follow [`deploy/README.md`](deploy/README.md).
+2. Follow [`server/deploy/README.md`](server/deploy/README.md).
 3. Configure the server to listen on its Tailscale address, not a public interface.
 4. Set a strong `NATRO_DEVICE_TOKEN` and use the same token on connected devices.
 
@@ -226,15 +226,13 @@ On first launch, grant only the permissions required for the features you intend
 
 | Path | Purpose |
 |---|---|
-| `agent/` | Agent loop, model routing, identity, memory, tools, device server, integrations, and tests |
-| `voice/` | Speech recognition and translation |
-| `pc/` | Current Windows app, wake word, PC tools, voice output, and tray app |
-| `desktop/` | New Tauri 2 desktop interface (in progress) |
+| `server/` | What runs on the server: agent loop, model routing, identity, memory, tools, device server, integrations, and tests (`natro_agent/`, `tests/`); speech recognition and translation (`natro_voice/`); Linux server setup and service deployment (`deploy/`) |
+| `desktop/` | What runs on Windows: new Tauri 2 desktop interface (in progress); current Windows app, wake word, PC tools, voice output, and tray app (`helper/`); Windows setup script (`setup-pc.ps1`) |
 | `android/` | Android app built with Kotlin and Jetpack Compose |
-| `deploy/` | Linux server setup and service deployment |
-| `scripts/` | Windows setup scripts |
+| `shared/` | The protocol between the server and the apps (`PROTOCOL.md`), and the icon (`branding/`) |
+| `scripts/` | The icon's drawing script |
 
-Runtime files such as `.env`, credentials, tokens, memory, notes, logs, and downloaded models are created locally and should remain untracked.
+Runtime files such as `.env`, credentials, tokens, memory, notes, logs, and downloaded models are created locally and never go into git: on Windows they're in `%LOCALAPPDATA%\Natro`, on the server at the top of its checkout (git-ignored); `NATRO_HOME` sets either place.
 
 ## Development and tests
 
@@ -243,17 +241,17 @@ Install and configure the project using the setup steps above. The repository's 
 Run the available test suites from the repository root:
 
 ```powershell
-.venv\Scripts\python.exe -m pytest agent
-.venv\Scripts\python.exe -m pytest pc
+.venv\Scripts\python.exe -m pytest server
+.venv\Scripts\python.exe -m pytest desktop\helper
 android\gradlew.bat -p android testDebugUnitTest
 cd desktop\src-tauri; cargo test
 ```
 
 ## Customization
 
-- **Assistant identity:** edit `agent/identity/NATRO.md`.
-- **Speech vocabulary:** add names and preferred spellings to `voice/wordlist.txt`.
-- **MCP tools:** configure server entries in `agent/config/mcp.json`. Each entry can specify whether its results are personal and which tools require confirmation.
+- **Assistant identity:** edit `server/identity/NATRO.md`.
+- **Speech vocabulary:** add names and preferred spellings to `server/natro_voice/wordlist.txt`.
+- **MCP tools:** configure server entries in `server/config/mcp.json`. Each entry can specify whether its results are personal and which tools require confirmation.
 - **Budget and runtime settings:** configure them in `.env`.
 
 ## Current limitations

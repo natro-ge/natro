@@ -11,7 +11,7 @@ import android.service.notification.StatusBarNotification
 
 /**
  * Messages that come to the phone (WhatsApp, Messenger, Telegram, texts...), shown on the PC and answered from there
- * (agent/natro_agent/server.py: phone_message, message_reply), while "Show messages on the PC" is on. A message is a
+ * (server/natro_agent/server.py: phone_message, message_reply), while "Show messages on the PC" is on. A message is a
  * notification of the kind "message", or one with a box to answer in. Only the newest message of a conversation
  * goes, once; his own answer, which the app adds to its notification, never goes back. An answer is typed into the
  * notification's own reply box, so it goes from that app as if he'd answered there.

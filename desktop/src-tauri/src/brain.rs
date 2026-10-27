@@ -1,4 +1,4 @@
-//! The connection to Natro's brain (agent/natro_agent/server.py, on the VPS over
+//! The connection to Natro's brain (server/natro_agent/server.py, on the VPS over
 //! Tailscale), as the device "pc", with the same messages as the Python PC app,
 //! and files to and from the phone (files.rs). It reconnects whenever the
 //! connection is lost.
@@ -281,7 +281,7 @@ async fn connect(
     }
 }
 
-/// A message from the brain (see the protocol in agent/natro_agent/server.py).
+/// A message from the brain (see the protocol, shared/PROTOCOL.md).
 fn handle(
     app: &AppHandle,
     helper: &Arc<Helper>,
@@ -414,7 +414,7 @@ fn handle(
         }
         // The translation of what was said, in pieces as it's written.
         "english" => chat.english(app, &id, &text("text")),
-        // The shared chat (agent/natro_agent/chats.py).
+        // The shared chat (server/natro_agent/chats.py).
         "chat_entry" => chat.entry(app, &message["entry"]),
         "chat_all" => chat.all(app, message["entries"].as_array().map(Vec::as_slice).unwrap_or_default()),
         "chat_cleared" => chat.cleared(app),
@@ -442,7 +442,7 @@ fn handle(
             &text("label"),
             message["yes"].as_bool(),
         ),
-        // A reminder going off (agent/natro_agent/reminders.py): in the reply box, even with "Show replies
+        // A reminder going off (server/natro_agent/reminders.py): in the reply box, even with "Show replies
         // as text" off; spoken only on the device the brain picks (and if "Speak replies" is on).
         "reminder" => {
             log::info!("reminder: {}", text("text"));
@@ -453,7 +453,7 @@ fn handle(
             app.state::<Reply>().reminder(app, &id, &text("text"), late);
         }
         "reminder_snoozed" => app.state::<Reply>().notice(app, &id, &text("text")),
-        // A background job is done (agent/natro_agent/jobs.py): in the reply box as a reminder is, spoken only
+        // A background job is done (server/natro_agent/jobs.py): in the reply box as a reminder is, spoken only
         // on the device the brain picks. The chat shows it in the job's own entry.
         "job_done" => {
             log::info!("job done: {}", text("text"));
@@ -463,10 +463,10 @@ fn handle(
                 helper.say(&said);
             }
             let ok = message["ok"].as_bool().unwrap_or(true);
-            // A routine's run (agent/natro_agent/routines.py) comes under the routine's name.
+            // A routine's run (server/natro_agent/routines.py) comes under the routine's name.
             app.state::<Reply>().job_done(app, &id, &text("text"), ok, &text("title"));
         }
-        // Something a watcher saw (agent/natro_agent/watchers.py): in the reply box; an urgent one is spoken
+        // Something a watcher saw (server/natro_agent/watchers.py): in the reply box; an urgent one is spoken
         // on the device the brain picks.
         "alert" => {
             log::info!("alert: {}", text("text"));
@@ -475,7 +475,7 @@ fn handle(
             }
             app.state::<Reply>().alert(app, &id, &text("text"));
         }
-        // Something he asked to have said out loud (agent/natro_agent/aloud.py): said even with "Speak replies"
+        // Something he asked to have said out loud (server/natro_agent/aloud.py): said even with "Speak replies"
         // off, and for the chat's own requests. Asked for on the phone, the reply box shows it too.
         "say" => {
             log::info!("saying out loud (asked on the {}): {}", text("from"), text("text"));

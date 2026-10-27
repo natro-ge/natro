@@ -11,7 +11,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Natro's question on the PC, before something risky ("I'll force close Spotify."), asked here too
- * (agent/natro_agent/server.py's question_elsewhere): a notification with Yes and No, so he can answer it away
+ * (server/natro_agent/server.py's question_elsewhere): a notification with Yes and No, so he can answer it away
  * from the PC. Yes asks him to unlock the phone first; No doesn't. It goes once the question is over: answered
  * here, on the PC or in the chat, or she stopped waiting. The chat shows it too, with its own Yes and No.
  */

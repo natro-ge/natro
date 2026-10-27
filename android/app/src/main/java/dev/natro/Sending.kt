@@ -17,7 +17,7 @@ import org.json.JSONObject
 import java.time.LocalDate
 
 /**
- * Messaging anyone on Instagram or Messenger (agent/natro_agent/sending.py): the brain finds the person in Natro's
+ * Messaging anyone on Instagram or Messenger (server/natro_agent/sending.py): the brain finds the person in Natro's
  * address book and asks him; on his yes it calls send_message here (a tool the model isn't offered), and the phone
  * sends it the best way it has:
  *  1. Her chat's notification is still there: its Reply, as reply_message does.

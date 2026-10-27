@@ -15,7 +15,7 @@ import androidx.compose.ui.text.withStyle
 
 /**
  * Natro's reply, formatted for the bubble's reply card (and as the desktop's reply box does,
- * desktop/src/format.ts). She's asked to write plain spoken sentences (agent/identity/NATRO.md), so
+ * desktop/src/format.ts). She's asked to write plain spoken sentences (server/identity/NATRO.md), so
  * mostly this keeps paragraphs and line breaks; when she does use Markdown it shows lists, **bold**,
  * *italics*, `code`, headings and links.
  */

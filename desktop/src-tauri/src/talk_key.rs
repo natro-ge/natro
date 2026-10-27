@@ -2,7 +2,7 @@
 //!
 //! Hold it and talk, release to send; or tap it and talk hands-free (recording
 //! stops when you stop talking), tap again to stop sooner. The same rules as
-//! the Python tray app's `PressAndHold` (pc/natro_pc/hotkey.py).
+//! the Python tray app's `PressAndHold` (desktop/helper/natro_pc/hotkey.py).
 
 use std::time::{Duration, Instant};
 

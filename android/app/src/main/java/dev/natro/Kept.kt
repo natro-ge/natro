@@ -9,7 +9,7 @@ import android.content.Intent
 import androidx.core.app.NotificationCompat
 
 /**
- * A request he made on the PC while the phone was offline, kept for it by the brain (agent/natro_agent/pending.py).
+ * A request he made on the PC while the phone was offline, kept for it by the brain (server/natro_agent/pending.py).
  * When the phone connects, each shows as a notification with Run and Skip, and as a card in the chat, until he
  * answers one way or the other.
  */

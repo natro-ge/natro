@@ -1,5 +1,5 @@
 //! Files between the PC and the phone, passed along by Natro's server
-//! (agent/natro_agent/files.py; the messages are in server.py).
+//! (server/natro_agent/files.py; the messages are in shared/PROTOCOL.md).
 //!
 //! Files from the phone land in Downloads, and the reply box says so, with links
 //! to open the file or show it in its folder. Files go to the phone from
@@ -574,7 +574,7 @@ const RESERVED_NAMES: &[&str] = &[
 const LONGEST_NAME: usize = 150;
 
 /// A file name that's safe to save: no folders, no characters Windows refuses, no
-/// reserved names (as the server's safe_name in agent/natro_agent/files.py).
+/// reserved names (as the server's safe_name in server/natro_agent/files.py).
 pub fn safe_name(name: &str) -> String {
     let last = name.rsplit(['/', '\\']).next().unwrap_or_default();
     let cleaned: String = last
@@ -613,7 +613,7 @@ pub fn human_size(size: u64) -> String {
 mod tests {
     use super::*;
 
-    /// The same cases as the server's (agent/tests/test_files.py) and the phone's.
+    /// The same cases as the server's (server/tests/test_files.py) and the phone's.
     #[test]
     fn names_are_safe_to_save() {
         let cases = [

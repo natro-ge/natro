@@ -1,5 +1,5 @@
 """Draws Natro's icon: an "N" in one stroke whose last stroke ends in the green dot of the dock, the
-dot that swells with your voice. Writes branding/icon.svg and branding/icon.png (1024 px), which
+dot that swells with your voice. Writes shared/branding/icon.svg and shared/branding/icon.png (1024 px), which
 `npx tauri icon` turns into the desktop app's icons; the Android and website copies are written
 by hand from the same numbers (the 108 grid below is Android's adaptive-icon grid).
 
@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-OUT = Path(__file__).resolve().parent.parent / "branding"
+OUT = Path(__file__).resolve().parent.parent / "shared" / "branding"
 INK_TOP, INK_BOTTOM = (28, 32, 38), (12, 14, 16)
 GREEN_DARK, GREEN_LIGHT = (16, 130, 12), (15, 185, 18)
 # The N on a 108 grid, centered, and the dot at the end of its last stroke.

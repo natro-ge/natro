@@ -1,5 +1,5 @@
 // Natro's reply as HTML for the reply box. She's asked to write plain spoken sentences
-// (agent/identity/NATRO.md), so mostly this keeps paragraphs and line breaks; when she
+// (server/identity/NATRO.md), so mostly this keeps paragraphs and line breaks; when she
 // does use Markdown it shows lists, **bold**, *italics*, `code`, headings and links.
 // Everything is escaped first: nothing in a reply becomes HTML of its own.
 

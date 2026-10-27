@@ -34,8 +34,8 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Files between the phone and the PC, passed along by Natro's server (agent/natro_agent/files.py; the
- * messages are in server.py). Files from the PC land in Downloads, with a notification that opens them.
+ * Files between the phone and the PC, passed along by Natro's server (server/natro_agent/files.py; the
+ * messages are in shared/PROTOCOL.md). Files from the PC land in Downloads, with a notification that opens them.
  * Files go to the PC from the share sheet (ShareActivity), or when Natro is asked ("send my last photo
  * to the PC": the brain finds it with search_files and asks for it with file_request).
  *
@@ -399,7 +399,7 @@ object Transfers {
     private fun now() = System.currentTimeMillis()
 }
 
-/** File names and sizes as the server words them (agent/natro_agent/files.py). */
+/** File names and sizes as the server words them (server/natro_agent/files.py). */
 object FileNames {
     private val UNSAFE = Regex("[\\x00-\\x1f\\x7f<>:\"/\\\\|?*]")
     private val RESERVED = setOf("con", "prn", "aux", "nul") + (1..9).flatMap { listOf("com$it", "lpt$it") }

@@ -1,5 +1,5 @@
 //! The keys in the Settings window, behind a PIN: Natro's API keys and settings in the
-//! server's .env (the "Server" tab, through the brain: agent/natro_agent/keys.py), and
+//! server's .env (the "Server" tab, through the brain: server/natro_agent/keys.py), and
 //! this PC's own in .env here (the "This PC" tab).
 //!
 //! One PIN for both. Like the server, the PC keeps only a salted scrypt hash of it, in

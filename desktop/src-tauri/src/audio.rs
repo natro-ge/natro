@@ -1,8 +1,8 @@
 //! Recordings: 16 kHz mono 16-bit, what the brain's voice pipeline takes, and
 //! deciding when the speaker has finished.
 //!
-//! The same rules as the Python PC app (pc/natro_pc/audio.py), which match the
-//! brain's (voice/natro_voice/speech.py): a recording judged to have speech here
+//! The same rules as the Python PC app (desktop/helper/natro_pc/audio.py), which match the
+//! brain's (server/natro_voice/speech.py): a recording judged to have speech here
 //! is judged the same way there.
 
 pub const SAMPLE_RATE: u32 = 16_000;

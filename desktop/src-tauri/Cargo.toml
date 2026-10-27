@@ -32,7 +32,7 @@ tokio = { version = "1.53.2", features = ["sync", "time", "macros"] }
 # App icons for the dock's steps.
 png = "0.17"
 base64 = "0.23"
-# The Settings window's PIN: kept as a salted hash, as on the server (agent/natro_agent/keys.py).
+# The Settings window's PIN: kept as a salted hash, as on the server (server/natro_agent/keys.py).
 scrypt = { version = "0.11", default-features = false }
 getrandom = "0.3"
 

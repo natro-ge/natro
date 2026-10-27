@@ -1,8 +1,9 @@
-//! The Python helper (pc/natro_pc/helper.py): this PC's tools and Natro's voice
+//! The Python helper (desktop/helper/natro_pc/helper.py): this PC's tools and Natro's voice
 //! (Kokoro), from the Python PC app, until they're ported to Rust.
 //!
-//! It runs as `.venv\Scripts\python.exe -m natro_pc.helper` in NATRO_HOME, with
-//! no console window, and talks JSON lines over stdin/stdout. Without it Natro
+//! It runs as the repository's `.venv\Scripts\python.exe -m natro_pc.helper` in
+//! Natro's files folder (NATRO_HOME), with no console window, and talks JSON
+//! lines over stdin/stdout. Without it Natro
 //! still works, only without the PC's tools and without speaking.
 
 use std::collections::HashMap;
@@ -49,7 +50,7 @@ impl Helper {
         let (found_tools, tools) = watch::channel(None);
         let waiting: Waiting = Arc::default();
         let awaited: Awaited = Arc::default();
-        let python = config.home.join(".venv").join("Scripts").join("python.exe");
+        let python = config.repo.join(".venv").join("Scripts").join("python.exe");
         let child = Command::new(&python)
             .args(["-m", "natro_pc.helper"])
             .current_dir(&config.home)

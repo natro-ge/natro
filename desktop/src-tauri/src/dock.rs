@@ -64,7 +64,7 @@ enum Status {
 pub struct StatusEvent {
     status: Status,
     label: String,
-    /// A step's kind of picture ("music", "calendar"; see agent/natro_agent/steps.py)...
+    /// A step's kind of picture ("music", "calendar"; see server/natro_agent/steps.py)...
     icon: Option<String>,
     /// ...or the app's own icon, as a data URL (icons.rs).
     image: Option<String>,

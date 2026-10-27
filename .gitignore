@@ -1,3 +1,5 @@
+# Natro's data is out of git: on the PC in %LOCALAPPDATA%\Natro, on the VPS at the top of the checkout
+# (NATRO_HOME), where these keep it out.
 # Secrets: each machine has its own .env with only what it needs.
 .env
 google-key.json
@@ -14,26 +16,26 @@ __pycache__/
 memory/
 notes/
 logs/
-# Files on their way between devices (agent/natro_agent/files.py).
+# Files on their way between devices (server/natro_agent/files.py).
 transfers/
 testset/
 results/
 
-# Downloaded models (see pc/natro_pc/wakeword.py for the source).
+# Downloaded models (see desktop/helper/natro_pc/wakeword.py for the source).
 models/
-# Requests kept for a device that is offline (agent/natro_agent/pending.py).
+# Requests kept for a device that is offline (server/natro_agent/pending.py).
 pending.json
 # The PC app's switches (desktop/src-tauri/src/settings.rs).
 /settings.json
 # The old .env after a change from the Settings window (keys.py, keys.rs).
 .env.bak
 .env.new
-# His reminders (agent/natro_agent/reminders.py), when his last briefing was (briefing.py), and his routines
+# His reminders (server/natro_agent/reminders.py), when his last briefing was (briefing.py), and his routines
 # (routines.py).
 reminders.json
 briefing.json
 routines.json
 # What he asked Natro to watch for, and what she told him (watchers.py).
 watchers.json
-# The tools his devices offered when last connected (agent/natro_agent/tools.py, KnownTools).
+# The tools his devices offered when last connected (server/natro_agent/tools.py, KnownTools).
 devices.json

@@ -8,7 +8,7 @@ import android.content.Intent
 import androidx.core.app.NotificationCompat
 
 /**
- * A background job is done (agent/natro_agent/jobs.py): a notification with what Natro found, whichever device says
+ * A background job is done (server/natro_agent/jobs.py): a notification with what Natro found, whichever device says
  * it out loud, under the routine's name when it's a routine's run (title). A tap opens the chat, where the job's
  * entry has her steps too.
  */

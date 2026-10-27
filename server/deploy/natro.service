@@ -1,0 +1,34 @@
+# Natro's brain as a system service (needs sudo to install).
+#   sudo cp server/deploy/natro.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now natro
+#   journalctl -u natro -f
+# Paths assume the repo is in /home/natro/natro and run by the user "natro".
+
+[Unit]
+Description=Natro agent (the brain)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+User=natro
+WorkingDirectory=/home/natro/natro/server
+ExecStart=/home/natro/natro/.venv/bin/python -m natro_agent.server
+# Print straight to the journal (journalctl -u natro).
+Environment=PYTHONUNBUFFERED=1
+# Natro's data (.env, memory, notes, logs, tokens): the top of the checkout, whatever folder the code is in.
+Environment=NATRO_HOME=/home/natro/natro
+# Also covers starting before Tailscale has its address: it retries until it can listen.
+Restart=on-failure
+RestartSec=5
+# Other services share this VPS: Natro may not take more memory than this. Her converters count too
+# (LibreOffice with a big presentation took over 450 MB): 600 MB was too little (2026-10-19).
+MemoryMax=1200M
+# If memory runs out anyway, the kernel stops the converter (it asks to go first, convert.py) and Natro
+# goes on; by default systemd would stop the whole service.
+OOMPolicy=continue
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

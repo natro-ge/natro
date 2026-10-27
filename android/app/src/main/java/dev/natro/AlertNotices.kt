@@ -8,7 +8,7 @@ import android.content.Intent
 import androidx.core.app.NotificationCompat
 
 /**
- * Something a watcher saw (agent/natro_agent/watchers.py): "Nino emailed: Dinner on Friday." A notification, in a
+ * Something a watcher saw (server/natro_agent/watchers.py): "Nino emailed: Dinner on Friday." A notification, in a
  * louder channel when it's urgent (a meeting's heads-up, or one he asked to hear right away). It also shows in the
  * shared chat. A tap opens the chat.
  */

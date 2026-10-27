@@ -3,7 +3,7 @@ package dev.natro
 import org.json.JSONArray
 
 /**
- * What the brain asked the phone to watch for in its notifications (agent/natro_agent/watchers.py: watch_rules), and
+ * What the brain asked the phone to watch for in its notifications (server/natro_agent/watchers.py: watch_rules), and
  * the matching. Only a notification that fits a rule leaves the phone (notification_matched); the rest are never
  * sent. A rule names an app (part of its name or package), words that must all be in the notification's title or
  * text, or both; letter case doesn't matter.

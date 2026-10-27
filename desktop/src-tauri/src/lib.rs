@@ -118,7 +118,7 @@ pub fn run() {
                 )?;
             }
             let config = Config::load();
-            log::info!("Natro's files: {}", config.home.display());
+            log::info!("Natro's files: {} (the helper's .venv in {})", config.home.display(), config.repo.display());
             // For testing, in debug builds: a clip as the microphone, or a typed request.
             let test = |key| cfg!(debug_assertions).then(|| config.get(key)).flatten();
             let test_clip = test("NATRO_TEST_CLIP").map(|clip| config.home.join(clip));

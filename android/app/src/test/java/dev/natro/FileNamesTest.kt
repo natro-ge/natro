@@ -3,7 +3,7 @@ package dev.natro
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
-/** The same cases as the server's (agent/tests/test_files.py), so both sides name a file alike. */
+/** The same cases as the server's (server/tests/test_files.py), so both sides name a file alike. */
 class FileNamesTest {
     @Test
     fun namesAreSafeToSave() {
