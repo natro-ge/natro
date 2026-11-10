@@ -109,10 +109,10 @@ def test_run_now(tmp_path):
         run(routines.run_now({"id": item["id"]}))
 
 
-def test_the_tools_are_personal_and_none_asks(tmp_path):
+def test_no_tool_asks(tmp_path):
     tools = {tool.name: tool for tool in make(tmp_path).tools()}
     assert set(tools) == {"routine_add", "routines_list", "routines_cancel", "routines_run"}
-    assert all(tool.personal and not tool.confirm for tool in tools.values())
+    assert not any(tool.confirm for tool in tools.values())
     assert tools["routine_add"].final and tools["routine_add"].changes and tools["routines_run"].final
 
 
@@ -282,18 +282,18 @@ def test_its_last_run_still_going_skips_the_next(tmp_path):
     run(routines.add(BRIEF))
     item = routines.items[0]
     server.jobs.items.append(Job("jb7", "Brief me.", "", routine=item["id"], title="Morning briefing"))
-    assert server._routine(item) == "its last run is still going"
+    assert server.background.routine(item) == "its last run is still going"
 
 
 def test_a_job_done_while_no_device_shows_jobs_waits_for_one(tmp_path, monkeypatch):
     monkeypatch.setattr(chats, "PIECE_SECONDS", 0)
     server, _ = server_with_routines(tmp_path)
     job = Job("jb3", "Brief me.", "", title="Morning briefing", routine="rt1")
-    server._job_done(job, BRIEFED, ok=True)  # nobody online
+    server.delivery.job_done(job, BRIEFED, ok=True)  # nobody online
 
     async def play(pc):
         return await take(pc, "job_done")
 
     done = run(devices(server, job_hello("pc", "PC"), play=play))
     assert done["title"] == "Morning briefing" and done["text"] == BRIEFED and done["speak"]
-    assert server._unseen_jobs == []
+    assert server.delivery._unseen_jobs == []

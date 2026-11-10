@@ -1,7 +1,7 @@
 //! The connection to Natro's brain (server/natro_agent/server.py, on the VPS over
 //! Tailscale), as the device "pc", with the same messages as the Python PC app,
 //! and files to and from the phone (files.rs). It reconnects whenever the
-//! connection is lost.
+//! connection is lost, which pinging the brain notices after the PC slept too.
 //!
 //! What goes out is queued in bundles sent whole, so a message and the bytes that
 //! belong to it (a recording, a piece of a file, a picture) are never split by another.
@@ -10,8 +10,10 @@
 //! pictures, and the requests kept for the PC while it was off. Reminders that go
 //! off show in the reply box, and are spoken when the brain picks the PC to say them;
 //! so does what a background job found when it's done, and what a watcher saw. So do
-//! messages that come to the phone, to answer from here (chat.rs).
+//! messages that come to the phone, to answer from here (chat.rs). The hello says where Natro
+//! works for what's asked here (works_on.rs), and the brain says when that changes.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
@@ -20,7 +22,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tauri::{AppHandle, Manager};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
+use tokio::time::{Instant, MissedTickBehavior};
+use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 
@@ -28,13 +33,15 @@ use crate::chat::Chat;
 use crate::config::Config;
 use crate::dock::Dock;
 use crate::files::Files;
-use crate::helper::Helper;
 use crate::icons::Icons;
 use crate::keys::Keys;
 use crate::reply::Reply;
-use crate::settings;
+use crate::settings::{self, Settings};
+use crate::tools::Tools;
 use crate::tray;
 use crate::verbose::Verbose;
+use crate::voice::Voice;
+use crate::works_on;
 
 const DEFAULT_SERVER: &str = "ws://127.0.0.1:8700";
 const RETRY: Duration = Duration::from_secs(5);
@@ -60,26 +67,28 @@ impl Brain {
     pub fn start(
         app: AppHandle,
         config: &Config,
-        helper: Arc<Helper>,
+        voice: Arc<Voice>,
         verbose: Arc<Verbose>,
     ) -> Brain {
         let (outgoing, mut to_send) = mpsc::unbounded_channel();
         let online = Arc::new(AtomicBool::new(false));
-        let url = config
-            .get("NATRO_SERVER")
-            .unwrap_or_else(|| DEFAULT_SERVER.into());
+        let url = config.get("NATRO_SERVER").unwrap_or_else(|| {
+            log::warn!("NATRO_SERVER isn't set (.env in {}): trying {DEFAULT_SERVER}", config.home.display());
+            DEFAULT_SERVER.into()
+        });
         let token = config.get("NATRO_DEVICE_TOKEN").unwrap_or_default();
         let (flag, replies) = (online.clone(), outgoing.clone());
         tauri::async_runtime::spawn(async move {
             loop {
                 let ended =
-                    connect(&app, &url, &token, &helper, &flag, &replies, &mut to_send).await;
+                    connect(&app, &url, &token, &voice, &flag, &replies, &mut to_send).await;
                 flag.store(false, Ordering::SeqCst);
                 tray::show_connection(&app, false);
                 settings::show_connection(&app, false);
                 app.state::<Arc<Files>>().lost();
                 app.state::<Chat>().lost(&app);
                 app.state::<Reply>().lost(&app);
+                works_on::lost(&app);
                 let wait = match ended {
                     Ended::Refused => {
                         log::error!("Natro refused this device: check NATRO_DEVICE_TOKEN in .env");
@@ -112,9 +121,25 @@ impl Brain {
         self.online.load(Ordering::SeqCst)
     }
 
-    /// Send a recording: a request, or the spoken answer to the brain's question.
-    /// The request's id, or None when offline.
-    pub fn send_audio(&self, pcm: &[i16], answer_to: Option<&str>) -> Option<String> {
+    /// Send a recording: a request (with the files he attached for Natro), or the spoken answer to the
+    /// brain's question. The request's id, or None when offline.
+    pub fn send_audio(&self, pcm: &[i16], answer_to: Option<&str>, files: &[PathBuf]) -> Option<String> {
+        self.send_recording(pcm, answer_to, files, false)
+    }
+
+    /// What he said in the seconds after a reply (dock.rs): with nothing she can use in it, the brain says
+    /// nothing_heard and doesn't reply. The request's id, or None when offline.
+    pub fn send_follow_up(&self, pcm: &[i16]) -> Option<String> {
+        self.send_recording(pcm, None, &[], true)
+    }
+
+    fn send_recording(
+        &self,
+        pcm: &[i16],
+        answer_to: Option<&str>,
+        files: &[PathBuf],
+        follow_up: bool,
+    ) -> Option<String> {
         if !self.online() {
             return None;
         }
@@ -123,6 +148,10 @@ impl Brain {
         if let Some(question) = answer_to {
             message["answer_to"] = json!(question);
         }
+        if follow_up {
+            message["follow_up"] = json!(true);
+        }
+        with_files(&mut message, files);
         self.verbose.sent(&id, Some(pcm), None, answer_to);
         let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
         let _ = self
@@ -131,16 +160,16 @@ impl Brain {
         Some(id)
     }
 
-    /// A typed request (English). The request's id, or None when offline.
-    pub fn send_text(&self, text: &str) -> Option<String> {
+    /// A typed request (English), with the files he attached for Natro. The request's id, or None when offline.
+    pub fn send_text(&self, text: &str, files: &[PathBuf]) -> Option<String> {
         if !self.online() {
             return None;
         }
         let id = self.new_id('r');
         self.verbose.sent(&id, None, Some(text), None);
-        let _ = self.outgoing.send(vec![json_message(
-            json!({"type": "text", "id": id, "text": text}),
-        )]);
+        let mut message = json!({"type": "text", "id": id, "text": text});
+        with_files(&mut message, files);
+        let _ = self.outgoing.send(vec![json_message(message)]);
         Some(id)
     }
 
@@ -175,6 +204,11 @@ impl Brain {
         self.send_json(json!({"type": "reminder_snooze", "id": reminder, "minutes": 10}))
     }
 
+    /// His answer to an alert (the reply box's On my way). False when offline.
+    pub fn answer_alert(&self, alert: &str, answer: &str) -> bool {
+        self.send_json(json!({"type": "alert_answer", "id": alert, "answer": answer}))
+    }
+
     /// Any other message (files.rs). False when offline.
     pub fn send_json(&self, message: Value) -> bool {
         self.online() && self.outgoing.send(vec![json_message(message)]).is_ok()
@@ -195,6 +229,13 @@ enum Ended {
     Refused,
 }
 
+/// A request's "files": the full paths of those he attached for Natro, if any.
+fn with_files(message: &mut Value, files: &[PathBuf]) {
+    if !files.is_empty() {
+        message["files"] = json!(files.iter().map(|path| path.display().to_string()).collect::<Vec<_>>());
+    }
+}
+
 fn json_message(value: Value) -> Message {
     Message::Text(value.to_string().into())
 }
@@ -203,7 +244,7 @@ async fn connect(
     app: &AppHandle,
     url: &str,
     token: &str,
-    helper: &Arc<Helper>,
+    voice: &Arc<Voice>,
     online: &AtomicBool,
     replies: &mpsc::UnboundedSender<Bundle>,
     to_send: &mut mpsc::UnboundedReceiver<Bundle>,
@@ -216,10 +257,12 @@ async fn connect(
             Ok(connected) => connected,
             Err(e) => return Ended::Lost(e.to_string()),
         };
-    let tools = helper.tools().await;
+    let pc_tools = app.state::<Arc<Tools>>().inner().clone();
+    let tools = pc_tools.specs();
     let hello = json!({"type": "hello", "device": "pc", "label": "PC", "token": token, "tools": tools,
                        "files": true, "chat": true, "queue": true, "reminders": true, "jobs": true,
-                       "alerts": true, "questions": true, "phone_messages": true, "say": true});
+                       "alerts": true, "questions": true, "phone_messages": true, "say": true,
+                       "works_on": app.state::<Settings>().works_on().name()});
     if let Err(e) = ws.send(json_message(hello)).await {
         return Ended::Lost(e.to_string());
     }
@@ -244,37 +287,84 @@ async fn connect(
     }
     // A chat_picture's message, until its bytes come next.
     let mut picture: Option<Value> = None;
+    listen(&mut ws, to_send, KEEPALIVE, |message| match message {
+        Message::Text(text) => {
+            if let Ok(message) = serde_json::from_str::<Value>(&text) {
+                if message["type"] == "chat_picture" {
+                    picture = Some(message);
+                } else {
+                    handle(app, voice, replies, message);
+                }
+            }
+        }
+        Message::Binary(bytes) => match picture.take() {
+            Some(message) => app.state::<Chat>().picture(app, &message, &bytes),
+            None => app.state::<Arc<Files>>().piece(app, &bytes),
+        },
+        _ => {}
+    })
+    .await
+}
+
+/// How often the brain is pinged, and how long it may say nothing before the connection counts as gone.
+struct Keepalive {
+    every: Duration,
+    silence: Duration,
+}
+
+/// The brain pings every 20 s too (websockets' default), and answers a ping at once.
+const KEEPALIVE: Keepalive = Keepalive {
+    every: Duration::from_secs(20),
+    silence: Duration::from_secs(45),
+};
+
+/// The brain's messages to on_message, and what's queued to it, until the connection ends. A connection that
+/// ended while the PC slept still looks open when it wakes, and the brain's pings ended with it: the ping sent
+/// then is refused, or (if nothing answers it) the silence ends it.
+async fn listen<S>(
+    ws: &mut WebSocketStream<S>,
+    to_send: &mut mpsc::UnboundedReceiver<Bundle>,
+    keepalive: Keepalive,
+    mut on_message: impl FnMut(Message),
+) -> Ended
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut ping = tokio::time::interval_at(Instant::now() + keepalive.every, keepalive.every);
+    ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // When the brain last said anything, less the time spent sending since (nothing is read meanwhile).
+    let mut heard = Instant::now();
     loop {
         tokio::select! {
-            incoming = ws.next() => match incoming {
-                Some(Ok(Message::Text(text))) => {
-                    if let Ok(message) = serde_json::from_str::<Value>(&text) {
-                        if message["type"] == "chat_picture" {
-                            picture = Some(message);
-                        } else {
-                            handle(app, helper, replies, message);
+            incoming = ws.next() => {
+                heard = Instant::now();
+                match incoming {
+                    Some(Ok(Message::Close(frame))) => {
+                        if frame.is_some_and(|f| f.code == CloseCode::Policy) {
+                            return Ended::Refused;
                         }
+                        return Ended::Lost("closed".into());
                     }
+                    Some(Ok(message)) => on_message(message),
+                    Some(Err(e)) => return Ended::Lost(e.to_string()),
+                    None => return Ended::Lost("closed".into()),
                 }
-                Some(Ok(Message::Binary(bytes))) => match picture.take() {
-                    Some(message) => app.state::<Chat>().picture(app, &message, &bytes),
-                    None => app.state::<Arc<Files>>().piece(app, &bytes),
-                },
-                Some(Ok(Message::Close(frame))) => {
-                    if frame.is_some_and(|f| f.code == CloseCode::Policy) {
-                        return Ended::Refused;
-                    }
-                    return Ended::Lost("closed".into());
-                }
-                Some(Ok(_)) => {}
-                Some(Err(e)) => return Ended::Lost(e.to_string()),
-                None => return Ended::Lost("closed".into()),
-            },
+            }
             Some(bundle) = to_send.recv() => {
+                let sending = Instant::now();
                 for message in bundle {
                     if let Err(e) = ws.send(message).await {
                         return Ended::Lost(e.to_string());
                     }
+                }
+                heard += sending.elapsed();
+            }
+            _ = ping.tick() => {
+                if heard.elapsed() > keepalive.silence {
+                    return Ended::Lost(format!("nothing from Natro for {} s", heard.elapsed().as_secs()));
+                }
+                if let Err(e) = ws.send(Message::Ping(Default::default())).await {
+                    return Ended::Lost(e.to_string());
                 }
             }
         }
@@ -284,7 +374,7 @@ async fn connect(
 /// A message from the brain (see the protocol, shared/PROTOCOL.md).
 fn handle(
     app: &AppHandle,
-    helper: &Arc<Helper>,
+    voice: &Arc<Voice>,
     replies: &mpsc::UnboundedSender<Bundle>,
     message: Value,
 ) {
@@ -321,13 +411,19 @@ fn handle(
             if !chat.mine(&id) && !message["said"].as_bool().unwrap_or(false) {
                 // How long its first sound took, for the dashboard.
                 let (replies, reply) = (replies.clone(), id.clone());
-                helper.say_reply(&text("text"), &id, move |seconds| {
+                voice.say_reply(&text("text"), move |seconds| {
                     let spoken = json!({"type": "spoken", "id": reply, "seconds": seconds});
                     let _ = replies.send(vec![json_message(spoken)]);
                 });
             }
             tray::show_spending(app, &message);
-            dock.replied(app, &id);
+            // He can go on by just talking, if this is the dock's and it says so (dock.rs).
+            if dock.replied(app, &id)
+                && let Some(seconds) = message["listen"].as_f64()
+                && app.state::<Settings>().switches().keep_listening
+            {
+                dock.follow_up_after(app, voice, seconds);
+            }
             // While the chat is open, it shows her replies; else the reply box does. An answer typed in the
             // box: the box says how it went either way.
             let reply = app.state::<Reply>();
@@ -335,6 +431,13 @@ fn handle(
                 reply.replied(app, &id, &text("text"));
             }
             chat.replied(app, &id, &text("text"));
+        }
+        // What he said after a reply had nothing in it she can use: no reply comes.
+        "nothing_heard" => {
+            log::info!("nothing she can use in what was heard after the reply");
+            verbose.event(&id, "nothing_heard", json!({}));
+            tray::show_spending(app, &message);
+            dock.nothing_heard(app, &id);
         }
         "step" => {
             let (label, icon) = (text("text"), text("icon"));
@@ -373,16 +476,16 @@ fn handle(
                 chat.asked(app, &id, &text("question"), dock.waiting())
             };
             if !in_chat {
-                helper.say(&text("question"));
+                voice.say(&text("question"));
                 dock.asked(app, &id, &text("question"));
             }
         }
         "tool_call" => {
-            let (helper, replies) = (helper.clone(), replies.clone());
+            let (tools, replies) = (app.state::<Arc<Tools>>().inner().clone(), replies.clone());
             let (name, args) = (text("name"), message["args"].clone());
             let verbose = verbose.inner().clone();
             tauri::async_runtime::spawn(async move {
-                let (ok, result, picture) = helper.run_tool(&id, &name, &args).await;
+                let (ok, result, picture) = tools.run(&name, &args).await;
                 log::info!(
                     "PC tool {name}: {}",
                     result.lines().next().unwrap_or_default()
@@ -447,7 +550,7 @@ fn handle(
         "reminder" => {
             log::info!("reminder: {}", text("text"));
             if message["speak"].as_bool().unwrap_or(false) {
-                helper.say(&text("text"));
+                voice.say(&text("text"));
             }
             let late = message["late"].as_bool().unwrap_or(false);
             app.state::<Reply>().reminder(app, &id, &text("text"), late);
@@ -460,7 +563,7 @@ fn handle(
             if message["speak"].as_bool().unwrap_or(false) {
                 // Its first paragraph: the answer. The rest is for reading.
                 let said = Some(text("say")).filter(|s| !s.is_empty()).unwrap_or_else(|| text("text"));
-                helper.say(&said);
+                voice.say(&said);
             }
             let ok = message["ok"].as_bool().unwrap_or(true);
             // A routine's run (server/natro_agent/routines.py) comes under the routine's name.
@@ -471,15 +574,22 @@ fn handle(
         "alert" => {
             log::info!("alert: {}", text("text"));
             if message["speak"].as_bool().unwrap_or(false) {
-                helper.say(&text("text"));
+                voice.say(&text("text"));
             }
-            app.state::<Reply>().alert(app, &id, &text("text"));
+            let answers: Vec<(String, String)> = message["answers"].as_array().map_or(Vec::new(), |answers| {
+                answers.iter().map(|answer| (
+                    answer["id"].as_str().unwrap_or_default().to_string(),
+                    answer["text"].as_str().unwrap_or_default().to_string(),
+                )).collect()
+            });
+            app.state::<Reply>().alert(app, &id, &text("text"), &answers);
         }
+        "alert_answered" => app.state::<Reply>().notice(app, &id, &text("text")),
         // Something he asked to have said out loud (server/natro_agent/aloud.py): said even with "Speak replies"
         // off, and for the chat's own requests. Asked for on the phone, the reply box shows it too.
         "say" => {
             log::info!("saying out loud (asked on the {}): {}", text("from"), text("text"));
-            helper.say_anyway(&text("text"));
+            voice.say_anyway(&text("text"));
             if text("from") != "pc" {
                 app.state::<Reply>().said(app, &id, &text("from"), &text("text"));
             }
@@ -507,7 +617,57 @@ fn handle(
         "queued" => chat.queued(app, message["items"].as_array().map(Vec::as_slice).unwrap_or_default()),
         // The Settings window's keys (keys.rs): the server's answers.
         "keys" => app.state::<Keys>().answered(&message),
+        "works_on" => works_on::from_brain(app, &message),
+        "online" => works_on::online(app, &message),
         kind if kind.starts_with("file_") => app.state::<Arc<Files>>().handle(app, &message),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::TcpListener;
+
+    const QUICK: Keepalive = Keepalive {
+        every: Duration::from_millis(100),
+        silence: Duration::from_millis(350),
+    };
+
+    /// How listen ended against a brain on this PC that takes the connection and then answers on it (reads it,
+    /// so it answers pings), or doesn't, and how long that took; None if it was still listening after a second.
+    fn listened(answers: bool) -> Option<(Ended, Duration)> {
+        tauri::async_runtime::block_on(async move {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("ws://{}", listener.local_addr().unwrap());
+            tauri::async_runtime::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                if answers {
+                    while let Some(Ok(_)) = ws.next().await {}
+                } else {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            });
+            let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+            let (_queue, mut to_send) = mpsc::unbounded_channel();
+            let started = Instant::now();
+            let ended = listen(&mut ws, &mut to_send, QUICK, |_| {});
+            let ended = tokio::time::timeout(Duration::from_secs(1), ended).await.ok()?;
+            Some((ended, started.elapsed()))
+        })
+    }
+
+    #[test]
+    fn a_connection_nothing_answers_on_is_lost() {
+        // As one that ended while the PC slept, if the brain's side doesn't refuse the ping either.
+        let (ended, took) = listened(false).expect("still listening");
+        assert!(matches!(&ended, Ended::Lost(why) if why.starts_with("nothing from Natro for")));
+        assert!(took >= QUICK.silence, "{took:?}");
+    }
+
+    #[test]
+    fn a_brain_that_answers_pings_stays_connected() {
+        assert!(listened(true).is_none());
     }
 }

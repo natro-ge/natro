@@ -100,6 +100,9 @@ object Chat {
         if (it.working) it.copy(state = Turn.State.Failed, step = "", problem = problem) else it
     }
 
+    /** A request that turned out to be nothing: he said nothing she can use in the seconds after a reply. */
+    fun dropped(turns: List<Turn>, id: String) = turns.filter { it.id != id }
+
     fun cancelled(turns: List<Turn>, id: String) = turns.change(id) {
         if (it.working) it.copy(state = Turn.State.Cancelled, step = "") else it
     }

@@ -24,8 +24,11 @@ tauri-plugin-global-shortcut = "2"
 tauri-plugin-single-instance = "2"
 # The tray's "Send files to the phone…" picker.
 tauri-plugin-dialog = "2"
-# The microphone.
+# The microphone and the speakers.
 cpal = "0.18.2"
+# Natro's voice, Kokoro (voice.rs). Not version 2, which dropped the espeak-ng this model reads its words
+# with. "shared": its libraries, built with another C runtime, stay apart from Natro, beside the program.
+sherpa-onnx = { version = "=1.13.8", default-features = false, features = ["shared"] }
 tokio-tungstenite = "0.30.0"
 futures-util = "0.3.34"
 tokio = { version = "1.53.2", features = ["sync", "time", "macros"] }
@@ -35,6 +38,12 @@ base64 = "0.23"
 # The Settings window's PIN: kept as a salted hash, as on the server (server/natro_agent/keys.py).
 scrypt = { version = "0.11", default-features = false }
 getrandom = "0.3"
+# read_file: Word documents (.docx are zip files) and PDFs.
+zip = { version = "9.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+pdf-extract = "0.12"
+# Screen control: the risky words, as the phone matches them; screenshots as JPEG.
+regex = "1"
+jpeg-encoder = "0.7"
 
 # The same version Tauri and cpal use, so it's compiled once.
 # Checking the PIN takes 50 ms optimized; unoptimized, seconds.
@@ -47,15 +56,31 @@ opt-level = 3
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Media",
+    "Media_Control",
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
     "Win32_System_Com",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_SystemInformation",
     "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
     "Win32_System_Registry",
+    "Win32_System_TaskScheduler",
     "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Accessibility",
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
     "Win32_UI_WindowsAndMessaging",
 ] }

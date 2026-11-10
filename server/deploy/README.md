@@ -74,8 +74,8 @@ Also: SSH keys only, automatic security updates (`unattended-upgrades`).
 ## 7. Connect the PC
 
 In the PC's `.env`: `NATRO_SERVER=ws://<tailscale ip>:8700` and the token. Then
-`python -m natro_pc.app --wake`. Each reply shows the time from the end of your
-request to the English and to the reply, and its cost.
+start the desktop app (the main README's "Enable voice on Windows"): its tray
+icon's menu says "Natro is online" once it's connected.
 
 ## 8. The dashboard
 
@@ -98,7 +98,7 @@ light or dark with the system. Five pages:
 
 Every bar, point and day says what's in it on hover (a tap on a phone) and opens those
 requests in Activity on a click. Nothing on it changes Natro, and it loads nothing from
-anywhere else, its fonts included (`server/natro_agent/dashboard.py`, `web/`).
+anywhere else, its fonts included (`server/natro_agent/dashboard/`, `web/`).
 
 It answers only requests addressed to Natro's own address or localhost, so another web
 page can't read it through a name of its own. To open it by another name (a MagicDNS

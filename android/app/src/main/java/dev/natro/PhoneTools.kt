@@ -5,12 +5,16 @@ import android.annotation.SuppressLint
 import android.app.AlarmManager
 import android.app.KeyguardManager
 import android.content.ActivityNotFoundException
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationManager
 import android.location.LocationRequest
+import android.media.MediaMetadata
+import android.media.session.MediaSessionManager
+import android.media.session.PlaybackState
 import android.net.Uri
 import android.os.CancellationSignal
 import android.os.Environment
@@ -65,6 +69,8 @@ class PhoneTools(private val context: Context) {
     private val tools = listOf(
         Tool("open_app", "Open an app on the phone by name.", props("app" to string("The app's name, as he says it.")),
             listOf("app"), final = true) { openApp(it.getString("app")) },
+        Tool("open_link", "Open a web page in the phone's browser.", props("url" to string("The web address.")),
+            listOf("url"), final = true) { openLink(it.getString("url")) },
         Tool("set_alarm", "Set an alarm in the phone's clock app.", props(
             "time" to string("24-hour HH:MM, like 07:30."),
             "label" to string("What it's for (optional)."),
@@ -153,6 +159,10 @@ class PhoneTools(private val context: Context) {
             "navigate" to JSONObject().put("type", "boolean").put("description", "Start navigation (default false)."),
         ), listOf("link"), personal = true, final = true) { openMaps(it.getString("link"), it.optBoolean("navigate")) },
 
+        Tool("this", "What \"this\" or \"that\" means on the phone now: the app in front, a browser's page, and " +
+            "what's playing. By name only: read what's on its screen with screen.", props(), listOf(), personal = true) {
+            inFront()
+        },
         Tool("screen", "Read what's on the phone's screen now: numbered elements to tap, type into or scroll.",
             props(), listOf(), personal = true) { screen().describe() },
         Tool("tap", "Tap a screen element by its number; returns the new screen. Refuses buttons that send, buy, pay " +
@@ -317,6 +327,48 @@ class PhoneTools(private val context: Context) {
             }
         }
         return lines.joinToString("\n").ifEmpty { "No files match." }
+    }
+
+    private fun openLink(url: String): String {
+        val link = url.trim()
+        if (!link.startsWith("http://") && !link.startsWith("https://")) {
+            throw ToolFailure("Only web links (http or https) can be opened this way.")
+        }
+        start(Intent(Intent.ACTION_VIEW, Uri.parse(link)), "open web links")
+        return ifAllowed("Opened it in the browser.")
+    }
+
+    /** What the tool this says. */
+    private fun inFront(): String {
+        val screen = ScreenControl.current
+        val (app, bar) = screen?.inFront() ?: (null to null)
+        val ownChat = app == context.packageName
+        val shown = if (ownChat) screen?.lastApp else app
+        return InFront.describe(shown?.takeIf { it.isNotBlank() }?.let(::appName), ownChat, InFront.page(bar), playing())
+    }
+
+    /** What's playing, from the apps that say (it needs notification access); if nothing is, what's paused. */
+    private fun playing(): String? {
+        val sessions = try {
+            context.getSystemService(MediaSessionManager::class.java)
+                .getActiveSessions(ComponentName(context, NotificationReader::class.java))
+        } catch (e: SecurityException) {
+            return null
+        }
+        val state = { session: android.media.session.MediaController -> session.playbackState?.state }
+        val now = sessions.firstOrNull { state(it) == PlaybackState.STATE_PLAYING }
+            ?: sessions.firstOrNull { state(it) == PlaybackState.STATE_PAUSED } ?: return null
+        val about = now.metadata
+        return InFront.media(if (state(now) == PlaybackState.STATE_PLAYING) "Playing" else "Paused",
+            about?.getString(MediaMetadata.METADATA_KEY_TITLE) ?: about?.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE),
+            about?.getString(MediaMetadata.METADATA_KEY_ARTIST) ?: about?.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST),
+            appName(now.packageName))
+    }
+
+    private fun appName(app: String): String = try {
+        context.packageManager.run { getApplicationLabel(getApplicationInfo(app, 0)).toString() }
+    } catch (e: PackageManager.NameNotFoundException) {
+        app
     }
 
     private fun openApp(app: String): String {

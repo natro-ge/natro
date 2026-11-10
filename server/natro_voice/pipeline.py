@@ -1,4 +1,5 @@
-"""The speech-to-English pipeline shared by live.py and the test tools."""
+"""The streaming speech-to-English pipeline, for the test tools (score.py); the server's voice pipeline (server.py's
+Voice) sends each whole recording to the recognizer and the translator itself."""
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait

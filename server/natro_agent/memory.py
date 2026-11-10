@@ -6,7 +6,6 @@
 One fact per line: "- Tuxa's sister is Nino. (2026-10-05)". Lines that don't
 start with "- " are ignored, so headings and notes can be added by hand.
 Everything remembered is in Claude's instructions for each new conversation.
-Memory is personal.
 """
 import os
 from datetime import date
@@ -20,8 +19,11 @@ KINDS = {
 
 
 class Memory:
-    def __init__(self, folder):
+    """folder: where the files are. places: a places.Places, whose places her instructions list too (None: none)."""
+
+    def __init__(self, folder, places=None):
         self.folder = folder
+        self.places = places
 
     def _path(self, kind):
         return self.folder / f"{kind}.md"
@@ -39,6 +41,9 @@ class Memory:
         for kind, title in KINDS.items():
             if facts := self.facts(kind):
                 parts.append(f"{title}:\n" + "\n".join(f"- {fact}" for fact in facts))
+        if self.places and (lines := self.places.prompt_lines()):
+            parts.append("His places, which the travel tools know by these names:\n"
+                         + "\n".join(f"- {line}" for line in lines))
         return "\n\n".join(parts) or "Nothing yet."
 
     def remember(self, fact, kind="told"):
@@ -98,11 +103,11 @@ class Memory:
                      "fact": {"type": "string", "description": "One short sentence, about him by name."},
                      "kind": {"type": "string", "enum": list(KINDS)}},
                      "required": ["fact", "kind"]},
-                 run=remember, source="natro", personal=True),
+                 run=remember, source="natro"),
             Tool(name="forget",
                  description="Forget one remembered fact, when your owner asks you to.",
                  input_schema={"type": "object", "properties": {
                      "text": {"type": "string", "description": "Part of the fact, enough to match only it."}},
                      "required": ["text"]},
-                 run=forget, source="natro", personal=True, confirm=True),
+                 run=forget, source="natro", confirm=True),
         ]

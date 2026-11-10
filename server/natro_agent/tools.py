@@ -33,9 +33,6 @@ class Tool:
     input_schema: dict
     run: Callable[[dict], Awaitable[Any]]  # returns text, or anything JSON can show
     source: str  # "natro", an MCP server's name, or a device's name
-    # Its results hold personal data (emails, notes, files...). Nothing routes on it since the free Gemini tier,
-    # which was offered only the tools without it, went (2026-10-20); the devices still send it.
-    personal: bool = False
     # Ask the owner before running it (deleting, sending, calling, force-closing...).
     confirm: bool = False
     # It adds or changes one of the owner's items (an event, a task, a note): many in one request ask first.
@@ -44,8 +41,15 @@ class Tool:
     # needed only this tool, that is the reply, without another model call.
     final: bool = False
     # It asks the owner itself, in its own words, once it knows what to ask (send_message: whom, where, what), with
-    # agent.ASK; it may fail before, asking nothing. Only with confirm: the agent then doesn't ask before it.
+    # tool_calls.ASK; it may fail before, asking nothing. Only with confirm: the agent then doesn't ask before it.
     own_question: bool = False
+    # What it returns is his private business (his money): the log and the details under a reply say only that it ran.
+    private: bool = False
+    # Its whole result is her reply, with no model call to word it again (the financist's answer, which took more
+    # thought than rewording it at her effort would).
+    whole: bool = False
+    # How long it may take, when that's longer than a tool's usual (tool_calls.TOOL_SECONDS).
+    seconds: int = 0
 
     def definition(self):
         """The tool as Claude's API takes it."""
@@ -82,6 +86,10 @@ class Device:
     name = "device"  # short id used in tool names: "pc", "phone"
     label = "device"  # how Natro calls it: "PC", "phone"
     files = False  # it can send and receive files (files.py)
+    # The device its switch says its requests work on (works_on.py); None: it has no switch.
+    works_on = None
+    # Its latest request came with its screen locked, so anyone could have made it (the phone says).
+    locked = False
 
     def tools(self):
         return []
@@ -101,16 +109,16 @@ class Device:
 def device_tools(device, specs, call):
     """Tools from a device's own descriptions of them.
 
-    specs: [{"name", "description", "input_schema", "personal", "confirm", "changes", "final", "hidden"}, ...] as
-    the device sends them. call(name, args) runs one on the device. A hidden one isn't offered to the model: only
-    the server calls it (the phone's send_message, which the server's own send_message calls after his yes).
+    specs: [{"name", "description", "input_schema", "confirm", "changes", "final", "hidden"}, ...] as the device
+    sends them (the apps' old "personal" flag is ignored). call(name, args) runs one on the device. A hidden one
+    isn't offered to the model: only the server calls it (the phone's send_message, which the server's own
+    send_message calls after his yes).
     """
     return [Tool(name=tool_name(device.name, spec["name"]),
                  description=spec["description"],
                  input_schema=spec.get("input_schema") or {"type": "object", "properties": {}},
                  run=partial(call, spec["name"]),
                  source=device.name,
-                 personal=spec.get("personal", False),
                  confirm=spec.get("confirm", False),
                  changes=spec.get("changes", False),
                  final=spec.get("final", False))

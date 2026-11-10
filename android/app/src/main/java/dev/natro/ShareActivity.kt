@@ -38,7 +38,7 @@ import kotlinx.coroutines.withContext
 class ShareActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val shared = shared(intent)
+        val shared = sharedFiles(intent)
         when {
             shared.isEmpty() -> return done("There was no file to send.")
             !Prefs.power.value -> return done("Natro is off: turn her on to send files to your PC.")
@@ -72,12 +72,13 @@ class ShareActivity : ComponentActivity() {
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
         finish()
     }
+}
 
-    private fun shared(intent: Intent?): List<Uri> = when (intent?.action) {
-        Intent.ACTION_SEND -> listOfNotNull(intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java))
-        Intent.ACTION_SEND_MULTIPLE -> intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
-        else -> emptyList()
-    }
+/** The files shared with an activity of the share sheet. */
+fun sharedFiles(intent: Intent?): List<Uri> = when (intent?.action) {
+    Intent.ACTION_SEND -> listOfNotNull(intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java))
+    Intent.ACTION_SEND_MULTIPLE -> intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
+    else -> emptyList()
 }
 
 /** A small card over the app that shared, while the files are copied. */

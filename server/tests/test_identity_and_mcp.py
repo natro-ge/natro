@@ -15,7 +15,7 @@ def test_capabilities_list_the_tools_and_where_to_see_whats_online():
     assert "Each message's first line says which are online" in text and "queue_for_device" in text
     assert ("Tools from the PC: pc_act, pc_act_risky, pc_close_app, pc_find, pc_force_close_app, pc_list_open_apps, "
             "pc_open_app, pc_open_file, pc_open_link, pc_read_file, pc_run_command, pc_run_command_risky, pc_screen, "
-            "pc_screenshot, pc_search_file_contents, pc_search_files, pc_switch_window, pc_wait_for.") in text
+            "pc_screenshot, pc_search_file_contents, pc_search_files, pc_switch_window, pc_this, pc_wait_for.") in text
     assert "no tools yet" in capabilities([])
 
 
@@ -48,7 +48,7 @@ def test_mcp_server_tools_are_offered_and_called():
 
     async def scenario():
         servers = MCPServers()
-        await servers.connect("calc", server, {"personal": False, "confirm_tools": ["delete_everything"]})
+        await servers.connect("calc", server, {"confirm_tools": ["delete_everything"]})
         tools = {tool.name: tool for tool in servers.tools}
         try:
             assert set(tools) == {"calc_add", "calc_delete_everything"}

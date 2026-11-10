@@ -31,6 +31,7 @@ ENTRIES = [
     {"time": at(2), "kind": "tool", "device": "pc", "tool": "spotify_play", "ok": True},
     {"time": at(2), "kind": "tool", "device": "pc", "tool": "spotify_play", "ok": False},
     {"time": at(1), "kind": "tool", "device": "pc", "tool": "pc_force_close_app", "ok": False, "declined": True},
+    # Old entries still read: the free Gemini tier's (gone since 2026-10-20) and, below, its rests.
     {"time": at(1), "kind": "request", "device": "test", "model": "gemini-3.8-flash", "cost": 0, "seconds": 1.0},
     {"time": at(1), "kind": "request", "device": "pc", "text": "stop", "cancelled": True, "voice_cost": 0},
     {"time": at(1), "kind": "job", "id": "jb1", "event": "done", "minutes": 3, "cost": 0.2},

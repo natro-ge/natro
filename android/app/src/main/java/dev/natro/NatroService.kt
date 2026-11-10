@@ -28,9 +28,11 @@ import kotlinx.coroutines.launch
  *
  * Android lets a service in the background use the microphone only as a "microphone" foreground
  * service, and lets it become one only while Natro may use the microphone (the app on screen, or
- * the assistant gesture). So it is one while the wake word is on or tested, or a request is being
- * recorded, and not otherwise. The location is the same: the service holds it (for "how do I get
- * there from here?" with the screen off) once he allows it, from when it starts on screen.
+ * the assistant gesture). So it is one while the wake word is on or tested, a request is being
+ * recorded, or she's answering something he said, as she may listen for him to go on (Natro.keepMic), and
+ * not otherwise. The location is the same: the service holds it (for "how do I get
+ * there from here?" with the screen off) once he allows it, from when it starts on screen, or at
+ * any time if he allows it all the time. While it does and he has places, it checks them (Places).
  */
 class NatroService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -48,7 +50,11 @@ class NatroService : Service() {
         if (!Prefs.power.value) return  // restarted by Android after Natro was turned off: onStartCommand stops it
         Natro.start(this)
         scope.launch {
-            combine(Natro.status, Prefs.wakeWord, WakeTest.running, Natro.recording) { _, _, _, _ -> }.collect { refresh() }
+            combine(Natro.status, Prefs.wakeWord, WakeTest.running, Natro.recording, Natro.keepMic) { _, _, _, _, _ -> }
+                .collect { refresh() }
+        }
+        scope.launch {
+            combine(Places.rules, Prefs.places) { _, _ -> }.collect { refresh() }
         }
     }
 
@@ -71,6 +77,7 @@ class NatroService : Service() {
         location.value = false
         wakePaused.value = false
         scope.cancel()
+        Places.sync(this, false)
         ears?.stop()
         ears = null
         Natro.stop()
@@ -80,9 +87,12 @@ class NatroService : Service() {
     /** Match the microphone, the location, the wake word and the notification to what's wanted now. */
     fun refresh() {
         val wanted = wantMic()
-        // The location once he allows it, on screen (where Android hands it over).
-        val addLocation = !location.value && locationAllowed(this) && Natro.onScreen.value
+        // The location once he allows it, on screen (where Android hands it over), or anywhere if he allows it always.
+        val always = Places.alwaysAllowed(this)
+        val addLocation = !location.value && locationAllowed(this) && (Natro.onScreen.value || always)
         if (wanted != hasMic || addLocation) foreground(wanted)
+        Places.sync(this, Prefs.places.value && Places.rules.value.isNotEmpty() && locationAllowed(this) &&
+            (location.value || always))
         val listen = (Prefs.wakeWord.value || WakeTest.running.value) && hasMic
         if (listen && ears == null) {
             ears = WakeListener(assets).also { it.start() }
@@ -94,7 +104,8 @@ class NatroService : Service() {
         notifications.notify(NOTIFICATION, notification())
     }
 
-    private fun wantMic() = micAllowed(this) && (Prefs.wakeWord.value || WakeTest.running.value || Natro.recording.value)
+    private fun wantMic() = micAllowed(this) &&
+        (Prefs.wakeWord.value || WakeTest.running.value || Natro.recording.value || Natro.keepMic.value)
 
     /** A foreground service with the microphone and the location if wanted, or as much of that as Android allows now. */
     private fun foreground(mic: Boolean, location: Boolean = locationAllowed(this)) {

@@ -119,6 +119,17 @@ def test_tasks():
     assert fake.requests[2][3] == {"status": "completed"}
 
 
+def test_changing_a_task_moves_it_to_another_day():
+    updated = {"id": "t1", "title": "Buy milk", "due": "2026-11-10T00:00:00.000Z"}
+    g, fake = google({("PATCH", f"{TASKS}/lists/@default/tasks/t1"): (200, updated)})
+    assert run(g.update_task("t1", due="2026-11-10")) == "Changed the task 'Buy milk', due Tue 10 Nov."
+    assert fake.requests[-1][3] == {"due": "2026-11-10T00:00:00.000Z"}
+    run(g.update_task("t1", title="Buy oat milk", notes="The green one"))
+    assert fake.requests[-1][3] == {"title": "Buy oat milk", "notes": "The green one"}
+    with pytest.raises(ToolError, match="Nothing to change"):
+        run(g.update_task("t1"))
+
+
 def test_gmail_search_and_read():
     listed = {"messages": [{"id": "m1"}]}
     metadata = {"id": "m1", "labelIds": ["UNREAD", "INBOX"], "snippet": "See you at 7 &amp; bring the ball",
@@ -164,9 +175,9 @@ def test_google_errors():
     assert "google_signin" in SIGN_IN_AGAIN
 
 
-def test_google_tools_are_personal_and_risky_ones_ask():
+def test_google_tools_risky_ones_ask():
     tools = {tool.name: tool for tool in Google(GoogleAPI(None)).tools()}
-    assert len(tools) == 16 and all(tool.personal for tool in tools.values())
+    assert len(tools) == 17
     assert sorted(name for name, tool in tools.items() if tool.confirm) == \
         ["calendar_delete_event", "docs_replace", "gmail_send", "tasks_delete"]
     # Their results' first lines are the whole reply to "add a task ...": no second model call to word it.

@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="shared/branding/icon.svg" width="96" height="96" alt="">
+
 # Natro
 
 ### Your personal AI assistant, across devices.
@@ -23,14 +25,14 @@
 
 Natro is a personal AI assistant that runs across your Windows PC and Android phone. It understands spoken requests—including Georgian speech mixed with English technical terms—and can use your devices, files, and connected services to carry out tasks.
 
-The assistant's core runs on a server you control. Your devices connect to it over a private [Tailscale](https://tailscale.com/) network, while local wake-word detection keeps audio on-device until you ask for Natro.
+The assistant's core runs on a server you control. Your devices connect to it over a private [Tailscale](https://tailscale.com/) network, and audio stays on the device until you ask for Natro: the phone listens for its wake phrase locally, and the PC records only while you use its talk key.
 
 Natro is built around a simple principle: **automation should be useful, observable, and under your control.** Actions with meaningful consequences require confirmation, and routine commands can bypass the language model entirely.
 
 ## Highlights
 
 - **Voice-first interaction** — say “OK Natro” or use a keyboard shortcut to make a request.
-- **Cross-device assistance** — use Natro from Windows or Android, with a shared conversation.
+- **Cross-device assistance** — use Natro from Windows or Android, with a shared conversation. Each device has a switch, changed by tap or by voice, that makes requests made on it act on the other device.
 - **PC control** — launch applications, search and inspect files, interact with the screen, and run approved system commands.
 - **Android control** — open apps, manage alarms and media, interact with the screen, and work with contacts, calls, messages, and notifications.
 - **Connected services** — integrate Google Calendar, Tasks, Gmail, Drive, Docs, Spotify, web search, and MCP tools.
@@ -72,7 +74,7 @@ flowchart TB
 
 ### A request, from voice to action
 
-1. **Wake locally.** The PC uses a local Whisper model; Android uses local keyword spotting. Audio is not sent before the wake phrase is detected.
+1. **Start locally.** On the PC, hold or tap the talk key (Ctrl+Alt+Space); Android listens for “OK Natro” with on-device keyword spotting. Audio is not sent before then.
 2. **Send securely.** The device streams the request to the server over a WebSocket connection on your private Tailscale network.
 3. **Recognize and translate.** Google Chirp 3 transcribes speech, and Claude converts Georgian or mixed-language input into clear English for the agent.
 4. **Choose a model.** Natro routes routine requests to Claude Haiku and personal or complex requests to Claude Sonnet. The agent can escalate when a task gets stuck.
@@ -86,7 +88,7 @@ Common deterministic commands—such as controlling music or changing a PC setti
 Natro is designed to keep personal data and consequential actions behind explicit boundaries.
 
 - **Private connectivity:** devices connect to the server over Tailscale rather than exposing the service directly to the public internet.
-- **Local wake-word detection:** audio is not sent before the wake phrase is detected.
+- **Local wake-word detection:** on Android, audio is not sent before the wake phrase is detected; the PC records only while its talk key is used.
 - **Model routing:** requests go to Claude only: routine ones to Claude Haiku, and those involving personal data or risky actions, such as email, calendar, files, memory, or notifications, to Claude Sonnet.
 - **Action confirmation:** actions such as sending, deleting, calling, buying, or force-closing an application require approval.
 - **Banking and payment sites:** browser access is read-only.
@@ -98,18 +100,18 @@ These controls depend on your configuration and the permissions granted to each 
 
 ## Project status
 
-Natro is actively developed and used day to day. The core assistant, Windows app, Android app, device communication, and main integrations are working; the new Tauri desktop experience is still in progress.
+Natro is actively developed and used day to day. The core assistant, the Windows desktop app, the Android app, device communication, and the main integrations are working.
 
 | Component | Status |
 |---|---|
 | Server-side agent, memory, routing, and confirmations | Working |
-| Windows voice assistant and PC tools (`desktop/helper/`) | Working |
+| Windows desktop app (`desktop/`) | Working |
 | Android assistant and device tools | Working |
 | Google and Spotify integrations | Working |
 | File transfer, reminders, and background jobs | Working |
-| New Tauri desktop interface (`desktop/`) | In progress |
+| PC tools and spoken replies, in the desktop app itself (`desktop/src-tauri/`) | Working |
 
-The current PC application is Windows-only. The Android app targets Android 14+ on ARM64 devices and is installed directly rather than through the Play Store.
+The PC app is Windows-only. The Android app targets Android 14+ on ARM64 devices and is installed directly rather than through the Play Store.
 
 ## Getting started
 
@@ -150,7 +152,7 @@ Text chat includes memory and notes. To test PC actions without executing them, 
 
 ### 3. Enable voice on Windows
 
-Run the setup script again without `-SkipModels` to download the local voice models (approximately 500 MB).
+Run the setup script again without `-SkipModels` to download the voice for spoken replies (Kokoro, approximately 350 MB).
 
 Configure Google Cloud Speech-to-Text:
 
@@ -159,23 +161,19 @@ Configure Google Cloud Speech-to-Text:
 3. Create a service account with the **Cloud Speech Client** role.
 4. Save its JSON key as `google-key.json` in the repository root and configure `GOOGLE_CLOUD_PROJECT` in `.env`.
 
-Start the server and PC app in separate terminals:
+Start the server, then the desktop app in another terminal (it needs Rust, Node.js, and the Visual Studio C++ build tools):
 
 ```powershell
 .venv\Scripts\python.exe -m natro_agent.server
 ```
 
 ```powershell
-.venv\Scripts\python.exe -m natro_pc.app --wake
+cd desktop
+npm install
+npx tauri dev
 ```
 
-Say “OK Natro” after the wake-word listener is ready. Without `--wake`, the app can record after you press Enter; `--type` enables typed requests to the running service.
-
-Alternatively, start the tray application:
-
-```powershell
-.venv\Scripts\pythonw.exe -m natro_pc.tray
-```
+Hold or tap Ctrl+Alt+Space and speak, or open the chat with Ctrl+Space to type. The app connects to `NATRO_SERVER` with `NATRO_DEVICE_TOKEN` from `.env`, and runs the PC's tools and spoken replies itself.
 
 ### Optional integrations
 
@@ -227,7 +225,7 @@ On first launch, grant only the permissions required for the features you intend
 | Path | Purpose |
 |---|---|
 | `server/` | What runs on the server: agent loop, model routing, identity, memory, tools, device server, integrations, and tests (`natro_agent/`, `tests/`); speech recognition and translation (`natro_voice/`); Linux server setup and service deployment (`deploy/`) |
-| `desktop/` | What runs on Windows: new Tauri 2 desktop interface (in progress); current Windows app, wake word, PC tools, voice output, and tray app (`helper/`); Windows setup script (`setup-pc.ps1`) |
+| `desktop/` | What runs on Windows: the Tauri 2 desktop app (a Rust core with the PC tools and voice output in `src-tauri/`, Svelte pages in `src/`); Windows setup script (`setup-pc.ps1`) |
 | `android/` | Android app built with Kotlin and Jetpack Compose |
 | `shared/` | The protocol between the server and the apps (`PROTOCOL.md`), and the icon (`branding/`) |
 | `scripts/` | The icon's drawing script |
@@ -242,7 +240,6 @@ Run the available test suites from the repository root:
 
 ```powershell
 .venv\Scripts\python.exe -m pytest server
-.venv\Scripts\python.exe -m pytest desktop\helper
 android\gradlew.bat -p android testDebugUnitTest
 cd desktop\src-tauri; cargo test
 ```
@@ -251,7 +248,7 @@ cd desktop\src-tauri; cargo test
 
 - **Assistant identity:** edit `server/identity/NATRO.md`.
 - **Speech vocabulary:** add names and preferred spellings to `server/natro_voice/wordlist.txt`.
-- **MCP tools:** configure server entries in `server/config/mcp.json`. Each entry can specify whether its results are personal and which tools require confirmation.
+- **MCP tools:** configure server entries in `server/config/mcp.json`. Each entry can name the tools that require confirmation.
 - **Budget and runtime settings:** configure them in `.env`.
 
 ## Current limitations

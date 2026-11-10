@@ -28,13 +28,15 @@ MOST_REMINDERS = 10
 
 class Briefing:
     """path: briefing.json. google: a google_tools.Google (None: not signed in). weather: a weather.Weather.
-    reminders: a reminders.Reminders (None: no reminders, as in the typed chat)."""
+    reminders: a reminders.Reminders (None: no reminders, as in the typed chat). leaving: async (now) -> when to leave
+    for today's first meeting at a place, in a line (watchers.Watchers's first_leaving; None: not said)."""
 
-    def __init__(self, path, google=None, weather=None, reminders=None):
+    def __init__(self, path, google=None, weather=None, reminders=None, leaving=None):
         self.path = path
         self.google = google
         self.weather = weather
         self.reminders = reminders
+        self.leaving = leaving
         self.now = lambda: datetime.now(timezone())
 
     def tools(self):
@@ -44,7 +46,7 @@ class Briefing:
             "tomorrow, tasks overdue or due today or tomorrow, reminders still to come today, and unread emails "
             "in his Primary inbox since the last briefing. For \"brief me\", \"what's my day like?\", \"what's "
             "on today?\".",
-            {"type": "object", "properties": {}}, self.run, "natro", personal=True)]
+            {"type": "object", "properties": {}}, self.run, "natro")]
 
     async def run(self, args=None):
         now = self.now()
@@ -78,7 +80,13 @@ class Briefing:
             self.google.events(start=tomorrow.isoformat()))
         rest = "Nothing more today." if rest == "No events then." else rest
         next_day = "Nothing." if next_day == "No events then." else next_day
-        return f"Calendar, the rest of today:\n{rest}\nCalendar, tomorrow:\n{next_day}"
+        try:
+            leave = await self.leaving(now) if self.leaving else ""
+        except Exception as e:  # the calendar is worth having without it
+            log.write("error", step="briefing", part="leaving", error=repr(e))
+            leave = ""
+        leave = f"\n{leave}" if leave else ""
+        return f"Calendar, the rest of today:\n{rest}{leave}\nCalendar, tomorrow:\n{next_day}"
 
     async def _tasks(self, now):
         if not self.google:

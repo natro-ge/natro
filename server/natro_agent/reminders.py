@@ -1,7 +1,8 @@
-"""Reminders: Natro speaks up at a time, or when his PC or phone is back, with no model call.
+"""Reminders: Natro speaks up at a time, when his PC or phone is back, or when he gets to one of his places or leaves
+it (places.py), with no model call.
 
 remind keeps one in reminders.json, with the words she'll say. The clock (run) sleeps until the next one is
-due; then deliver (the server's) shows it on every device that can and speaks it on one. A repeating one
+due; then deliver (delivery.py's) shows it on every device that can and speaks it on one. A repeating one
 (an RRULE, read like a calendar event's) moves on to its next time. One that's due while no device that
 shows reminders is online waits for one, and is dropped (logged) once it's more than LATE_HOURS late; the
 same goes for one that came due while the server was down. One for "when my PC is back" goes off the next
@@ -32,6 +33,7 @@ from natro_agent import log
 from natro_agent.config import timezone
 from natro_agent.google_tools import parse_when, repeat_rule
 from natro_agent.identity import KNOWN_DEVICES
+from natro_agent.places import AGAIN_MINUTES, where_words
 from natro_agent.tools import Tool, ToolError
 
 # Later than this, a reminder that couldn't be delivered is dropped.
@@ -48,6 +50,7 @@ SNOOZE = 10
 # Repeating more often than this is refused.
 MOST_OFTEN_MINUTES = 15
 DAY_TIME = (9, 0)  # a day without a time ("on Friday") means this time
+AGAIN_MILLIS = AGAIN_MINUTES * 60 * 1000
 
 DAYS = {"MO": "Monday", "TU": "Tuesday", "WE": "Wednesday", "TH": "Thursday", "FR": "Friday", "SA": "Saturday",
         "SU": "Sunday"}
@@ -135,14 +138,18 @@ def item_rule(item):
 
 
 class Reminders:
-    """path: the JSON file they're kept in. devices: name -> device, while connected (the agent's).
+    """path: the JSON file they're kept in. devices: name -> device, while connected (the agent's). places: a
+    places.Places, for reminders at a place (None: none).
 
     The server sets deliver(reminder) -> whether any device showed it, and asking() -> the device the request
     being handled came from."""
 
-    def __init__(self, path, devices):
+    def __init__(self, path, devices, places=None):
         self.path = path
         self.devices = devices
+        self.places = places
+        if places:
+            places.users.append(self)
         self.deliver = lambda reminder: False
         self.asking = lambda: None
         self.now = lambda: datetime.now(timezone())
@@ -153,11 +160,12 @@ class Reminders:
     def tools(self):
         return [
             Tool("remind",
-                 "Remind your owner of something: at a time, after some minutes, repeating, or when his PC or phone "
-                 "is next online. When it's due, text is said to him out loud and shown on his devices, word for "
-                 "word, with no other context, so write it as you'd say it then, short and complete: \"Time to "
-                 "call Nino.\", \"Take the chicken out of the freezer.\" Give exactly one of at, in_minutes or "
-                 "when_online. Something he has to do on a day without a set time is a task, not a reminder.",
+                 "Remind your owner of something: at a time, after some minutes, repeating, when his PC or phone is "
+                 "next online, or when he gets to one of his places or leaves it. When it's due, text is said to him "
+                 "out loud and shown on his devices, word for word, with no other context, so write it as you'd say "
+                 "it then, short and complete: \"Time to call Nino.\", \"Take the chicken out of the freezer.\" Give "
+                 "exactly one of at, in_minutes, when_online or place. Something he has to do on a day without a set "
+                 "time is a task, not a reminder.",
                  {"type": "object", "properties": {
                      "text": {"type": "string", "description": "What you'll say when it's due."},
                      "at": {"type": "string", "description": "When, his local time: 2026-10-18T09:00. A day alone "
@@ -169,16 +177,22 @@ class Reminders:
                                 "FREQ=DAILY;UNTIL=20261231, FREQ=HOURLY;COUNT=5."},
                      "when_online": {"type": "string", "enum": list(KNOWN_DEVICES),
                                      "description": "Or: when this device is next online (it's offline now)."},
+                     "place": {"type": "string", "description": "Or: at one of his saved places, by name (\"remind me "
+                                                                "to buy milk when I get to Carrefour\")."},
+                     "on": {"type": "string", "enum": ["arrive", "leave"],
+                            "description": "With place: when he gets there, or leaves. Default arrive."},
+                     "every_time": {"type": "boolean", "description": "With place: every time, when he says so; "
+                                                                      "else once."},
                  }, "required": ["text"]},
-                 self.set, "natro", personal=True, changes=True, final=True),
+                 self.set, "natro", changes=True, final=True),
             Tool("reminders_list",
                  "His reminders still to come (with their ids), and those that went off in the last day.",
-                 {"type": "object", "properties": {}}, self.list, "natro", personal=True),
+                 {"type": "object", "properties": {}}, self.list, "natro"),
             Tool("reminders_cancel",
                  "Cancel one of his reminders by its id (from reminders_list); a repeating one stops for good. "
                  "To change one, cancel it and set it again.",
                  {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
-                 self.cancel, "natro", personal=True, changes=True),
+                 self.cancel, "natro", changes=True),
         ]
 
     # Tools
@@ -191,14 +205,22 @@ class Reminders:
             raise ToolError(f"Keep the reminder under {MOST_TEXT} characters.")
         if len(self.items) >= MOST:
             raise ToolError(f"He already has {MOST} reminders: cancel some first.")
-        given = [key for key in ("at", "in_minutes", "when_online") if args.get(key) not in (None, "")]
+        given = [key for key in ("at", "in_minutes", "when_online", "place") if args.get(key) not in (None, "")]
         if len(given) != 1:
-            raise ToolError("Give exactly one of at, in_minutes or when_online.")
+            raise ToolError("Give exactly one of at, in_minutes, when_online or place.")
         now = self.now()
         item = {"id": f"rm{int(time.time() * 1000):x}{next(self._ids)}", "text": text, "next": None, "start": None,
                 "repeat": "", "on": None, "made": ms(now), "from": getattr(self.asking(), "name", "")}
         repeat = str(args.get("repeat") or "").strip()
-        if "when_online" in given:
+        if "place" in given:
+            if not self.places:
+                raise ToolError("Natro has no places here.")
+            if repeat:
+                raise ToolError("A reminder at a place doesn't take repeat: every_time, if it's every time.")
+            place, event = self.places.trigger(args)
+            item.update(place=place["id"], place_on=event, every=bool(args.get("every_time")))
+            said = f"OK, I'll remind you {where_words(place, event)}{', every time' if item['every'] else ''}."
+        elif "when_online" in given:
             device = args["when_online"]
             if device not in KNOWN_DEVICES:
                 raise ToolError(f"when_online is one of: {', '.join(KNOWN_DEVICES)}.")
@@ -235,8 +257,10 @@ class Reminders:
         self.items.append(item)
         self._save()
         self._wake.set()
+        if self.places:
+            self.places.changed()
         log.write("reminder", event="set", id=item["id"], text=text, next=item["next"], repeat=item["repeat"],
-                  on=item["on"])
+                  on=item["on"], place=item.get("place"))
         return f"{said}\nReminder {item['id']}: \"{text}\""
 
     async def list(self, args):
@@ -250,6 +274,10 @@ class Reminders:
         for item in self.items:
             if item["on"]:
                 lines.append(f"- {item['id']}: when his {KNOWN_DEVICES[item['on']]} is back: \"{item['text']}\"")
+            place = self._place_of(item)
+            if place:
+                every = ", every time" if item.get("every") else ""
+                lines.append(f"- {item['id']}: {where_words(place, item['place_on'])}{every}: \"{item['text']}\"")
         lines = ["Still to come:", *lines] if lines else ["No reminders still to come."]
         for item in self.waiting:
             lines.append(f"Waiting for a device to show it (was for {when_words(from_ms(item['due']), now)}): "
@@ -264,12 +292,54 @@ class Reminders:
         wanted = str(args.get("id") or "").strip()
         for item in self.items:
             if item["id"] == wanted:
-                self.items.remove(item)
-                self._save()
-                self._wake.set()
-                log.write("reminder", event="cancelled", id=wanted, text=item["text"])
+                self._stop(item)
                 return f"Cancelled: \"{item['text']}\""
         raise ToolError(f"There's no reminder {wanted!r}: reminders_list has their ids.")
+
+    def _stop(self, item):
+        self.items.remove(item)
+        self._save()
+        self._wake.set()
+        if self.places:
+            self.places.changed()
+        log.write("reminder", event="cancelled", id=item["id"], text=item["text"])
+
+    def _place_of(self, item):
+        """The place a reminder is for, or None."""
+        if not self.places or not item.get("place"):
+            return None
+        return next((place for place in self.places.items if place["id"] == item["place"]), None)
+
+    # For places.py
+
+    def happening(self, place_id):
+        return [{"id": item["id"], "kind": "reminder", "on": item["place_on"], "every": bool(item.get("every")),
+                 "text": item["text"]} for item in self.items if item.get("place") == place_id]
+
+    def drop(self, id):
+        item = next((item for item in self.items if item["id"] == id), None)
+        if item is None:
+            return False
+        self._stop(item)
+        return True
+
+    def place_gone(self, place_id):
+        self.items = [item for item in self.items if item.get("place") != place_id]
+        self._save()
+
+    def place_event(self, place, event, at, late):
+        """He got to a place or left it. Late, a reminder still shows, saying when it was for (delivery.py)."""
+        due = [item for item in self.items if item.get("place") == place["id"] and item["place_on"] == event
+               and at - item.get("fired", 0) >= AGAIN_MILLIS]
+        for item in due:
+            if item.get("every"):
+                item["fired"] = at
+            else:
+                self.items.remove(item)
+            self._due(item, from_ms(at), self.now())
+        if due:
+            self._save()
+            self.places.changed()
 
     def coming(self, until):
         """What goes off from now until then, in order, a repeating one at each of its times: [(time, text)];

@@ -1,0 +1,644 @@
+[
+  {
+    "name": "open_app",
+    "description": "Open an app on the PC by name, as from the Start menu.",
+    "confirm": false,
+    "final": true,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string",
+          "description": "The app's name, as he says it (\"Spotify\", \"VS Code\")."
+        }
+      },
+      "required": [
+        "app"
+      ]
+    }
+  },
+  {
+    "name": "close_app",
+    "description": "Close an app normally, as if clicking X on its windows: the app itself asks about unsaved work. Some apps (like Spotify) only hide in the tray.",
+    "confirm": false,
+    "final": true,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string",
+          "description": "The app's name, as he says it (\"Spotify\", \"VS Code\")."
+        }
+      },
+      "required": [
+        "app"
+      ]
+    }
+  },
+  {
+    "name": "force_close_app",
+    "description": "Kill an app that won't close or is stuck, with all its processes. Unsaved work in it is lost.",
+    "confirm": true,
+    "final": false,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string",
+          "description": "The app's name, as he says it (\"Spotify\", \"VS Code\")."
+        }
+      },
+      "required": [
+        "app"
+      ]
+    }
+  },
+  {
+    "name": "list_open_apps",
+    "description": "Which apps have windows open on the PC.",
+    "confirm": false,
+    "final": false,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "search_files",
+    "description": "Find files and folders on the PC by name, newest first, with Everything's search syntax: words must all appear in the name or path (\"cv\", \"invoice 2026\"); ext:pdf;docx for kinds; dm:today, dm:thisweek or dm:last7days for when changed; size:>100mb; folder: for folders only; a term with a backslash matches the path (\"\\Downloads\\ ext:mp4\"). Windows, programs, AppData and the Recycle Bin are left out unless everywhere is true.",
+    "confirm": false,
+    "final": false,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "everywhere": {
+          "type": "boolean"
+        },
+        "max_results": {
+          "type": "integer",
+          "description": "Default 15, up to 50."
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  {
+    "name": "search_file_contents",
+    "description": "Find files whose text contains all these words (documents, PDFs, notes; from the Windows Search index of his user folder, C:\\Users\\Tuxa). Best match first.",
+    "confirm": false,
+    "final": false,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "folder": {
+          "type": "string",
+          "description": "A full path. His home folder is C:\\Users\\Tuxa."
+        },
+        "max_results": {
+          "type": "integer",
+          "description": "Default 10."
+        }
+      },
+      "required": [
+        "text"
+      ]
+    }
+  },
+  {
+    "name": "read_file",
+    "description": "Read a text file, Word document (.docx) or PDF on the PC, 15000 characters at a time: a longer text says where it was cut, and start reads on from there.",
+    "confirm": false,
+    "final": false,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "A full path. His home folder is C:\\Users\\Tuxa."
+        },
+        "start": {
+          "type": "integer",
+          "description": "Character to start from (default 0)."
+        }
+      },
+      "required": [
+        "path"
+      ]
+    }
+  },
+  {
+    "name": "open_file",
+    "description": "Open a file or folder on the PC with its usual program (a PDF in the PDF viewer, a folder in File Explorer). Not for programs: open_app opens apps.",
+    "confirm": false,
+    "final": false,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "A full path. His home folder is C:\\Users\\Tuxa."
+        }
+      },
+      "required": [
+        "path"
+      ]
+    }
+  },
+  {
+    "name": "open_link",
+    "description": "Open a web page in the PC's browser.",
+    "confirm": false,
+    "final": true,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "An http or https link."
+        }
+      },
+      "required": [
+        "url"
+      ]
+    }
+  },
+  {
+    "name": "run_command",
+    "description": "Run a PowerShell command on the PC and get its output: questions about the PC (IP address, disk space, battery, Wi-Fi, processes, a file's details) and small changes. It runs only when harmless: it only reads (Get-*, Test-*, ipconfig, netsh ... show), opens a page, a Settings page (Start-Process ms-settings:bluetooth), a folder or a document, or it is dark mode (Set-ItemProperty on HKCU:\\...\\Themes\\Personalize AppsUseLightTheme or SystemUsesLightTheme, 0 or 1), brightness (WmiSetBrightness), Set-Clipboard, or locking the PC (rundll32.exe user32.dll,LockWorkStation). Anything else is refused: then use run_command_risky.",
+    "confirm": false,
+    "final": false,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "PowerShell (Windows PowerShell 5.1), on one line; it starts in his home folder."
+        }
+      },
+      "required": [
+        "command"
+      ]
+    }
+  },
+  {
+    "name": "run_command_risky",
+    "description": "Run a PowerShell command that changes, deletes, installs or writes something, or one that run_command refused.",
+    "confirm": true,
+    "final": false,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "PowerShell (Windows PowerShell 5.1), on one line; it starts in his home folder."
+        }
+      },
+      "required": [
+        "command"
+      ]
+    }
+  },
+  {
+    "name": "screen",
+    "description": "Read what's on the PC's screen now: the window he is using (web pages included) and its elements, numbered (buttons, fields, links, list items, text), to act on by number.",
+    "confirm": false,
+    "final": false,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "everything": {
+          "type": "boolean",
+          "description": "Also the taskbar."
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "find",
+    "description": "Find elements on the PC's screen by their text: only those, numbered as on the screen.",
+    "confirm": false,
+    "final": false,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "everything": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    }
+  },
+  {
+    "name": "act",
+    "description": "Do one or more things on the PC's screen, in order, by element number: click, double_click, right_click, type (into a field, or where the cursor is), key, scroll. Returns the new screen. Refuses what looks like sending, buying, paying or deleting (a Send button, Enter in a chat): use act_risky for those.",
+    "confirm": false,
+    "final": false,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "do"
+            ],
+            "properties": {
+              "do": {
+                "type": "string",
+                "enum": [
+                  "click",
+                  "double_click",
+                  "right_click",
+                  "type",
+                  "key",
+                  "scroll"
+                ]
+              },
+              "element": {
+                "type": "integer",
+                "description": "The element's number. type: the field (leave it out to type where the cursor is); scroll: what to scroll (default the window)."
+              },
+              "text": {
+                "type": "string",
+                "description": "type: what to type (a line break is Shift+Enter, a new line). key: the keys, like ctrl+s, enter, alt+tab, page down."
+              },
+              "clear": {
+                "type": "boolean",
+                "description": "type into a numbered field: replace what's in it (default true)."
+              },
+              "enter": {
+                "type": "boolean",
+                "description": "type: press Enter after typing."
+              },
+              "direction": {
+                "type": "string",
+                "enum": [
+                  "up",
+                  "down"
+                ],
+                "description": "scroll: default down."
+              }
+            }
+          },
+          "description": "Done in this order."
+        }
+      },
+      "required": [
+        "actions"
+      ]
+    }
+  },
+  {
+    "name": "act_risky",
+    "description": "The same as act, for a click or key that sends, buys, pays or deletes.",
+    "confirm": true,
+    "final": false,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "do"
+            ],
+            "properties": {
+              "do": {
+                "type": "string",
+                "enum": [
+                  "click",
+                  "double_click",
+                  "right_click",
+                  "type",
+                  "key",
+                  "scroll"
+                ]
+              },
+              "element": {
+                "type": "integer",
+                "description": "The element's number. type: the field (leave it out to type where the cursor is); scroll: what to scroll (default the window)."
+              },
+              "text": {
+                "type": "string",
+                "description": "type: what to type (a line break is Shift+Enter, a new line). key: the keys, like ctrl+s, enter, alt+tab, page down."
+              },
+              "clear": {
+                "type": "boolean",
+                "description": "type into a numbered field: replace what's in it (default true)."
+              },
+              "enter": {
+                "type": "boolean",
+                "description": "type: press Enter after typing."
+              },
+              "direction": {
+                "type": "string",
+                "enum": [
+                  "up",
+                  "down"
+                ],
+                "description": "scroll: default down."
+              }
+            }
+          },
+          "description": "Done in this order."
+        }
+      },
+      "required": [
+        "actions"
+      ]
+    }
+  },
+  {
+    "name": "switch_window",
+    "description": "Bring an open window to the front by its title or app name; returns its screen.",
+    "confirm": false,
+    "final": false,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    }
+  },
+  {
+    "name": "wait_for",
+    "description": "Wait until some text shows on the PC's screen (a page loading, a dialog), up to 20 seconds; returns the screen.",
+    "confirm": false,
+    "final": false,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "seconds": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    }
+  },
+  {
+    "name": "screenshot",
+    "description": "Take a picture of the PC's screen: you see it, and it goes into the chat on his devices for him (\"show me my PC screen\", \"what's this on my screen?\"). To act on the screen, read it with screen.",
+    "confirm": false,
+    "final": false,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "this",
+    "description": "What \"this\" or \"that\" means on the PC now: the window he's using, the file open in it or those selected in a folder, a browser's page, the text he has selected, and what's playing. By name only: read what's in them with read_file, web_page or screen.",
+    "confirm": false,
+    "final": false,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "browser_open",
+    "description": "Open a website in his own Edge on the PC, logged in as him (his accounts), in Natro's own tabs. Returns the page: its elements with refs, to act on.",
+    "confirm": false,
+    "final": false,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "new_tab": {
+          "type": "boolean",
+          "description": "Keep the page that's open; default false."
+        }
+      },
+      "required": [
+        "url"
+      ]
+    }
+  },
+  {
+    "name": "browser_page",
+    "description": "Read the page open in his Edge now: its text and elements with refs.",
+    "confirm": false,
+    "final": false,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "browser_act",
+    "description": "Do one or more things on the page in his Edge, in order, by ref: click, double_click, type (submit: press Enter, for a search box), select (an option), key, back. Returns the page after. Refuses what looks like sending, buying, paying or deleting: use browser_act_risky for those. On bank and payment sites, only reading.",
+    "confirm": false,
+    "final": false,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "do"
+            ],
+            "properties": {
+              "do": {
+                "type": "string",
+                "enum": [
+                  "click",
+                  "double_click",
+                  "type",
+                  "select",
+                  "key",
+                  "back"
+                ]
+              },
+              "ref": {
+                "type": "string",
+                "description": "The element's ref from the page (e12)."
+              },
+              "text": {
+                "type": "string",
+                "description": "type: what to type. select: the option. key: Enter, Escape, Tab, PageDown..."
+              },
+              "submit": {
+                "type": "boolean",
+                "description": "type: press Enter after (a search box)."
+              }
+            }
+          },
+          "description": "Done in this order."
+        }
+      },
+      "required": [
+        "actions"
+      ]
+    }
+  },
+  {
+    "name": "browser_act_risky",
+    "description": "The same as browser_act, for a click or key that sends, buys, pays or deletes.",
+    "confirm": true,
+    "final": false,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "do"
+            ],
+            "properties": {
+              "do": {
+                "type": "string",
+                "enum": [
+                  "click",
+                  "double_click",
+                  "type",
+                  "select",
+                  "key",
+                  "back"
+                ]
+              },
+              "ref": {
+                "type": "string",
+                "description": "The element's ref from the page (e12)."
+              },
+              "text": {
+                "type": "string",
+                "description": "type: what to type. select: the option. key: Enter, Escape, Tab, PageDown..."
+              },
+              "submit": {
+                "type": "boolean",
+                "description": "type: press Enter after (a search box)."
+              }
+            }
+          },
+          "description": "Done in this order."
+        }
+      },
+      "required": [
+        "actions"
+      ]
+    }
+  },
+  {
+    "name": "browser_tabs",
+    "description": "Natro's tabs in his Edge: list them, open a new one, switch to one or close one (by index from list).",
+    "confirm": false,
+    "final": false,
+    "hidden": false,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "list",
+            "new",
+            "select",
+            "close"
+          ]
+        },
+        "index": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  {
+    "name": "send_message",
+    "description": "Send a message on Instagram or Messenger from Natro's own hidden Edge on the PC, after his yes to the brain's own question (server/natro_agent/sending.py).",
+    "confirm": true,
+    "final": false,
+    "hidden": true,
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "chat": {
+          "type": "string"
+        },
+        "facebook": {
+          "type": "string"
+        },
+        "username": {
+          "type": "string"
+        },
+        "group": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "app",
+        "text"
+      ]
+    }
+  }
+]

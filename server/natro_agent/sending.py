@@ -7,7 +7,7 @@ send it, and nothing shows anywhere unless the last is needed (owner, 2026-10-23
 out of his reach):
   1. The phone's quiet ways (Sending.kt, screen false): her chat's notification's Reply, or one kept from her last
      message; they work with the phone locked.
-  2. Natro's own hidden Edge on the PC (browser.py): headless, signed in to his accounts once.
+  2. Natro's own hidden Edge on the PC (the desktop app's tools/browser.rs): headless, signed in to his accounts once.
   3. The phone's screen (Sending.kt, screen true): sharing into her chat, or her chat's link, with Send tapped; it
      shows for a few seconds, then the phone goes back to what he had open. Only when 2 can't: the PC is off, or
      Edge stopped before sending. Not with the phone locked (a secure lock can't be got past).
@@ -23,8 +23,8 @@ import collections
 import json
 import re
 
-from natro_agent.agent import ASK
 from natro_agent.people import APPS, Person, app_of, plain, username_from
+from natro_agent.tool_calls import ASK
 from natro_agent.tools import Tool, ToolError
 
 # The phone answers through a Reply at once; on its screen it opens a chat and waits for it.
@@ -47,7 +47,7 @@ class Sending:
     def __init__(self, people, devices):
         self.people = people
         self.devices = devices
-        self.request = lambda: None  # the chat entry of the request being handled (the server sets it)
+        self.entry = lambda: None  # the chat entry of the request being handled (the server sets it)
         self._sent = collections.deque(maxlen=100)  # the requests that have had their one message
 
     def tools(self):
@@ -67,11 +67,12 @@ class Sending:
                                                           "language he said it in."},
                 "app": {"type": "string", "enum": ["instagram", "messenger"]},
             }, "required": ["to", "text"]},
-            self.send, "natro", personal=True, confirm=True, final=True, own_question=True)]
+            self.send, "natro", confirm=True, final=True, own_question=True)]
 
-    async def send(self, args):
+    @staticmethod
+    def _asked_for(args):
+        """(app, whom, what) from send_message's arguments, or a ToolError saying what's missing."""
         app = app_of(args.get("app"))
-        label = APPS[app]
         to = " ".join(str(args.get("to") or "").split())
         text = str(args.get("text") or "").strip()
         if not to:
@@ -80,11 +81,22 @@ class Sending:
             raise ToolError("Say what the message says.")
         if len(text) > MOST_CHARS:
             raise ToolError(f"That's too long for one message (at most {MOST_CHARS} characters).")
-        request = self.request()
-        if request is not None and request in self._sent:
-            raise ToolError(f"One at a time: nothing more was sent. Tell him to ask you again for {to}.")
+        return app, to, text
+
+    def prepare(self, args):
+        """A message worked out, with nothing asked or sent: {"shown": whom, as he'd say it, "label": the app's name,
+        "text", "call": what deliver takes}. Or a ToolError for her to ask him. For one that goes later
+        (place_actions.py), asked about first by whoever calls this."""
+        return self._ready(*self._asked_for(args))
+
+    def _ready(self, app, to, text):
         person = self._whom(app, to)
-        shown = person.shown()
+        return {"shown": person.shown(), "label": APPS[app], "text": text,
+                "call": {"app": app, "name": person.name, "chat": person.chat, "facebook": person.facebook,
+                         "username": person.username, "group": person.group, "text": text}}
+
+    def _ways(self):
+        """(the phone, the PC), each None if it can't send one now; a ToolError if neither can."""
         phone, pc = self.devices.get("phone"), self.devices.get("pc")
         old_phone = phone is not None and not offers(phone, "send_message")
         phone = phone if offers(phone, "send_message") else None
@@ -96,6 +108,16 @@ class Sending:
             raise ToolError("His phone is offline, and his PC can't send it (it's offline, or Natro's app there needs "
                             "updating), so the message can't go now. Offer to keep it for the phone with "
                             "queue_for_device.")
+        return phone, pc
+
+    async def send(self, args):
+        app, to, text = self._asked_for(args)
+        request = self.entry()
+        if request is not None and request in self._sent:
+            raise ToolError(f"One at a time: nothing more was sent. Tell him to ask you again for {to}.")
+        ready = self._ready(app, to, text)
+        shown, label = ready["shown"], ready["label"]
+        self._ways()
         if request is not None:
             self._sent.append(request)
         ask = ASK.get()
@@ -103,8 +125,12 @@ class Sending:
         if ask is None or not await ask(f"Send \"{text}\" to {shown} on {label}?", details):
             # The first line is the reply when nothing else is needed (final).
             return "I didn't send it.\n(He said no, or didn't answer in time, so nothing was sent.)"
-        call = {"app": app, "name": person.name, "chat": person.chat, "facebook": person.facebook,
-                "username": person.username, "group": person.group, "text": text}
+        return await self.deliver(ready["call"])
+
+    async def deliver(self, call):
+        """Send a message he has said yes to: the first of the ways (the module's docstring) that can."""
+        label = APPS[call["app"]]
+        phone, pc = self._ways()
         if phone:
             try:
                 return await self._on(phone, {**call, "screen": False}, PHONE_SECONDS, label)

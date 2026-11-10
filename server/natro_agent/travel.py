@@ -3,10 +3,11 @@ leg by leg. By car with today's traffic, by public transport (its lines, stops a
 https://developers.google.com/maps/documentation/routes
 
 Offered once GOOGLE_MAPS_API_KEY is set (a key for the Routes API, in the same Google Cloud project; the free
-monthly allowance covers personal use). Trips start from NATRO_HOME_ADDRESS unless he says where from ("from
-here" on the phone is where it is: its location tool says "lat,lng", which the Routes API takes as a place), and
-go by NATRO_TRAVEL_MODE (default drive) unless he says how. Places are personal (where he lives, where he goes),
-so only Claude uses it. The meetings watcher uses it too, for when to leave (watchers.py).
+monthly allowance covers personal use). Trips start from his place called Home (places.py), else NATRO_HOME_ADDRESS,
+unless he says where from ("from here" on the phone is where it is: its location tool says "lat,lng", which the Routes
+API takes as a place), and go by NATRO_TRAVEL_MODE (default drive) unless he says how. His places go by what he calls
+them: Google gets their points, and the words their names. The meetings watcher uses it too, for when to leave
+(watchers.py).
 
 - travel_time: how long, the quick answer.
 - travel_routes: up to five of Google's ways, compared, each step by step (walks, lines, stops, times, changes);
@@ -286,21 +287,38 @@ def moment(args, name):
 
 
 class Travel:
-    def __init__(self, key=None, home=None, mode=None, post=post):
+    """places: a places.Places, his names for places (None: none)."""
+
+    def __init__(self, key=None, home=None, mode=None, post=post, places=None):
         self.key = key or os.environ.get("GOOGLE_MAPS_API_KEY")
-        self.home = home or os.environ.get("NATRO_HOME_ADDRESS", "")
+        self._home = home or os.environ.get("NATRO_HOME_ADDRESS", "")
         mode = (mode or os.environ.get("NATRO_TRAVEL_MODE") or "drive").lower()
         self.mode = mode if mode in MODES else "drive"
         self._post = post
+        self.places = places
 
     @property
     def available(self):
         return bool(self.key)
 
+    @property
+    def home(self):
+        """Where trips start: his place called Home once he's saved it, else his home address (when it's set)."""
+        item = self.places.named("home") if self.places else None
+        return item["name"] if item else self._home
+
     def _place(self, value):
-        """A place as he gave it, in one line; "home" is his home address (when it's set)."""
+        """A place as he gave it, in one line; "home" is his home, and one of his places goes by its name."""
         value = " ".join(str(value or "").split())
-        return self.home if self.home and value.casefold() in HOME_WORDS else value
+        if self.home and value.casefold() in HOME_WORDS:
+            return self.home
+        item = self.places.named(value) if self.places else None
+        return item["name"] if item else value
+
+    def _point(self, place):
+        """What Google gets for a place as _place gives it: one of his is its point, anything else as it is."""
+        item = self.places.named(place) if self.places else None
+        return f"{item['lat']},{item['lng']}" if item else place
 
     def _how(self, args):
         """(mode, kinds of transport, preference) from a tool's arguments; kinds and a preference mean public
@@ -318,7 +336,7 @@ class Travel:
         return mode, use if mode == "transit" else [], prefer if mode == "transit" else None
 
     async def _routes(self, destination, origin, mode, depart=None, arrive=None, use=(), prefer=None,
-                      alternatives=False):
+                      alternatives=False, now=None):
         """(where from, as he'd say it; Google's routes); ToolError when there's none, or Google can't be asked.
         arrive (by public transport only) instead of depart: the routes that get there by then."""
         destination = self._place(destination)
@@ -329,13 +347,14 @@ class Travel:
             raise ToolError("Natro doesn't know where he is: say where from, or set NATRO_HOME_ADDRESS.")
         if mode not in MODES:
             raise ToolError(f"mode is one of: {', '.join(MODES)}.")
-        body = {"origin": waypoint(origin), "destination": waypoint(destination), "travelMode": MODES[mode],
+        body = {"origin": waypoint(self._point(origin)), "destination": waypoint(self._point(destination)),
+                "travelMode": MODES[mode],
                 "languageCode": "en", "units": "METRIC"}
         if mode == "drive":
             body["routingPreference"] = "TRAFFIC_AWARE"
         if alternatives:
             body["computeAlternativeRoutes"] = True
-        now = datetime.now(timezone())
+        now = now or datetime.now(timezone())
         if arrive and mode == "transit":
             if arrive <= now:
                 raise ToolError(f"{clock(arrive)} has passed: say the day too.")
@@ -367,6 +386,21 @@ class Travel:
                 "usual": max(1, round(seconds(route.get("staticDuration") or route.get("duration")) / 60)),
                 "km": round((route.get("distanceMeters") or 0) / 1000, 1), "mode": mode, "from": start,
                 "lines": transit_steps(route)}
+
+    async def leaving(self, destination, origin, by, mode=None, depart=None, now=None):
+        """When to leave to be there by then: a trip's fields, with "leaves". By public transport, from the timetable:
+        the route that arrives by then, leaving when the walk to its first stop starts. By car, with the traffic
+        expected at depart (when he'd leave, as last worked out; none: now). On foot and by bike, how long it takes."""
+        mode = mode or self.mode
+        now = now or datetime.now(timezone())
+        timetable = mode == "transit" and by > now
+        start, routes = await self._routes(destination, origin, mode, None if timetable else depart,
+                                           by if timetable else None, now=now)
+        route = routes[0]
+        found = summary(route, mode, self._place(destination), now, by if timetable else None)
+        return {"minutes": found["minutes"], "usual": found["usual"], "km": found["km"], "mode": mode, "from": start,
+                "lines": transit_steps(route),
+                "leaves": found["leaves"] if timetable else by - timedelta(minutes=found["minutes"])}
 
     async def travel_time(self, args):
         found = await self.trip(args.get("destination"), args.get("origin"), args.get("mode"),
@@ -426,7 +460,7 @@ class Travel:
                             f"{' and ' if len(later) > 1 else ''}{later[-1]}.")
         said += notes
         origin = self._place(args.get("origin")) or self.home
-        said.append(f"Google Maps: {maps_link(origin, destination, mode)}")
+        said.append(f"Google Maps: {maps_link(self._point(origin), self._point(destination), mode)}")
         return "\n".join(said)
 
     async def travel_plan(self, args):
@@ -507,7 +541,7 @@ class Travel:
         if len(legs) > 1:
             said.append(await self._quickest(places[0], places[-1], hows, depart, arrive))
         said.append("Google Maps, leg by leg: " + " ".join(
-            f"{number + 1}. {maps_link(places[number], places[number + 1], hows[number][0])}"
+            f"{number + 1}. {maps_link(self._point(places[number]), self._point(places[number + 1]), hows[number][0])}"
             for number in range(len(legs))))
         return "\n".join(said)
 
@@ -529,10 +563,11 @@ class Travel:
             return []
         home = " (by default from his home)" if self.home else ""
         usual = MODE_WORDS[self.mode]
-        origin = {"type": "string", "description": "Where he starts, if not home: a place, or \"lat,lng\" (where his "
-                                                   "phone is, from phone_location, when he says \"from here\")."}
+        origin = {"type": "string", "description": "Where he starts, if not home: a place, one of his by its name, or "
+                                                   "\"lat,lng\" (where his phone is, from phone_location, when he "
+                                                   "says \"from here\")."}
         place = {"type": "string", "description": "A place or address (\"Tbilisi airport\", \"Vake Park\", "
-                                                  "\"12 Chavchavadze Ave, Tbilisi\")."}
+                                                  "\"12 Chavchavadze Ave, Tbilisi\"), or one of his by its name."}
         use = {"type": "array", "items": {"type": "string", "enum": list(KINDS)},
                "description": "Public transport only: the kinds he wants to ride. Google prefers them but may "
                               "still use others."}
@@ -553,7 +588,7 @@ class Travel:
                      "destination": place, "origin": origin, "mode": {"type": "string", "enum": list(MODES)},
                      "depart_at": depart_at,
                  }, "required": ["destination"]},
-                 self.travel_time, "natro", personal=True),
+                 self.travel_time, "natro"),
             Tool("travel_routes",
                  f"Compare the ways to get somewhere{home}, step by step, to plan a trip: up to {MOST_ROUTES} of "
                  "Google's routes, by public transport each with its walks, lines, stops, departure and arrival "
@@ -565,7 +600,7 @@ class Travel:
                      "destination": place, "origin": origin, "mode": {"type": "string", "enum": list(MODES)},
                      "use": use, "prefer": prefer, "depart_at": depart_at, "arrive_by": arrive_by, "turns": turns,
                  }, "required": ["destination"]},
-                 self.travel_routes, "natro", personal=True),
+                 self.travel_routes, "natro"),
             Tool("travel_plan",
                  f"His own route, leg by leg, when he says how to go: \"metro to Station Square, then the bus to the "
                  "airport\", \"a taxi to Varketili metro, then the metro\". Each leg goes from where the last one "
@@ -586,7 +621,7 @@ class Travel:
                          }, "required": ["to"]}},
                      "origin": origin, "depart_at": depart_at, "arrive_by": arrive_by, "turns": turns,
                  }, "required": ["legs"]},
-                 self.travel_plan, "natro", personal=True),
+                 self.travel_plan, "natro"),
         ]
 
 

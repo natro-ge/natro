@@ -32,10 +32,11 @@
 //! closes it, from any app (the dock's Esc first, if the dock is open too): Esc is
 //! taken from other apps meanwhile, and given back when it closes.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
@@ -58,6 +59,8 @@ const FIRST_HEIGHT: f64 = 120.0;
 const MESSAGES: usize = 20;
 /// The box is at most this share of the screen's height; it scrolls inside.
 const TALLEST: f64 = 0.6;
+/// How long the card's bell mutes a conversation.
+const MUTE_FOR: Duration = Duration::from_secs(8 * 60 * 60);
 /// The page's slide out takes this long (Reply.svelte); the window hides after.
 const SLIDE_OUT: Duration = Duration::from_millis(300);
 
@@ -89,6 +92,11 @@ pub struct Card {
     pub can_reply: bool,
 }
 
+/// What makes two messages one conversation: the app and who it's from ("whatsapp|nino").
+fn mute_key(card: &Card) -> String {
+    format!("{}|{}", card.app.trim().to_lowercase(), card.from.trim().to_lowercase())
+}
+
 impl Card {
     /// Whom an answer goes to: "Nino on WhatsApp".
     pub fn to(&self) -> String {
@@ -104,6 +112,8 @@ pub struct Reply {
     turn: AtomicU64,
     /// Esc, shared with the dock: taken while the box is open.
     keys: TemporaryKeys,
+    /// Conversations he muted with the card's bell (its mute_key), and until when: their messages don't open the box.
+    muted: Mutex<HashMap<String, Instant>>,
 }
 
 #[derive(Default)]
@@ -176,7 +186,28 @@ impl Reply {
             on: AtomicBool::new(on),
             turn: AtomicU64::new(0),
             keys,
+            muted: Mutex::default(),
         }
+    }
+
+    /// Mute the conversation a message belongs to for MUTE_FOR (its messages stop opening the box; they stay on the
+    /// phone), and close the box. Until Natro restarts at the latest, so a mute is never lost for good.
+    fn mute(&self, app: &AppHandle, id: &str) {
+        let card = {
+            let state = self.state.lock().unwrap();
+            state.messages.iter().chain(&state.message).find(|known| known.id == id).cloned()
+        };
+        if let Some(card) = card {
+            self.muted.lock().unwrap().insert(mute_key(&card), Instant::now() + MUTE_FOR);
+        }
+        self.close(app);
+    }
+
+    fn is_muted(&self, card: &Card) -> bool {
+        let mut muted = self.muted.lock().unwrap();
+        let now = Instant::now();
+        muted.retain(|_, until| *until > now);
+        muted.contains_key(&mute_key(card))
     }
 
     pub fn prepare(&self, app: &AppHandle) -> tauri::Result<()> {
@@ -242,9 +273,9 @@ impl Reply {
         self.notice(app, id, &job_text(text, ok, title));
     }
 
-    /// Something a watcher saw (brain.rs): "Nino emailed: Dinner on Friday."
-    pub fn alert(&self, app: &AppHandle, id: &str, text: &str) {
-        self.notice(app, id, &format!("**Heads-up:** {text}"));
+    /// Something a watcher saw (brain.rs): "Nino emailed: Dinner on Friday.", with a link for each answer he can give.
+    pub fn alert(&self, app: &AppHandle, id: &str, text: &str, answers: &[(String, String)]) {
+        self.notice(app, id, &alert_text(id, text, answers));
     }
 
     /// Something said out loud here that he asked for on another device (brain.rs): "From your phone: ...".
@@ -255,6 +286,9 @@ impl Reply {
     /// A message that came to the phone (brain.rs): a card with who it's from, the app, its words, and a box to
     /// answer it if it can be answered from here.
     pub fn message(&self, app: &AppHandle, card: Card) {
+        if self.is_muted(&card) {
+            return;
+        }
         let mut state = self.state.lock().unwrap();
         state.messages.retain(|known| known.id != card.id);
         state.messages.push(card.clone());
@@ -450,6 +484,8 @@ impl Reply {
     }
 
     fn show(&self, app: &AppHandle) {
+        // Before the lock: off the main thread this waits for it, and the page's commands there take the lock.
+        let Ok(hwnd) = window(app).hwnd() else { return };
         let (work, scale) = work_area_with_mouse();
         let mut state = self.state.lock().unwrap();
         self.turn.fetch_add(1, Ordering::SeqCst);
@@ -461,19 +497,10 @@ impl Reply {
             state.height = FIRST_HEIGHT;
         }
         let event = state.event("show");
-        self.place(app, &state);
+        place(hwnd, &state);
         drop(state);
         self.keys.escape("reply", true);
         let _ = app.emit_to("reply", "reply", event);
-    }
-
-    /// The window where the box is: its top-right corner at the work area's, as tall as the box.
-    fn place(&self, app: &AppHandle, state: &State) {
-        let Ok(hwnd) = window(app).hwnd() else { return };
-        let width = (WIDTH * state.scale).round() as i32;
-        let height = (state.height.min(state.max_height) * state.scale).round() as i32;
-        let (right, top) = state.corner;
-        set_window_pos(hwnd, right - width, top, width, height, SWP_SHOWWINDOW);
     }
 
     /// Slide out and hide (its ✕, Esc, a short reply's time, the tray).
@@ -521,13 +548,14 @@ pub fn reply_state(app: AppHandle) -> Option<ReplyEvent> {
 #[tauri::command]
 pub fn reply_size(app: AppHandle, height: f64) {
     let Some(reply) = app.try_state::<Reply>() else { return };
+    let Ok(hwnd) = window(&app).hwnd() else { return };
     let mut state = reply.state.lock().unwrap();
     if (state.height - height).abs() < 0.5 {
         return;
     }
     state.height = height;
     if state.shown {
-        reply.place(&app, &state);
+        place(hwnd, &state);
     }
 }
 
@@ -542,6 +570,12 @@ pub fn reply_close(app: AppHandle) {
 #[tauri::command]
 pub fn reply_send(app: AppHandle, id: String, text: String) -> bool {
     app.state::<Reply>().send(&app, &id, &text)
+}
+
+/// The card's bell: mute that conversation (and close the box).
+#[tauri::command]
+pub fn reply_mute(app: AppHandle, id: String) {
+    app.state::<Reply>().mute(&app, &id);
 }
 
 /// He clicked into the card's answer (take), or another app has the keyboard now (it isn't the box's).
@@ -561,6 +595,17 @@ pub fn reply_show(app: AppHandle) {
 fn reminder_text(id: &str, text: &str, late: bool) -> String {
     let words = if late { text.to_string() } else { format!("**Reminder:** {text}") };
     format!("{words}\n\n[Snooze 10 minutes](natro:snooze/{id})")
+}
+
+/// What the box says for an alert: its words, then its answers as links (on two lines, it stays).
+fn alert_text(id: &str, text: &str, answers: &[(String, String)]) -> String {
+    let links: Vec<String> =
+        answers.iter().map(|(answer, words)| format!("[{words}](natro:alert/{id}/{answer})")).collect();
+    if links.is_empty() {
+        format!("**Heads-up:** {text}")
+    } else {
+        format!("**Heads-up:** {text}\n\n{}", links.join(" "))
+    }
 }
 
 /// What the box says for a background job that's done, under a routine's name if it's one's run: it stays until
@@ -583,8 +628,8 @@ fn said_text(from: &str, text: &str) -> String {
 
 /// A link in a reply: opened in the browser (web links only), a file that came
 /// from the phone, opened or shown in its folder (natro:open/3, natro:show/3), a
-/// reminder's Snooze (natro:snooze/<its id>), or the Yes or No to a question on the
-/// phone (natro:answer/phone/<its id>/yes).
+/// reminder's Snooze (natro:snooze/<its id>), an alert's answer (natro:alert/<its id>/going),
+/// or the Yes or No to a question on the phone (natro:answer/phone/<its id>/yes).
 #[tauri::command]
 pub fn reply_open(app: AppHandle, url: String) {
     if url.starts_with("natro:answer/") {
@@ -596,6 +641,12 @@ pub fn reply_open(app: AppHandle, url: String) {
     if let Some(reminder) = url.strip_prefix("natro:snooze/") {
         if !app.state::<crate::brain::Brain>().snooze(reminder) {
             app.state::<Reply>().notice(&app, reminder, "Natro is offline, so it can't be snoozed.");
+        }
+        return;
+    }
+    if let Some((alert, answer)) = url.strip_prefix("natro:alert/").and_then(|rest| rest.split_once('/')) {
+        if !app.state::<crate::brain::Brain>().answer_alert(alert, answer) {
+            app.state::<Reply>().notice(&app, alert, "Natro is offline, so it can't be told.");
         }
         return;
     }
@@ -657,6 +708,14 @@ fn answer_link(link: &str) -> Option<(&str, &str, bool)> {
     }
 }
 
+/// The window where the box is: its top-right corner at the work area's, as tall as the box.
+fn place(hwnd: HWND, state: &State) {
+    let width = (WIDTH * state.scale).round() as i32;
+    let height = (state.height.min(state.max_height) * state.scale).round() as i32;
+    let (right, top) = state.corner;
+    set_window_pos(hwnd, right - width, top, width, height, SWP_SHOWWINDOW);
+}
+
 fn window(app: &AppHandle) -> WebviewWindow {
     app.get_webview_window("reply")
         .expect("the reply window is in tauri.conf.json")
@@ -697,6 +756,15 @@ mod tests {
     fn words_said_at_his_asking_elsewhere_say_where_from() {
         assert_eq!(said_text("phone", "Dinner's ready."), "**From your phone:** Dinner's ready.");
         assert_eq!(said_text("", "The flats are in your notes."), "The flats are in your notes.");
+    }
+
+    #[test]
+    fn an_alert_has_a_link_for_each_answer_and_stays() {
+        assert_eq!(alert_text("al1", "Nino emailed: Hi.", &[]), "**Heads-up:** Nino emailed: Hi.");
+        assert_eq!(
+            alert_text("al1", "Time to leave.", &[("going".to_string(), "On my way".to_string())]),
+            "**Heads-up:** Time to leave.\n\n[On my way](natro:alert/al1/going)"
+        );
     }
 
     #[test]

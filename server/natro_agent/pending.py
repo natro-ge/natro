@@ -25,12 +25,14 @@ MOST_PER_DEVICE = 20
 
 class PendingRequests:
     """path: the JSON file they're kept in. devices: name -> device, while connected (the agent's).
-    asking: returns the device the request being handled came from (the server sets it)."""
+    The server sets asking() -> the device the request being handled came from, and respond(device, id, english,
+    voice_cost, shown, queued) -> Natro's answer to one, a coroutine."""
 
     def __init__(self, path, devices):
         self.path = path
         self.devices = devices
         self.asking = lambda: None
+        self.respond = lambda *args, **kwargs: None
         self._ids = itertools.count(1)
         self.items = self._load()
 
@@ -44,7 +46,7 @@ class PendingRequests:
                 "request": {"type": "string", "description": "The request as he'd say it to that device, complete "
                                                              "(\"close Discord\", \"send the report to my phone\")."},
             }, "required": ["device", "request"]},
-            self.keep, "natro", personal=True)]
+            self.keep, "natro")]
 
     async def keep(self, args):
         device, request = args.get("device"), " ".join(str(args.get("request") or "").split())
@@ -64,6 +66,24 @@ class PendingRequests:
         self._save()
         log.write("queued", device=device, text=request)
         return f"Kept for his {label}: it will ask him there when it's back online (within {KEEP_HOURS} hours)."
+
+    def messages(self):
+        return {"queue_run": self._run, "queue_skip": self._skip}
+
+    def _run(self, device, data):
+        """He said to go ahead with one: Natro's answer to it, a request of this device's."""
+        id = str(data.get("id", ""))
+        item = self.take(device, id)
+        if item is None:
+            device.post(type="error", id=id, message="That request isn't waiting any more.")
+            return None
+        asked_on = KNOWN_DEVICES.get(item.get("from"), "other device")
+        english = (f"[He asked for this on his {asked_on} while this {device.label} was offline, and has just "
+                   f"said to go ahead.] {item['text']}")
+        return self.respond(device, id, english, 0.0, shown=item["text"], queued=asked_on)
+
+    def _skip(self, device, data):
+        self.skip(device, str(data.get("id", "")))
 
     def connected(self, device):
         """A device came online: the requests waiting for it, if it can ask about them."""

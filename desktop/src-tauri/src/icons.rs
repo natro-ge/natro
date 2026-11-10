@@ -1,5 +1,6 @@
 //! Apps' own icons for the dock's steps ("Opening Spotify" with Spotify's icon),
-//! from the Start menu: the helper finds the app by name, Windows draws its icon.
+//! from the Start menu: the app is found by name as open_app finds it (tools/apps.rs), and
+//! Windows draws its icon.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -16,21 +17,21 @@ use windows::Win32::UI::Shell::{
 };
 use windows::core::HSTRING;
 
-use crate::helper::Helper;
+use crate::tools::apps::{Missing, StartMenu};
 
 /// Pixels: shown at 16 logical pixels, so sharp up to 200% scaling.
 const SIZE_PX: i32 = 32;
 
 pub struct Icons {
-    helper: Arc<Helper>,
+    menu: Arc<StartMenu>,
     /// By app name (lowercase): the icon as a data URL, or None for apps that aren't installed.
     known: Mutex<HashMap<String, Option<String>>>,
 }
 
 impl Icons {
-    pub fn new(helper: Arc<Helper>) -> Icons {
+    pub fn new(menu: Arc<StartMenu>) -> Icons {
         Icons {
-            helper,
+            menu,
             known: Mutex::default(),
         }
     }
@@ -45,8 +46,11 @@ impl Icons {
         if let Some(known) = self.known(app) {
             return known;
         }
-        // None: the helper couldn't be asked (not running yet): don't remember that.
-        let app_id = tauri::async_runtime::block_on(self.helper.find_app(app))?;
+        let app_id = match self.menu.find(app) {
+            Ok(found) => Some(found.app_id),
+            Err(Missing::NotInstalled(_)) => None,
+            Err(Missing::Unread(_)) => return None, // the Start menu couldn't be read: don't remember that
+        };
         let icon = app_id.and_then(|id| shell_icon(&id));
         self.known
             .lock()

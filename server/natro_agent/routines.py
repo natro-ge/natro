@@ -3,8 +3,9 @@
 
 routine_add keeps one in routines.json: a short name, its task (his whole request, complete: a routine doesn't
 see the conversation it was set up in), when it first runs, how it repeats (an RRULE, read like a reminder's, at
-most every MOST_OFTEN_MINUTES; without one it runs once), and whether it's quiet. The clock (run) sleeps until the
-next one is due; then the server runs it as a background job titled with its name (start: Server._routine): in
+most every MOST_OFTEN_MINUTES; without one it runs once), and whether it's quiet; or, in place of a time, one of his
+places (places.py): it runs when he gets there or leaves, once or every time. The clock (run) sleeps until the
+next one is due; then it runs as a background job titled with its name (start: background.py's routine): in
 the chat as it works, a step that needs his yes asks where he was last, and what it found goes to his devices as
 a job's result does, titled. A quiet routine that finds nothing he asked to hear about replies only QUIET_REPLY:
 nothing is pushed or spoken (the chat shows it, as it shows every run).
@@ -23,6 +24,7 @@ from natro_agent import log
 from natro_agent.config import timezone
 from natro_agent.google_tools import parse_when
 from natro_agent.jobs import RUNNING, short
+from natro_agent.places import AGAIN_MINUTES, where_words
 from natro_agent.reminders import (CHECK_SECONDS, DAY_TIME, GRACE_SECONDS, check_rule, day_words, item_rule, ms,
                                    rule_parts, repeat_words, when_words)
 from natro_agent.tools import Tool, ToolError
@@ -50,13 +52,16 @@ def from_ms(value):
 
 
 class Routines:
-    """path: the JSON file they're kept in.
+    """path: the JSON file they're kept in. places: a places.Places, for routines at a place (None: none).
 
-    The server sets start(routine, asked) -> why it didn't start ("" when it did; asked: he asked to run it now),
-    and asking() -> the device the request being handled came from."""
+    background.Background sets start(routine, asked) -> why it didn't start ("" when it did; asked: he asked to
+    run it now), and the server asking() -> the device the request being handled came from."""
 
-    def __init__(self, path):
+    def __init__(self, path, places=None):
         self.path = path
+        self.places = places
+        if places:
+            places.users.append(self)
         self.start = lambda routine, asked=False: "Routines can't run here."
         self.asking = lambda: None
         self.now = lambda: datetime.now(timezone())
@@ -72,7 +77,9 @@ class Routines:
                  "flight to Berlin\". The routine doesn't see this conversation: task is his whole request, complete, "
                  "with every detail he gave, as he'd ask you then (\"Brief me.\", \"Find the cheapest flight from "
                  "Tbilisi to Berlin on 12 December and tell me its price.\"). A nudge with words fixed now is a "
-                 "reminder (remind); something to notice as it happens (an email, a notification) is a watcher.",
+                 "reminder (remind); something to notice as it happens (an email, a notification) is a watcher. In "
+                 "place of a time it can run when he gets to one of his places or leaves it (\"when I get to work, "
+                 "tell me what's on today\"): give place instead of at.",
                  {"type": "object", "properties": {
                      "name": {"type": "string", "description": "A short name, a few words: \"Morning briefing\", "
                                                                "\"Berlin flight price\"."},
@@ -85,21 +92,26 @@ class Routines:
                      "quiet": {"type": "boolean", "description": "True when he wants to hear only if there's "
                                                                  "something to report (\"tell me only if it got "
                                                                  "cheaper\")."},
-                 }, "required": ["name", "task", "at"]},
-                 self.add, "natro", personal=True, changes=True, final=True),
+                     "place": {"type": "string", "description": "Instead of at: one of his saved places, by name."},
+                     "on": {"type": "string", "enum": ["arrive", "leave"],
+                            "description": "With place: when he gets there, or leaves. Default arrive."},
+                     "every_time": {"type": "boolean", "description": "With place: every time, when he says so; "
+                                                                      "else once."},
+                 }, "required": ["name", "task"]},
+                 self.add, "natro", changes=True, final=True),
             Tool("routines_list",
                  "His routines (with their ids), when each runs next, and how its last run went.",
-                 {"type": "object", "properties": {}}, self.list, "natro", personal=True),
+                 {"type": "object", "properties": {}}, self.list, "natro"),
             Tool("routines_cancel",
                  "Stop one of his routines for good, by its id (from routines_list). To change one, cancel it and "
                  "set it up again.",
                  {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
-                 self.cancel, "natro", personal=True, changes=True),
+                 self.cancel, "natro", changes=True),
             Tool("routines_run",
                  "Run one of his routines now, as a background job, by its id (from routines_list): \"run my morning "
                  "briefing now\". Its times stay as they are.",
                  {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
-                 self.run_now, "natro", personal=True, final=True),
+                 self.run_now, "natro", final=True),
         ]
 
     # Tools
@@ -115,6 +127,8 @@ class Routines:
             raise ToolError(f"Keep the task under {MOST_TASK} characters.")
         if len(self.items) >= MOST:
             raise ToolError(f"He already has {MOST} routines: cancel some first.")
+        if str(args.get("place") or "").strip():
+            return self._add_at_place(args, name, task)
         if not str(args.get("at") or "").strip():
             raise ToolError("Say when it first runs (at).")
         now = self.now()
@@ -150,6 +164,74 @@ class Routines:
         only = " I'll tell you only when there's something to report." if quiet else ""
         return f"OK, I'll run \"{name}\" {said}.{only}\nRoutine {item['id']}: \"{task}\""
 
+    def _add_at_place(self, args, name, task):
+        if not self.places:
+            raise ToolError("Natro has no places here.")
+        if str(args.get("at") or "").strip() or str(args.get("repeat") or "").strip():
+            raise ToolError("A routine at a place doesn't take at or repeat: every_time, if it's every time.")
+        place, event = self.places.trigger(args)
+        every, quiet = bool(args.get("every_time")), bool(args.get("quiet"))
+        item = {"id": f"rt{int(time.time() * 1000):x}{next(self._ids)}", "name": name, "task": task, "start": None,
+                "repeat": "", "next": None, "quiet": quiet, "made": ms(self.now()),
+                "from": getattr(self.asking(), "name", ""), "last": None, "place": place["id"], "place_on": event,
+                "every": every}
+        self.items.append(item)
+        self._save()
+        self.places.changed()
+        log.write("routine", event="set", id=item["id"], name=name, task=task, place=place["name"], on=event, every=every)
+        only = " I'll tell you only when there's something to report." if quiet else ""
+        return (f"OK, I'll run \"{name}\" {where_words(place, event)}{', every time' if every else ''}.{only}\n"
+                f"Routine {item['id']}: \"{task}\"")
+
+    def _place_of(self, item):
+        if not self.places or not item.get("place"):
+            return None
+        return next((place for place in self.places.items if place["id"] == item["place"]), None)
+
+    # For places.py
+
+    def happening(self, place_id):
+        return [{"id": item["id"], "kind": "request", "on": item["place_on"], "every": bool(item.get("every")),
+                 "text": item["name"]} for item in self.items if item.get("place") == place_id]
+
+    def drop(self, id):
+        item = next((item for item in self.items if item["id"] == id), None)
+        if item is None:
+            return False
+        self.items.remove(item)
+        self._save()
+        self._wake.set()
+        if self.places:
+            self.places.changed()
+        log.write("routine", event="cancelled", id=item["id"], name=item["name"])
+        return True
+
+    def place_gone(self, place_id):
+        self.items = [item for item in self.items if item.get("place") != place_id]
+        self._save()
+
+    def place_event(self, place, event, at, late):
+        """He got to a place or left it. One that's late stays for next time: what it would find is about then."""
+        for item in list(self.items):
+            if item.get("place") != place["id"] or item.get("place_on") != event:
+                continue
+            if late:
+                log.write("routine", event="late", id=item["id"], name=item["name"])
+                continue
+            if at - item.get("fired", 0) < AGAIN_MINUTES * 60 * 1000:
+                continue
+            if item.get("every"):
+                item["fired"] = at
+            else:
+                self.items.remove(item)
+            self._save()
+            self.places.changed()
+            if why := self.start(item, False):
+                self.ran(item["id"], "skipped", why)
+                log.write("routine", event="skipped", id=item["id"], why=why)
+            else:
+                log.write("routine", event="started", id=item["id"], name=item["name"])
+
     async def list(self, args):
         if not self.items:
             return "No routines."
@@ -157,6 +239,8 @@ class Routines:
         lines = ["Routines:"]
         for item in sorted(self.items, key=lambda item: item["next"] or ""):
             repeats = f", {repeat_words(item['repeat'])}" if item["repeat"] else ", once"
+            if place := self._place_of(item):
+                repeats = f", {where_words(place, item['place_on'])}{', every time' if item.get('every') else ', once'}"
             coming = f", next {when_words(datetime.fromisoformat(item['next']), now)}" if item["next"] else ""
             quiet = ", only when there's something to report" if item["quiet"] else ""
             lines.append(f"- {item['id']}: \"{item['name']}\"{repeats}{coming}{quiet}: \"{item['task']}\"")
@@ -167,10 +251,7 @@ class Routines:
 
     async def cancel(self, args):
         item = self._find(args)
-        self.items.remove(item)
-        self._save()
-        self._wake.set()
-        log.write("routine", event="cancelled", id=item["id"], name=item["name"])
+        self.drop(item["id"])
         return f"Cancelled the routine \"{item['name']}\"."
 
     async def run_now(self, args):

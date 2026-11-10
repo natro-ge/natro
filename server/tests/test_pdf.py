@@ -334,10 +334,10 @@ def test_a_slow_one_goes_on_and_says_if_it_failed(tmp_path, monkeypatch):
     assert told == ["Merging 2 files didn't work: The PDF tool took longer than 10 minutes, so it was stopped."]
 
 
-def test_the_tool_is_personal_and_its_result_is_the_reply(tmp_path):
+def test_the_tool_runs_at_once_and_its_result_is_the_reply(tmp_path):
     tools, _, _ = make(tmp_path, {})
     tool, = tools.tools()
-    assert tool.name == "edit_pdf" and tool.personal and not tool.confirm and tool.final
+    assert tool.name == "edit_pdf" and not tool.confirm and tool.final
     assert tool.input_schema["properties"]["action"]["enum"] == list(pdf.ACTIONS)
 
 

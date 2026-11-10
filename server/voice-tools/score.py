@@ -1,6 +1,6 @@
 """Score the pipeline on the checked test clips.
 
-Runs every checked clip through the same pipeline as live.py (the whole clip
+Runs every checked clip through the server's voice pipeline (the whole clip
 transcribed at once, then translated by Claude; several clips in parallel),
 then:
 - compares the Georgian Google heard with yours (word and character error rate),
@@ -105,7 +105,7 @@ def score_clip(clip_id, args, terms, client):
     recognizer = Recognizer(languages=("ka-GE",) if args.georgian_only else ("ka-GE", "en-US"))
     translator = Translator(model=args.model, terms=terms)
     if args.oneshot:
-        # Like live.py: the whole clip at once after the speaker finished; delay is measured from the end.
+        # Like the server: the whole clip at once after the speaker finished; delay is measured from the end.
         start = time.monotonic()
         heard_ka, as_georgian = recognizer.transcribe(testset.read_pcm(clip_id))
         machine_en = translator.translate(heard_ka, as_georgian=as_georgian) if heard_ka else ""

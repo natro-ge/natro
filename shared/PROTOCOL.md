@@ -2,7 +2,7 @@
 
 The messages between Natro's server (`server/natro_agent/server.py`) and the devices, over one
 WebSocket each: the contract the desktop app (`desktop/src-tauri/src/brain.rs`) and the phone app
-(`android/app/src/main/java/dev/natro/Natro.kt`) implement. A device connects to `NATRO_LISTEN`
+(`android/app/src/main/java/dev/natro/Natro.kt`, with `NatroConnection.kt` and `NatroMessages.kt`) implement. A device connects to `NATRO_LISTEN`
 (over Tailscale) and sends its hello first. The files named below (`chats.py`, `pending.py`,
 `tools.device_tools`...) are in `server/natro_agent/`.
 
@@ -15,8 +15,8 @@ recording, 16 kHz mono 16-bit PCM) and each "file_part" message (the next piece 
 Device to Natro:
   {"type": "hello", "device": "pc", "label": "PC", "token": "...", "tools": [...], "files": true,
    "chat": true, "queue": true, "reminders": true, "jobs": true,
-   "alerts": true, "watch_notifications": true, "questions": true,
-   "phone_messages": true, "say": true}                             first; tools as in tools.device_tools;
+   "alerts": true, "watch_notifications": true, "questions": true, "places": true, "cards": true, "version": 300,
+   "phone_messages": true, "say": true, "works_on": "pc"}           first; tools as in tools.device_tools;
                                                                     files: it can send and receive files;
                                                                     chat: it shows the shared chat (chats.py);
                                                                     queue: it asks about requests kept for
@@ -31,10 +31,28 @@ Device to Natro:
                                                                     another device too, to answer them there;
                                                                     phone_messages: it shows the messages that
                                                                     come to the phone (below); say: it says
-                                                                    what it's told to out loud (aloud.py)
+                                                                    what it's told to out loud (aloud.py);
+                                                                    places: it checks where it is against the
+                                                                    places it's sent (places.py); cards: it
+                                                                    shows his cards full screen (cards.py);
+                                                                    version: its app's build (app_updates.py);
+                                                                    works_on: where its switch says its
+                                                                    requests work, itself or the other
+                                                                    device (works_on.py; none: no switch)
   {"type": "text", "id": "r1", "text": "open Chrome"}               a typed request, in English
   {"type": "audio", "id": "r2"} + recording                         a spoken request, in Georgian
+  {"type": "text", "id": "r4", "text": "as Word", "files": ["C:\\...\\a.pdf"]}
+                                                                    files: (a text or audio request, optional) ones
+                                                                    he attached for Natro, by their full paths on
+                                                                    this device: she asks for them (file_request,
+                                                                    to "Natro") as she needs them
   {"type": "audio", "id": "r3", "answer_to": "q1"} + recording      a spoken yes or no to a question
+  {"type": "audio", "id": "r6", "follow_up": true} + recording      said in the seconds after a reply with "listen"
+                                                                    (follow_ups.py): a spoken request, or, with
+                                                                    no words she can use, nothing_heard and no reply
+  "locked": true                                                    on a text or audio request: the phone's screen
+                                                                    is locked, so anyone may have made it, and what
+                                                                    only he should see (his money) isn't given
   {"type": "answer", "id": "q1", "yes": true, "device": "phone"}    a yes or no by key or tap; device: whose
                                                                     question it is, when it's the other's
                                                                     ("natro": a background job's, in the chat)
@@ -61,10 +79,17 @@ Natro to device:
   {"type": "step", "id": "r1", "text": "Opening Spotify", "icon": "app", "app": "Spotify"}
                                                                     what she's doing (steps.py; "app" optional)
   {"type": "reply", "id": "r1", "text": "...", "model": "...", "cost": 0.004, "seconds": 2.1,
-   "spent": 0.43, "budget": 15, "tools": [...], "said": true}      show and speak it; tools: what ran, for
+   "spent": 0.43, "budget": 15, "tools": [...], "said": true, "listen": 6}
+                                                                    show and speak it; tools: what ran, for
                                                                     the PC app's verbose records; said (only
                                                                     when true): it was said out loud already
-                                                                    (say), so don't speak it again
+                                                                    (say), so don't speak it again; listen (only
+                                                                    after a spoken request, and not always): once
+                                                                    she's quiet he can go on by just talking, for
+                                                                    this many seconds before he starts
+  {"type": "nothing_heard", "id": "r6", "spent": 0.43, "budget": 15}
+                                                                    a follow_up with no words she can use: the
+                                                                    request is over, with no reply
   {"type": "confirm", "id": "q1", "question": "...", "details": "...", "request": "pc:r3"}
                                                                     ask the owner yes or no; request: the chat
                                                                     entry it's for ("natro:jb1": a background
@@ -85,13 +110,40 @@ Natro to device:
   for this device while it was offline (pending.py): queued. Reminders (reminders.py): reminder, and
   reminder_snoozed after the device's reminder_snooze. Background jobs (jobs.py): job_done, titled for a
   routine's run (routines.py), and kept for a device that shows jobs when none is online. Watchers
-  (watchers.py): alert, watch_rules; from the device, notification_matched. The Settings window's keys
+  (watchers.py): alert, with answers on one he can answer, and alert_answered after the device's
+  alert_answer; watch_rules; from the device, notification_matched. The Settings window's keys
   (keys.py): keys, both ways. Saying something out loud when he asks, whatever "Speak replies" says
-  (aloud.py): say.
+  (aloud.py): say. Where a device's requests work, its switch (works_on.py): works_on, both ways, and online
+  (which of the owner's devices are), to the devices that have it.
+  His places (places.py), for a device that checks them itself; where it is otherwise stays on it:
+  {"type": "place_rules", "places": [{"id": "pl1", "name": "Gym", "lat": 41.54, "lng": 45.0, "radius": 150,
+   "cards": [{"id": "ct1", "card": "cd1", "name": "Carrefour", "on": "arrived", "every": false}]}]}
+                                                                    (Natro to device) all of them, when it
+                                                                    connects and whenever they change; cards
+                                                                    (if any): what it shows itself when it
+                                                                    gets there or leaves, even with no signal
+  {"type": "place_event", "id": "pl1", "event": "arrived", "at": 1761000000000}
+                                                                    (device to Natro) it got to one ("arrived")
+                                                                    or left it ("left"); at: when, in ms, as one
+                                                                    from while it was offline is sent later
+  The phone's app, updated over the air (app_updates.py):
+  {"type": "app_update", "version": 301, "size": 69000000, "sha256": "...", "path": "/app/natro.apk"}
+                                                                    (Natro to device) a newer build: fetched
+                                                                    over HTTP from Natro's address, with the
+                                                                    device token as X-Natro-Token
+  {"type": "app_update_check"}                                      (device to Natro) he asked, in Settings:
+                                                                    app_update if there's a newer build, else
+  {"type": "app_current", "version": 301}                           (Natro to device) this is the newest
+  His cards (cards.py), pictures to show full screen at the till:
+  {"type": "card", "id": "cd1", "name": "Carrefour", "mime": "image/jpeg", "show": true, "ended": ""} + bytes
+                                                                    (Natro to device) show: now, else keep a
+                                                                    copy; ended: the day it ended, if it has
+  {"type": "card_get", "id": "cd1", "show": false}                  (device to Natro) a copy of one a place
+                                                                    names (show: it's needed now, and missing)
   A chat on Instagram or Messenger wrote (people.py): person, for Natro's address book, which send_message
   (sending.py) finds people in.
-  Messages that come to the phone (WhatsApp, texts...), for the devices that show them, to answer there; the
-  phone answers in the message's own app (its reply_message tool), from its notification or, once that's gone, a
+  Messages that come to the phone (WhatsApp, texts...), for the devices that show them, to answer there
+  (phone_messages.py); the phone answers in the message's own app (its reply_message tool), from its notification or, once that's gone, a
   Reply it kept:
   {"type": "phone_message", "key": "...", "app": "WhatsApp", "title": "Nino", "text": "...", "reply": true}
                                                                     (phone to Natro) a message came; reply: it

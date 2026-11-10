@@ -37,6 +37,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -68,10 +69,15 @@ fun SettingsScreen(setup: List<SetupStep>, back: () -> Unit, openWakeTest: () ->
     val wakeWord by Prefs.wakeWord.collectAsStateWithLifecycle()
     val speak by Prefs.speakReplies.collectAsStateWithLifecycle()
     val show by Prefs.showReplies.collectAsStateWithLifecycle()
+    val keepListening by Prefs.keepListening.collectAsStateWithLifecycle()
     val messagesToPc by Prefs.messagesToPc.collectAsStateWithLifecycle()
+    val places by Prefs.places.collectAsStateWithLifecycle()
     val paused by NatroService.wakePaused.collectAsStateWithLifecycle()
     val status by Natro.status.collectAsStateWithLifecycle()
     val spend by Natro.spend.collectAsStateWithLifecycle()
+    val newer by AppUpdates.newer.collectAsStateWithLifecycle()
+    val updating by AppUpdates.busy.collectAsStateWithLifecycle()
+    val updateSaid by AppUpdates.said.collectAsStateWithLifecycle()
     var clearing by remember { mutableStateOf(false) }
 
     Column(
@@ -110,12 +116,22 @@ fun SettingsScreen(setup: List<SetupStep>, back: () -> Unit, openWakeTest: () ->
                 Line()
                 SwitchRow("Show replies as text", "Her answer opens from the bubble over other apps; tap it to fold it back.",
                     checked = show, onChange = Prefs::setShowReplies)
+                Line()
+                SwitchRow("Keep listening after a reply", "A few seconds after she answers something you said, you can " +
+                    "go on by just talking. If you say nothing, nothing is sent.",
+                    checked = keepListening, onChange = Prefs::setKeepListening)
             }
 
             Group("Your PC") {
                 SwitchRow("Show messages on the PC", "Messages that come here (WhatsApp, Messenger, texts...) show " +
                     "on your PC while it's on, to read and answer there. Needs notification access.",
                     checked = messagesToPc, onChange = Prefs::setMessagesToPc)
+            }
+
+            Group("Places") {
+                SwitchRow("Know when you get to a place", "This phone checks where it is against your places, and tells " +
+                    "Natro only when you get to one or leave it. Where you are otherwise stays here.",
+                    checked = places, onChange = actions.setPlaces)
             }
 
             val left = setup.count { !it.done }
@@ -140,6 +156,8 @@ fun SettingsScreen(setup: List<SetupStep>, back: () -> Unit, openWakeTest: () ->
                 InfoRow("Brain", BuildConfig.NATRO_SERVER.removePrefix("ws://").removePrefix("wss://"))
                 Line()
                 InfoRow("Version", BuildConfig.VERSION_NAME)
+                Line()
+                UpdateRow(newer?.version, updating, updateSaid)
             }
             Spacer(Modifier.height(24.dp))
         }
@@ -280,6 +298,20 @@ private fun SetupRow(step: SetupStep) {
                 Text(step.button, color = colors.accentText, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
             }
         }
+    }
+}
+
+/** Updating by hand: checks with the brain, or gets and installs the newer build it knows of. */
+@Composable
+private fun UpdateRow(version: Int?, updating: Boolean, said: String) {
+    val colors = palette
+    val context = LocalContext.current
+    Column(
+        Modifier.fillMaxWidth().clickable { if (version == null) AppUpdates.check() else AppUpdates.now(context) }
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+    ) {
+        Text(AppUpdate.offer(version, updating), color = if (updating) colors.muted else colors.accentText, fontSize = 16.sp)
+        if (said.isNotBlank()) Text(said, color = colors.muted, fontSize = 13.sp)
     }
 }
 

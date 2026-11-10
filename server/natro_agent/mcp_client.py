@@ -4,7 +4,6 @@ Each server entry:
     "enabled": false turns it off without deleting it.
     "command" + "args" (+ "env"): a local server, started as a process.
     "url": a remote server (Streamable HTTP).
-    "personal": its results hold personal data, so they only go to Claude.
     "confirm_tools": tool names that need the owner's yes first ("*" for all).
 ${NAME} in args, env or url is replaced by that environment variable (from
 .env), so secrets stay out of the config; ${ROOT} is the repo folder.
@@ -98,7 +97,6 @@ class MCPServers:
                 input_schema=tool.input_schema,
                 run=partial(self._call, client, tool.name),
                 source=name,
-                personal=settings.get("personal", True),
                 confirm="*" in confirm or tool.name in confirm,
             ))
 

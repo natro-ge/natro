@@ -110,6 +110,13 @@ def check_maps(key):
     return key
 
 
+def check_map_key(value):
+    """Only its shape: it's limited to the dashboard's address, so nothing here could try it."""
+    if not re.fullmatch(r"[\w-]{30,60}", value):
+        raise Refused("Not a Google API key.")
+    return value
+
+
 def check_budget(value):
     try:
         budget = float(value)
@@ -149,7 +156,9 @@ FIELDS = [
           note="Claude: Haiku and Sonnet answer every request"),
     Field("TAVILY_API_KEY", "Tavily API key", check_tavily, secret=True, note="Web search"),
     Field("GOOGLE_MAPS_API_KEY", "Google Maps API key", check_maps, secret=True,
-          note="Travel times and routes (the Routes API)"),
+          note="Travel times and routes (the Routes API), and addresses (the Geocoding API)"),
+    Field("GOOGLE_MAPS_BROWSER_KEY", "Google Maps key for the map", check_map_key, secret=True,
+          note="The dashboard's Places page (the Maps JavaScript API)"),
     Field("NATRO_MONTHLY_BUDGET", "Monthly budget (USD)", check_budget,
           note="Natro warns at 80% and asks before using Claude past it"),
     Field("NATRO_TIMEZONE", "Time zone", check_timezone),
@@ -232,6 +241,15 @@ class Keys:
         self._failures = 0
         self._not_before = 0.0
         self._session = None  # (token, device, last used)
+
+    def messages(self):
+        return {"keys": self._message}
+
+    async def _message(self, device, data):
+        answer = await self.handle(device.name, data)
+        device.post(type="keys", id=data.get("id"), **answer)
+        if answer.get("restarting"):
+            self.restart()
 
     async def handle(self, device, data):
         """A device's keys message: the answer (without its type and id)."""

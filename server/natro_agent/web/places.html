@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f6f7f6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0b0d0f" media="(prefers-color-scheme: dark)">
+  <meta name="maps-key" content="{{key}}">
+  <title>Places · Natro Dashboard</title>
+  <link rel="icon" href="/dashboard/icon.svg" type="image/svg+xml">
+  <link rel="preload" href="/dashboard/fonts/noto-sans.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/dashboard/style.css" nonce="{{nonce}}">
+  <link rel="stylesheet" href="/dashboard/places.css" nonce="{{nonce}}">
+  <style nonce="{{nonce}}"></style><!-- Google's map copies the nonce from this to the styles it adds. -->
+  <script src="/dashboard/places.js" nonce="{{nonce}}" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <a class="brand" href="/dashboard#home"><img src="/dashboard/icon.svg" alt="" width="30" height="30">Natro</a>
+    <nav class="nav" aria-label="Sections">
+      <a href="/dashboard#home"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5V20h-5.5v-6h-5v6H4z"/></svg>Home</a>
+      <a href="/dashboard#activity"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h9"/></svg>Activity</a>
+      <a href="/dashboard/places" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s7-6.2 7-11.5a7 7 0 1 0-14 0C5 14.8 12 21 12 21zM12 7.5a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/></svg>Places</a>
+      <a href="/dashboard#billing"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6M9 16h3"/></svg>Billing</a>
+      <a href="/dashboard#speed"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.6 17a8.5 8.5 0 1 1 14.8 0M12 13l4-4"/></svg>Speed</a>
+      <a href="/dashboard#system"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v7H4zM4 13h16v7H4zM8 7.5h.01M8 16.5h.01"/></svg>System</a>
+    </nav>
+  </aside>
+
+  <main class="main" id="main">
+    <header class="top">
+      <div class="titles">
+        <h1>Places</h1>
+        <p>Natro knows them by the names you give them.</p>
+      </div>
+      <div class="controls">
+        <span class="places-link" id="link" role="status"><span class="dot off"></span><span id="link-text">Connecting…</span></span>
+      </div>
+    </header>
+
+    <div class="places">
+      <section class="card map-card" aria-label="Map">
+        <div class="map-search">
+          <label class="search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14zM20 20l-4-4"/></svg>
+            <span class="sr-only">Find an address</span>
+            <input type="search" id="search" placeholder="Find an address or a place" autocomplete="off" maxlength="200">
+          </label>
+          <div class="found" id="found" hidden></div>
+        </div>
+        <div id="map"></div>
+        <p class="map-note" id="map-note" hidden></p>
+      </section>
+
+      <div class="places-side">
+        <form class="card place-form" id="form" hidden novalidate>
+          <div class="card-head"><h2 id="form-title">New place</h2></div>
+          <label class="field">Name
+            <input id="name" maxlength="80" autocomplete="off" placeholder="Gym">
+          </label>
+          <label class="field">Other names <span class="field-hint">with commas between them</span>
+            <input id="names" autocomplete="off" placeholder="the gym, Fitness Park">
+          </label>
+          <label class="field">How near counts as there
+            <span class="radius"><input id="radius" type="number" min="100" max="5000" step="10" inputmode="numeric"> m</span>
+          </label>
+          <p class="place-address" id="address"></p>
+          <div class="place-happens" id="happens" hidden></div>
+          <p class="form-error" id="form-error" role="alert" hidden></p>
+          <div class="form-buttons">
+            <button type="submit" class="btn-primary" id="save">Save</button>
+            <button type="button" class="btn-soft" id="cancel">Cancel</button>
+            <button type="button" class="btn-danger" id="delete" hidden>Delete</button>
+          </div>
+        </form>
+
+        <section class="card" aria-labelledby="list-title">
+          <div class="card-head"><h2 id="list-title">Your places</h2><span class="places-count" id="count"></span></div>
+          <div class="place-list" id="list"></div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <nav class="tabs" aria-label="Sections">
+    <a href="/dashboard#home"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5V20h-5.5v-6h-5v6H4z"/></svg>Home</a>
+    <a href="/dashboard#activity"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h9"/></svg>Activity</a>
+    <a href="/dashboard/places" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s7-6.2 7-11.5a7 7 0 1 0-14 0C5 14.8 12 21 12 21zM12 7.5a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/></svg>Places</a>
+    <a href="/dashboard#billing"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6M9 16h3"/></svg>Billing</a>
+    <a href="/dashboard#speed"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.6 17a8.5 8.5 0 1 1 14.8 0M12 13l4-4"/></svg>Speed</a>
+    <a href="/dashboard#system"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v7H4zM4 13h16v7H4zM8 7.5h.01M8 16.5h.01"/></svg>System</a>
+  </nav>
+</div>
+</body>
+</html>

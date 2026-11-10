@@ -17,6 +17,11 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <!-- So his places (Places.kt) go on being checked after a restart, before the app has been opened. -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <!-- The app updates itself (AppUpdates.kt), with no question where Android allows it. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
     <!-- The bubble, over other apps. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- Connecting again after the phone restarts, if Natro is on. -->
@@ -64,12 +69,40 @@
             </intent-filter>
         </activity>
 
+        <!-- One of his cards, full screen and bright, for scanning at the till. -->
+        <activity
+            android:name=".CardActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleInstance"
+            android:taskAffinity="" />
+
         <!-- "Send to PC" in the share sheet: files from any app go to the PC. -->
         <activity
             android:name=".ShareActivity"
             android:exported="true"
             android:excludeFromRecents="true"
             android:label="Send to PC"
+            android:taskAffinity=""
+            android:theme="@style/Natro.Share">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- "Convert with Natro" in the share sheet: files from any app, to another format. -->
+        <activity
+            android:name=".ConvertActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:label="Convert with Natro"
             android:taskAffinity=""
             android:theme="@style/Natro.Share">
             <intent-filter>
@@ -110,6 +143,21 @@
                 android:value="true" />
         </service>
 
+        <!-- Where Natro works for what's asked on the phone (here or the PC), from the quick settings. -->
+        <service
+            android:name=".WorksOnTile"
+            android:exported="true"
+            android:icon="@drawable/ic_tile_phone"
+            android:label="Natro works on"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.TOGGLEABLE_TILE"
+                android:value="true" />
+        </service>
+
         <!-- Run or Skip on a request kept for the phone while it was offline (Kept.kt). -->
         <receiver
             android:name=".KeptAction"
@@ -123,6 +171,15 @@
         <!-- Snooze or Done on a reminder (Reminders.kt). -->
         <receiver
             android:name=".ReminderAction"
+            android:exported="false" />
+        <receiver
+            android:name=".AlertAction"
+            android:exported="false" />
+        <receiver
+            android:name=".AppUpdateDone"
+            android:exported="false" />
+        <receiver
+            android:name=".AppUpdateAgain"
             android:exported="false" />
 
         <!-- Connects again after a restart or an update, if Natro is on. -->

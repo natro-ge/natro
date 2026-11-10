@@ -55,6 +55,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshotFlow
@@ -323,10 +324,15 @@ private fun Check() {
     }
 }
 
-/** What Natro is doing, in a few words, beside the bubble (or above it, at home): a glass pill. */
+/**
+ * What Natro is doing, in a few words, beside the bubble (or above it, at home): a glass pill. While she works on
+ * the PC for what's asked here (WorksOn), a green "PC" badge follows the words, dimmed while the PC is offline.
+ */
 @Composable
 internal fun BubbleLabel() {
     val status by Bubble.status
+    val worksOn by Prefs.worksOn.collectAsState()
+    val pcOnline by Natro.pcOnline.collectAsState()
     val side by Bubble.labelSide
     val shown by Bubble.shown
     val moving by Bubble.moving
@@ -368,11 +374,34 @@ internal fun BubbleLabel() {
                     label = "label",
                 ) { text ->
                     val style = TextStyle(color = look.text, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                    Text(text, style = if (thinking) style.copy(brush = shimmer(look)) else style, maxLines = 1,
-                        overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 220.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        // The badge takes its room from long words: the label's window is no wider.
+                        Text(text, style = if (thinking) style.copy(brush = shimmer(look)) else style, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.widthIn(max = if (worksOn == WorksOn.PC) 176.dp else 220.dp))
+                        if (worksOn == WorksOn.PC) PcBadge(pcOnline)
+                    }
                 }
             }
         }
+    }
+}
+
+/** "PC", in green: Natro works on the PC for what's asked here (dimmed: it's offline, so she works here). */
+@Composable
+private fun PcBadge(online: Boolean) {
+    Row(
+        Modifier
+            .padding(start = 8.dp)
+            .graphicsLayer { alpha = if (online) 1f else 0.45f }
+            .clip(RoundedCornerShape(10.dp))
+            .background(GREEN)
+            .padding(start = 5.dp, end = 7.dp, top = 2.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Glyph.Pc, Color.White, size = 12.dp, weight = 1.5.dp)
+        Spacer(Modifier.width(3.dp))
+        Text("PC", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 
@@ -499,7 +528,24 @@ internal fun BubbleReply() {
                         ReplyBlock(block, look, words)
                     }
                 }
+                AnimatedVisibility(Bubble.listeningForMore.value) { StillListening(look) }
             }
+        }
+    }
+}
+
+/** At the foot of her reply while it listens for him to go on: he can talk, or end it with the ✕. */
+@Composable
+private fun StillListening(look: Glass) {
+    Row(Modifier.padding(start = 18.dp, end = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        WritingDot(true)
+        Spacer(Modifier.width(8.dp))
+        Text("Listening…", color = look.text, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+        Box(
+            Modifier.size(28.dp).clip(CircleShape).background(look.button).clickable(onClick = Natro::endListeningForMore),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Glyph.Close, look.text, size = 12.dp, weight = 2.dp)
         }
     }
 }

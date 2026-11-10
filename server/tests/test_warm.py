@@ -3,12 +3,13 @@ import json
 from datetime import datetime
 
 from conftest import FakeClient, Owner, message, run, text
-from natro_agent import agent as agent_module, log
+from natro_agent import log
 from natro_agent.agent import Agent
 from natro_agent.dashboard import commands
 from natro_agent.dryrun import PC_TOOLS, DryRunDevice
 from natro_agent.memory import Memory
 from natro_agent.tools import KnownTools
+from natro_agent.warm import WARM_FROM, WARM_UNTIL
 
 SONNET, HAIKU = "claude-sonnet-5-5", "claude-haiku-5-5"
 DAY = datetime(2026, 10, 26, 14, 0)  # his time
@@ -84,4 +85,4 @@ def test_keeping_warm_has_its_own_line_on_the_bill():
 
 
 def test_the_hours_run_past_midnight():
-    assert agent_module.WARM_UNTIL < agent_module.WARM_FROM  # warm_due's night test relies on it
+    assert WARM_UNTIL < WARM_FROM  # warm_due's night test relies on it

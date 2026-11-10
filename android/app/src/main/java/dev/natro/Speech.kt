@@ -9,7 +9,8 @@ import kotlin.math.sqrt
 /**
  * When a spoken request is over, from the loudness of each 100 ms block (Loudness, of raw phone
  * levels, before Recorder.louder): after `silence` blocks of quiet once speech was heard, after
- * `wait` blocks with no speech at all, or after `longest` blocks in any case.
+ * `wait` blocks with no speech at all, or after `longest` blocks in any case. So `wait` is only the
+ * time to start: listening after a reply, 6 s, however long he then talks.
  *
  * Speech is louder than the room (its quietest block, not counting silent ones: the microphone
  * starting) and, once he has said a few words, than a fifth of the owner's usual loudness in this
@@ -31,6 +32,8 @@ class SpeechEnd(
         private set
     var done = false
         private set
+    /** At least 0.3 s of speech, as the voice pipeline asks of a recording: not a door shutting. */
+    val spoke get() = voice.size >= SPOKE_AFTER
 
     fun add(loudness: Double) {
         blocks++
@@ -54,6 +57,7 @@ class SpeechEnd(
         /** Once he has spoken this many blocks, speech is also louder than SPEECH_SHARE of his usual (the median). */
         const val USUAL_AFTER = 5
         const val SPEECH_SHARE = 0.2
+        const val SPOKE_AFTER = 3
 
         /** A block's loudness as 0 to 1 for the dock's dot, on a log scale: background (~3) about 0.1, speech (30-1,000) 0.5-1. */
         fun level(loudness: Double): Float =

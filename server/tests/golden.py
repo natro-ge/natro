@@ -1,10 +1,11 @@
 """The real tool catalog, as Natro offers it, with every tool's run replaced by a recorder.
 
-Used by the golden tests (test_golden.py). The flags (personal, confirm, changes) are the real
-ones, so a tool added or changed anywhere shows up here. The PC's tools come from the PC app's
-own definitions when it's installed (the Windows PC), else from the dry-run copy; the phone's are
+Used by the golden tests (test_golden.py). The flags (confirm, changes, final) are the real
+ones, so a tool added or changed anywhere shows up here. The PC's tools come from
+desktop/tools.json, which the desktop app's tests keep the same as what it offers; the phone's are
 read from the Kotlin source, which is where they are defined.
 """
+import json
 import re
 from dataclasses import replace
 from pathlib import Path
@@ -12,8 +13,10 @@ from unittest.mock import MagicMock
 
 from natro_agent.aloud import Aloud
 from natro_agent.briefing import Briefing
+from natro_agent.cards import Cards
 from natro_agent.convert import Converter
-from natro_agent.dryrun import PC_TOOLS, DryRunDevice
+from natro_agent.dryrun import DryRunDevice
+from natro_agent.finance import Finance, FinanceAPI
 from natro_agent.files import Transfers
 from natro_agent.history import History
 from natro_agent.jobs import Jobs
@@ -22,6 +25,9 @@ from natro_agent.memory import Memory
 from natro_agent.pdf import PdfTools
 from natro_agent.notes import Notes
 from natro_agent.pending import PendingRequests
+from natro_agent.place_actions import PlaceActions
+from natro_agent.places import Places
+from natro_agent.planning import Planning
 from natro_agent.people import People
 from natro_agent.reminders import Reminders
 from natro_agent.routines import Routines
@@ -32,13 +38,15 @@ from natro_agent.watchers import Watchers
 from natro_agent.weather import Weather
 from natro_agent.webpage import WebPage
 from natro_agent.websearch import WebSearch
+from natro_agent.works_on import WorksOn
 
 PHONE_TOOLS_KT = Path(__file__).resolve().parents[2] / "android/app/src/main/java/dev/natro/PhoneTools.kt"
+PC_TOOLS_JSON = Path(__file__).resolve().parents[2] / "desktop/tools.json"
 
 
 def own_tools(folder):
-    """Natro's own tools, the server's (files between devices, saying out loud), and the cloud ones (Google,
-    Spotify), signed in."""
+    """Natro's own tools, the server's (files between devices, saying out loud, where she works), and the cloud ones
+    (Google, Spotify), signed in."""
     google_api = MagicMock(scopes=SCOPES)  # signed in with every permission, so Drive and Docs are offered
     search = WebSearch(key="tvly-test", post=lambda url, body, key: {"results": []})
     transfers = Transfers(folder / "transfers", {})
@@ -51,29 +59,28 @@ def own_tools(folder):
             + Briefing(folder / "briefing.json").tools() + Jobs().tools()
             + Routines(folder / "routines.json").tools()
             + Watchers(folder / "watchers.json", {}, google=MagicMock()).tools() + Aloud({}).tools()
-            + People(folder / "people.md").tools() + Sending(People(folder / "people.md"), {}).tools()
-            + Google(google_api).tools() + Spotify(MagicMock()).tools())
+            + WorksOn({}).tools() + People(folder / "people.md").tools() + Sending(People(folder / "people.md"), {}).tools()
+            + Places(folder / "places.json", {}, key="maps-key", get=MagicMock()).tools()
+            + PlaceActions(folder / "place_actions.json", Places(folder / "places.json", {})).tools()
+            + Cards(folder / "cards", {}).tools()
+            + Finance(FinanceAPI(token="test", get=MagicMock())).tools()
+            + Google(google_api).tools() + Planning(Google(google_api)).tools() + Spotify(MagicMock()).tools())
 
 
 def pc_specs():
-    try:
-        from natro_pc import apps, commands, files
-    except Exception:  # not on Windows, or the PC app isn't installed
-        return PC_TOOLS
-    from natro_pc import browser, control
-    return [tool.spec() for tool in apps.tools(MagicMock()) + files.tools(MagicMock())
-            + commands.tools(MagicMock()) + control.tools(MagicMock()) + browser.tools(MagicMock())]
+    """The PC's tool descriptions, all of them (the screen's and his Edge's too), from desktop/tools.json."""
+    return json.loads(PC_TOOLS_JSON.read_text(encoding="utf-8"))
 
 
 def phone_specs():
-    """The phone's tool descriptions, read from PhoneTools.kt: name, personal, confirm, final, hidden."""
+    """The phone's tool descriptions, read from PhoneTools.kt: name, confirm, final, hidden."""
     source = PHONE_TOOLS_KT.read_text(encoding="utf-8")
     start = source.index("private val tools = listOf(")
     end = source.index("/** The tools as the hello describes them. */")
     pieces = re.split(r'\n\s*Tool\("', source[start:end])[1:]
     specs = []
     for piece in pieces:
-        flags = {flag: f"{flag} = true" in piece for flag in ("personal", "confirm", "final", "hidden")}
+        flags = {flag: f"{flag} = true" in piece for flag in ("confirm", "final", "hidden")}
         specs.append({"name": re.match(r"[a-z_]+", piece).group(), "description": "A phone tool.",
                       "input_schema": {"type": "object", "properties": {}, "required": []}, **flags})
     return specs

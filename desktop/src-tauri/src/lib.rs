@@ -2,39 +2,46 @@
 //! Natro's brain, and files to and from the phone.
 
 mod audio;
+mod automation;
 mod brain;
 mod chat;
 mod config;
+mod difflib;
 mod dock;
 mod double_tap;
 mod files;
-mod helper;
 mod icons;
 mod keys;
+mod playing;
 mod recorder;
 mod reply;
 mod settings;
 mod startup;
 mod talk_key;
+mod tools;
 mod tray;
 mod verbose;
+mod voice;
+mod works_on;
 
 use std::sync::Arc;
 
 use tauri::Manager;
 use tauri_plugin_global_shortcut::{Code, ShortcutState};
 
+use tools::apps::{Apps, StartMenu};
 use brain::Brain;
 use chat::Chat;
 use config::Config;
 use dock::Dock;
 use files::Files;
-use helper::Helper;
 use icons::Icons;
 use keys::Keys;
 use reply::Reply;
 use settings::Settings;
+use tools::Tools;
 use verbose::Verbose;
+use voice::Voice;
 
 pub fn run() {
     tauri::Builder::default()
@@ -77,6 +84,7 @@ pub fn run() {
             reply::reply_state,
             reply::reply_size,
             reply::reply_close,
+            reply::reply_mute,
             reply::reply_send,
             reply::reply_keyboard,
             reply::reply_show,
@@ -90,6 +98,8 @@ pub fn run() {
             chat::chat_answer,
             chat::chat_clear,
             chat::chat_attach,
+            chat::chat_for_natro,
+            chat::chat_detach,
             chat::chat_picture,
             chat::chat_open_picture,
             chat::chat_queue,
@@ -107,18 +117,33 @@ pub fn run() {
             keys::keys_unlock,
             keys::keys_save,
             keys::keys_pin,
-            keys::keys_lock
+            keys::keys_lock,
+            works_on::works_on_state,
+            works_on::works_on_set
         ])
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            // %LOCALAPPDATA%\dev.natro.desktop\logs\Natro.log (and the console in debug builds),
+            // found by Windows rather than by Natro's folder, so it's there when the folder isn't.
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(log::LevelFilter::Info)
+                    // read_file's PDF reading says a lot about PDFs it finds odd; their errors are enough.
+                    .level_for("pdf_extract", log::LevelFilter::Error)
+                    .level_for("lopdf", log::LevelFilter::Error)
+                    .max_file_size(1_000_000)
+                    .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(1))
+                    .build(),
+            )?;
             let config = Config::load();
-            log::info!("Natro's files: {} (the helper's .venv in {})", config.home.display(), config.repo.display());
+            log::info!("Natro's files: {}", config.home.display());
+            if let Some(problem) = &config.problem {
+                log::error!(
+                    "Natro's files: {problem}. Without them there's no brain to reach (no NATRO_SERVER), \
+                     no voice and no settings. A folder made by a program the Claude app started is in \
+                     Claude's own storage (%LOCALAPPDATA%\\Packages\\Claude_...\\LocalCache\\Local), which \
+                     only Claude's programs see: move it out from Explorer or a normal terminal."
+                );
+            }
             // For testing, in debug builds: a clip as the microphone, or a typed request.
             let test = |key| cfg!(debug_assertions).then(|| config.get(key)).flatten();
             let test_clip = test("NATRO_TEST_CLIP").map(|clip| config.home.join(clip));
@@ -126,14 +151,15 @@ pub fn run() {
             let test_ask = test("NATRO_TEST_ASK");
             let settings = Settings::load(&config.home);
             let switches = settings.switches();
+            // Before the pages: the chat and the dock ask where Natro works (works_on.rs) once they've loaded.
+            app.manage(settings);
             // Again while it's on: the program may have moved since.
             if switches.startup
                 && let Err(e) = startup::set(true)
             {
                 log::warn!("couldn't keep starting with Windows: {e}");
             }
-            let helper = Arc::new(Helper::start(&config));
-            helper.speaking.store(switches.speak, std::sync::atomic::Ordering::SeqCst);
+            let voice = Arc::new(Voice::start(&config, switches.speak));
             let chat = Chat::new(&config.home, test_clip.clone());
             let dock = Dock::new(app.handle(), test_clip, test_text, test_ask);
             dock.prepare(app.handle())?;
@@ -144,15 +170,19 @@ pub fn run() {
             app.manage(reply);
             chat.prepare(app.handle())?;
             app.manage(chat);
-            app.manage(helper.clone());
-            app.manage(Icons::new(helper.clone()));
+            app.manage(voice.clone());
+            // Read ahead of the first open_app or app icon (about a second).
+            let menu = Arc::new(StartMenu::new());
+            let reading = menu.clone();
+            std::thread::spawn(move || reading.warm_up());
+            app.manage(Icons::new(menu.clone()));
+            app.manage(Arc::new(Tools::new(Apps::new(menu), &config)));
             let verbose = Arc::new(Verbose::new(&config.home, switches.verbose));
             app.manage(verbose.clone());
-            app.manage(settings);
             app.manage(Keys::new(&config.home));
             app.manage(Arc::new(Files::new()));
-            app.manage(Brain::start(app.handle().clone(), &config, helper, verbose));
-            tray::create(app)?;
+            app.manage(Brain::start(app.handle().clone(), &config, voice, verbose));
+            tray::create(app, config.problem.clone())?;
             if test("NATRO_TEST_TAPS").is_some() {
                 double_tap::count_simulated();
             }

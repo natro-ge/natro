@@ -2,7 +2,7 @@
 # Natro's files folder: %LOCALAPPDATA%\Natro, or NATRO_HOME). Safe to run again: it skips what is already there.
 #
 #   powershell -ExecutionPolicy Bypass -File desktop\setup-pc.ps1               # everything
-#   powershell -ExecutionPolicy Bypass -File desktop\setup-pc.ps1 -SkipModels   # no ~500 MB of models (typed chat only)
+#   powershell -ExecutionPolicy Bypass -File desktop\setup-pc.ps1 -SkipModels   # no ~350 MB voice (replies shown, not spoken)
 param([switch]$SkipModels)
 
 $ErrorActionPreference = "Stop"
@@ -14,8 +14,7 @@ New-Item -ItemType Directory -Force $Files | Out-Null
 $Tar = "$env:SystemRoot\System32\tar.exe"
 $Curl = "$env:SystemRoot\System32\curl.exe"
 
-# 1. Python 3.13 in the repo's .venv with the server (the brain and voice run on the PC too, for trying them out) and
-# the desktop app's helper.
+# 1. Python 3.13 in the repo's .venv with the server (the brain and voice run on the PC too, for trying them out).
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     Write-Host "uv is missing. Install it with:  winget install astral-sh.uv  (then open a new terminal)"
     exit 1
@@ -24,10 +23,10 @@ if (-not (Test-Path .venv\Scripts\python.exe)) {
     uv venv --python 3.13 .venv
     if ($LASTEXITCODE) { exit 1 }
 }
-uv pip install --python .venv\Scripts\python.exe -e "server[dev,signin,voice-tools]" -e "desktop\helper[dev]"
+uv pip install --python .venv\Scripts\python.exe -e "server[dev,signin,voice-tools]"
 if ($LASTEXITCODE) { exit 1 }
 
-# 2. Models from sherpa-onnx's releases: whisper-base hears "OK Natro", Kokoro speaks the replies.
+# 2. Kokoro from sherpa-onnx's releases: it speaks the replies.
 $Models = "$Files\models"
 function Get-Model($Name, $Url, $CheckFile, $Members) {
     if (Test-Path "$Models\$Name\$CheckFile") { Write-Host "$Models\$Name is there."; return }
@@ -42,11 +41,6 @@ function Get-Model($Name, $Url, $CheckFile, $Members) {
 }
 if (-not $SkipModels) {
     $Releases = "https://github.com/k2-fsa/sherpa-onnx/releases/download"
-    # Only the int8 files the wake word uses (75 MB of the 200 MB archive).
-    Get-Model "sherpa-onnx-whisper-base" "$Releases/asr-models/sherpa-onnx-whisper-base.tar.bz2" "base-tokens.txt" @(
-        "sherpa-onnx-whisper-base/base-encoder.int8.onnx",
-        "sherpa-onnx-whisper-base/base-decoder.int8.onnx",
-        "sherpa-onnx-whisper-base/base-tokens.txt")
     Get-Model "kokoro-en-v0_19" "$Releases/tts-models/kokoro-en-v0_19.tar.bz2" "model.onnx" @()
 }
 

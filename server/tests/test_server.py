@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 import urllib.request
 
 import pytest
@@ -10,6 +11,7 @@ from websockets.exceptions import ConnectionClosed
 from conftest import FakeClient, message, run, text, tool_use
 from natro_agent.agent import Agent
 from natro_agent.server import Server, health, is_yes
+from natro_agent.tools import Tool
 
 PC_TOOLS = [{"name": "force_close_app", "description": "Kill an app.", "confirm": True,
              "input_schema": {"type": "object", "properties": {"app": {"type": "string"}}, "required": ["app"]}}]
@@ -88,7 +90,7 @@ def test_typed_request_with_a_device_tool_and_a_yes_by_key():
     # The question showed as she wrote it; the reply, shown in its place and spoken, doesn't repeat it.
     assert "".join(m["text"] for m in seen if m["type"] == "reply_text") == "I'll force close Spotify. Done."
     assert seen[-1]["type"] == "reply" and seen[-1]["text"] == "Done."
-    assert seen[-1]["spent"] >= 0 and seen[-1]["budget"] == 15
+    assert seen[-1]["spent"] >= 0 and seen[-1]["budget"] == 20
 
 
 def test_spoken_request_counts_voice_cost():
@@ -181,8 +183,98 @@ def test_health_and_device_list():
         return body, set(agent.devices), [tool.name for tool in agent.offered_tools()]
 
     body, devices, tools = run(session(server, device))
-    # The server's own say_out_loud (aloud.py), then the PC's.
-    assert body == b"ok\n" and devices == {"pc"} and tools == ["say_out_loud", "pc_force_close_app"]
+    # The server's own say_out_loud (aloud.py) and work_on (works_on.py), then the PC's.
+    assert body == b"ok\n" and devices == {"pc"} and tools == ["say_out_loud", "work_on", "pc_force_close_app"]
+
+
+def test_the_picture_he_just_sent_is_there_for_a_while():
+    server = Server(Agent(client=FakeClient()), token="secret")
+    assert server._picture_sent() is None
+    server._last_picture = (time.monotonic(), "image/png", b"png")
+    assert server._picture_sent() == ("image/png", b"png")
+    server._last_picture = (time.monotonic() - 3600, "image/png", b"png")
+    assert server._picture_sent() is None
+
+
+class Feature:
+    """All that a feature can offer the server."""
+
+    def __init__(self):
+        self.asking = self.entry = self.handling = self.respond = None
+        self.heard = []
+        self.cancelled = False
+
+    def tools(self):
+        return [Tool("a_tool", "A feature's tool.", {"type": "object", "properties": {}}, None, "natro")]
+
+    def connected(self, device):
+        self.heard.append(("connected", device.name))
+
+    def disconnected(self, device):
+        self.heard.append(("disconnected", device.name))
+
+    def messages(self):
+        return {"a_note": self.note, "a_request": self.request}
+
+    def note(self, device, data):
+        device.post(type="noted", text=data["text"])
+
+    async def request(self, device, data):
+        device.post(type="started", id=data["id"])
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+
+
+class HasOnlyMessages:
+    def messages(self):
+        return {"b_note": lambda device, data: device.post(type="b_noted")}
+
+
+def test_a_feature_offers_what_it_has():
+    agent = Agent(client=FakeClient())
+    feature = Feature()
+    server = Server(agent, token="secret", features=[feature, HasOnlyMessages()])
+
+    async def device(ws, port):
+        async def until(kind):
+            while True:
+                data = json.loads(await asyncio.wait_for(ws.recv(), 5))
+                if data["type"] == kind:
+                    return data
+
+        await ws.send(json.dumps(HELLO))
+        await ws.send(json.dumps({"type": "a_note", "text": "hello"}))
+        noted = await until("noted")
+        await ws.send(json.dumps({"type": "b_note"}))
+        await until("b_noted")
+        await ws.send(json.dumps({"type": "nobody_handles_this"}))
+        await ws.send(json.dumps({"type": "a_request", "id": "f1"}))
+        await until("started")
+        await ws.send(json.dumps({"type": "cancel", "id": "f1"}))
+        return noted, await until("cancelled")
+
+    noted, cancelled = run(session(server, device))
+    assert noted["text"] == "hello" and cancelled["id"] == "f1" and feature.cancelled
+    assert [tool.name for tool in agent.own_tools] == ["say_out_loud", "work_on", "a_tool"]
+    assert feature.heard == [("connected", "pc"), ("disconnected", "pc")]
+    assert all(callable(given) for given in (feature.asking, feature.entry, feature.handling, feature.respond))
+    assert feature.asking() is None and feature.entry() is None
+
+
+def test_a_file_offered_with_no_transfers_is_refused():
+    server = Server(Agent(client=FakeClient()), token="secret")
+
+    async def device(ws, port):
+        await ws.send(json.dumps(HELLO))
+        await ws.send(json.dumps({"type": "file_offer", "id": "f1", "to": "phone", "name": "a", "size": 1}))
+        while (data := json.loads(await asyncio.wait_for(ws.recv(), 5)))["type"] != "file_failed":
+            pass
+        return data
+
+    assert run(session(server, device))["message"] == "Natro can't pass files on."
 
 
 @pytest.mark.parametrize("english, yes", [

@@ -15,7 +15,7 @@ from natro_agent.tools import ToolError
 from test_jobs import job_hello, take
 from test_shared_chat import devices, hello
 
-REPLY = {"name": "reply_message", "description": "Answer a message.", "personal": True, "confirm": True,
+REPLY = {"name": "reply_message", "description": "Answer a message.", "confirm": True,
          "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}
 NINO = {"type": "phone_message", "key": "0|com.whatsapp|1|nino", "app": "WhatsApp", "title": "Nino",
         "text": "Are you coming?", "reply": True}
@@ -115,7 +115,7 @@ def test_no_message_goes_where_none_are_shown_and_an_old_phone_app_says_so():
 
     nobody = Server(Agent(client=FakeClient()))
     run(devices(nobody, hello("phone", "phone", REPLY), play=alone))
-    assert not nobody._messages
+    assert not nobody.phone_messages._messages
 
 
 def test_his_answer_when_the_phone_is_offline():
@@ -136,7 +136,7 @@ def test_his_answer_when_the_phone_is_offline():
 
 # --- Messaging anyone: send_message --------------------------------------------------------------
 
-SEND = {"name": "send_message", "description": "Send a message.", "personal": True, "confirm": True, "hidden": True,
+SEND = {"name": "send_message", "description": "Send a message.", "confirm": True, "hidden": True,
         "input_schema": {"type": "object", "properties": {}, "required": []}}
 NINO_CHAT = "340282366841710300949128137443944319108"
 
@@ -461,6 +461,6 @@ def test_people_save_checks_the_username_and_saves_it(tmp_path):
             username_from("instagram", wrong)
     with pytest.raises(ToolError):
         run(tools["people_save"].run({"name": "Nino", "username": "x", "app": "whatsapp"}))
-    assert tools["people_forget"].confirm and tools["people_save"].personal
+    assert tools["people_forget"].confirm and not tools["people_save"].confirm
     assert run(tools["people_forget"].run({"name": "Zura"})) == "Forgot Zura (zura_99) on Instagram."
     assert people.find("instagram", "zura") == []

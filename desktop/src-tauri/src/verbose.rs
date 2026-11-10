@@ -212,7 +212,7 @@ mod tests {
         verbose.event("r1", "heard", json!({"georgian": "გამარჯობა", "english": "hello"}));
         verbose.event("r1", "step", json!({"text": "Opening Spotify"}));
         verbose.event("q1", "asked", json!({"question": "I'll force close Spotify."})); // a question's own id
-        verbose.event("r1", "reply", json!({"text": "Done.", "model": "gemini", "cost": 0.0}));
+        verbose.event("r1", "reply", json!({"text": "Done.", "model": "claude-haiku-5-5", "cost": 0.0}));
         let dir = home.join("logs").join("verbose");
         let mut files: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
         files.sort();

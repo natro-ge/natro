@@ -37,7 +37,8 @@ import java.util.concurrent.atomic.AtomicLong
  * Files between the phone and the PC, passed along by Natro's server (server/natro_agent/files.py; the
  * messages are in shared/PROTOCOL.md). Files from the PC land in Downloads, with a notification that opens them.
  * Files go to the PC from the share sheet (ShareActivity), or when Natro is asked ("send my last photo
- * to the PC": the brain finds it with search_files and asks for it with file_request).
+ * to the PC": the brain finds it with search_files and asks for it with file_request). Files for Natro herself
+ * (ConvertActivity) are copied into a folder of hers and go up when she asks for them.
  *
  * Shared files are copied into the outbox first, as Android takes the sharing app's permission back when
  * the share screen closes, and go from there as soon as Natro is connected (again after a lost
@@ -57,9 +58,14 @@ object Transfers {
     /** How often a progress bar may move. */
     private const val PROGRESS_MILLIS = 700L
     private const val CHANNEL = "files"
+    /** The server, as a file's to (server/natro_agent/files.py). */
+    private const val SERVER = "Natro"
+    /** How long a copy for Natro is kept, as she may be asked for another format of it. */
+    private const val FOR_NATRO_MILLIS = 24 * 3600 * 1000L
 
     private lateinit var app: Context
     private lateinit var outbox: File
+    private lateinit var forNatro: File
     private lateinit var notifications: NotificationManager
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val sequence = AtomicLong()
@@ -101,12 +107,14 @@ object Transfers {
         if (::app.isInitialized) return
         app = context.applicationContext
         outbox = File(app.filesDir, "outbox").apply { mkdirs() }
+        forNatro = File(app.filesDir, "for-natro").apply { mkdirs() }
         notifications = app.getSystemService(NotificationManager::class.java)
         notifications.createNotificationChannel(NotificationChannel(CHANNEL, "Files", NotificationManager.IMPORTANCE_DEFAULT))
         scope.launch { for (signal in wake) sendOutbox() }
+        scope.launch { dropOldCopies() }
     }
 
-    // The connection (Natro.kt)
+    // The connection (NatroConnection.kt)
 
     /** Connected: the outbox goes out. */
     fun online() {
@@ -237,42 +245,78 @@ object Transfers {
      * ToolFailure saying why it can't go. Blocks: run it off the main thread, while the share screen is open.
      */
     fun share(uri: Uri, to: String = "pc"): String {
-        val resolver = app.contentResolver
+        val (name, size) = described(uri)
+        if (size > MAX_BYTES) throw ToolFailure("$name is ${FileNames.size(size)}; files can be at most 1 GB.")
+        val id = newId()
+        val data = File(outbox, "$id.data")
+        copy(uri, name, data, MAX_BYTES)
+        File(outbox, "$id.json").writeText(JSONObject().put("name", name).put("to", to).toString())
+        notify(id, "$name for your ${label(to)}", "Waiting for Natro's connection…")
+        wake.trySend(Unit)
+        return name
+    }
+
+    /** A shared file's safe name and its size (-1 if it isn't known). Blocks. */
+    fun described(uri: Uri): Pair<String, Long> {
         var name = "file"
         var size = -1L
-        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use {
+        app.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use {
             if (it.moveToFirst()) {
                 name = it.getString(0) ?: name
                 if (!it.isNull(1)) size = it.getLong(1)
             }
         }
-        name = FileNames.safe(name)
-        if (size > MAX_BYTES) throw ToolFailure("$name is ${FileNames.size(size)}; files can be at most 1 GB.")
-        val id = "phone-${System.currentTimeMillis().toString(36)}-${sequence.incrementAndGet()}"
-        val data = File(outbox, "$id.data")
+        return FileNames.safe(name) to size
+    }
+
+    /**
+     * Copy a file shared for Natro herself (ConvertActivity) where she can ask for it by its path, without "All files
+     * access". Returns the copy, or throws ToolFailure saying why it can't go. Blocks, as share does.
+     */
+    fun forNatro(uri: Uri): File {
+        dropOldCopies()
+        val (name, _) = described(uri)
+        val folder = File(forNatro, newId()).apply { mkdirs() }
+        val kept = File(folder, name)
         try {
-            val input = resolver.openInputStream(uri) ?: throw IOException("it can't be opened")
+            copy(uri, name, kept, Conversions.MOST_BYTES)
+        } catch (e: ToolFailure) {
+            folder.deleteRecursively()
+            throw e
+        }
+        return kept
+    }
+
+    private fun dropOldCopies() {
+        val cutoff = now() - FOR_NATRO_MILLIS
+        forNatro.listFiles { folder -> folder.lastModified() < cutoff }?.forEach { it.deleteRecursively() }
+    }
+
+    private fun isCopyForNatro(file: File) = file.canonicalPath.startsWith(forNatro.canonicalPath + File.separator)
+
+    private fun newId() = "phone-${System.currentTimeMillis().toString(36)}-${sequence.incrementAndGet()}"
+
+    /** Copies a shared file, at most most bytes. Throws ToolFailure saying why it can't. */
+    private fun copy(uri: Uri, name: String, into: File, most: Long) {
+        try {
+            val input = app.contentResolver.openInputStream(uri) ?: throw IOException("it can't be opened")
             input.use { from ->
-                data.outputStream().use { into ->
+                into.outputStream().use { to ->
                     val buffer = ByteArray(1 shl 16)
                     var total = 0L
                     while (true) {
                         val count = from.read(buffer)
                         if (count < 0) break
                         total += count
-                        if (total > MAX_BYTES) throw ToolFailure("$name is bigger than 1 GB, the most Natro sends.")
-                        into.write(buffer, 0, count)
+                        if (total > most) throw ToolFailure("$name is bigger than ${FileNames.size(most)}, the most Natro takes.")
+                        to.write(buffer, 0, count)
                     }
                 }
             }
         } catch (e: Exception) {
-            data.delete()
+            into.delete()
             throw e as? ToolFailure ?: ToolFailure("Couldn't get $name ready: ${e.message}")
         }
-        File(outbox, "$id.json").writeText(JSONObject().put("name", name).put("to", to).toString())
-        notify(id, "$name for your ${label(to)}", "Waiting for Natro's connection…")
-        wake.trySend(Unit)
-        return name
     }
 
     /** Sends what's in the outbox, oldest first, while Natro is connected. */
@@ -294,7 +338,7 @@ object Transfers {
     private fun requested(id: String, path: String, to: String) = scope.launch {
         val file = File(path)
         val problem = when {
-            !Environment.isExternalStorageManager() ->
+            !Environment.isExternalStorageManager() && !isCopyForNatro(file) ->
                 "Natro can't read the phone's files yet: he can allow \"All files access\" in the Natro app."
             !file.isFile -> "There's no file $path on the phone."
             !file.canRead() -> "Natro can't read $path."
@@ -325,7 +369,9 @@ object Transfers {
         }
         val there = label(to)
         when (outcome) {
-            is Outcome.Sent -> if (outcome.waiting) {
+            is Outcome.Sent -> if (to == SERVER) {
+                notifications.cancel(id, 0)  // she has it: what she makes of it comes as a file of its own
+            } else if (outcome.waiting) {
                 notify(id, "${transfer.name} will reach your $there", "Your $there is offline: it gets it when it's back.")
             } else {
                 passedOn[id] = transfer

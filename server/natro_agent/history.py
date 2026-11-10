@@ -49,7 +49,7 @@ class History:
             "you said (\"restaurant\", \"Nino flight\"); start and end: only those days. Without words, everything "
             "in those days (\"what did I ask you yesterday?\").",
             {"type": "object", "properties": {"words": {"type": "string"}, "start": day, "end": day}},
-            self.search, "natro", personal=True)]
+            self.search, "natro")]
 
     async def search(self, args):
         words = [stem(word) for word in str(args.get("words") or "").split()]

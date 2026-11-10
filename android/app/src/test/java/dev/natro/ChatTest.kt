@@ -7,6 +7,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ChatTest {
+    @Test
+    fun aRequestThatTurnedOutToBeNothingLeavesNoTurn() {
+        val two = Chat.asked(Chat.asked(emptyList(), "r1", Turn.From.Spoken, "Open it", 1), "r2", Turn.From.Spoken, "", 2)
+        assertEquals(listOf("r1"), Chat.dropped(two, "r2").map { it.id })
+        assertEquals(listOf("r1", "r2"), Chat.dropped(two, "r3").map { it.id })
+    }
+
     private val tool = ToolRun("phone_open_app", "{\"app\":\"spotify\"}", ok = true, declined = false, result = "Opened Spotify.")
 
     @Test
@@ -19,7 +26,7 @@ class ChatTest {
         turns = Chat.step(turns, "r1", "Opening Spotify")  // said twice, kept once
         turns = Chat.toolRan(turns, "r1", tool, time = 2)
         turns = Chat.replyText(turns, "r1", "Opened")
-        val turn = Chat.replied(turns, "r1", "Opened Spotify.", "gemini", 0.001, 2.1, tools = null).single()
+        val turn = Chat.replied(turns, "r1", "Opened Spotify.", "claude-haiku-5-5", 0.001, 2.1, tools = null).single()
         assertEquals("Open Spotify.", turn.asked)
         assertEquals("სპოტიფაი გახსენი", turn.heard)
         assertEquals(listOf("Opening Spotify"), turn.steps)
@@ -53,7 +60,7 @@ class ChatTest {
     @Test
     fun onlyAWorkingTurnFails() {
         var turns = Chat.asked(emptyList(), "r1", Turn.From.Typed, "hi", time = 1)
-        turns = Chat.replied(turns, "r1", "Hi!", "gemini", null, null, null)
+        turns = Chat.replied(turns, "r1", "Hi!", "claude-haiku-5-5", null, null, null)
         assertEquals(Turn.State.Done, Chat.failed(turns, "r1", "Lost the connection to Natro.").single().state)
     }
 
@@ -79,7 +86,7 @@ class ChatTest {
     @Test
     fun theLatestTurnWithAnIdChanges() {
         var turns = Chat.asked(emptyList(), "r1", Turn.From.Typed, "first", time = 1)
-        turns = Chat.replied(turns, "r1", "One.", "gemini", null, null, null)
+        turns = Chat.replied(turns, "r1", "One.", "claude-haiku-5-5", null, null, null)
         turns = Chat.asked(turns, "r1", Turn.From.Typed, "second", time = 2)
         turns = Chat.replyText(turns, "r1", "Two.")
         assertEquals(listOf("One.", "Two."), turns.map { it.reply })
@@ -139,7 +146,7 @@ class ChatTest {
     @Test
     fun aNewChatAndCatchingUp() {
         var turns = Chat.asked(emptyList(), "r1", Turn.From.Typed, "hi", time = 1)
-        turns = Chat.replied(turns, "r1", "Hi!", "gemini", null, null, null)
+        turns = Chat.replied(turns, "r1", "Hi!", "claude-haiku-5-5", null, null, null)
         turns = Chat.asked(turns, "r2", Turn.From.Typed, "and now", time = 2)
         turns = Chat.entry(turns, entry("pc", "r3", "Done.", done = true))
         // Catching up: the PC's turns as the brain has them now (r3 went with a new chat there), the phone's kept.
@@ -180,7 +187,7 @@ class ChatTest {
     @Test
     fun turnsLeftWorkingWereInterrupted() {
         var turns = Chat.asked(emptyList(), "r1", Turn.From.Typed, "hi", time = 1)
-        turns = Chat.replied(turns, "r1", "Hi!", "gemini", null, null, null)
+        turns = Chat.replied(turns, "r1", "Hi!", "claude-haiku-5-5", null, null, null)
         turns = Chat.asked(turns, "r2", Turn.From.Spoken, "", time = 2)
         assertEquals(listOf(Turn.State.Done, Turn.State.Failed), Chat.interrupted(turns).map { it.state })
     }

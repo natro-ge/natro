@@ -13,31 +13,44 @@
   type Status = 'listening' | 'thinking' | 'step' | 'done' | 'asking' | 'problem'
   type DockEvent = { action: 'show' } | { action: 'hide' }
   // A step has a kind of picture (icon), or the app's own icon (image, a data URL).
-  type StatusEvent = { status: Status; label: string; icon: string | null; image: string | null }
+  // follow_up: it's listening for him to go on after a reply, which its ✕ ends.
+  type StatusEvent = { status: Status; label: string; icon: string | null; image: string | null; follow_up: boolean }
+  // Where Natro works for what's asked here (works_on.rs), and whether that device is online.
+  type WorksOn = { device: 'pc' | 'phone'; online: boolean }
   // Padding and border, and the gap after the icon (px); keep in step with the CSS below.
   const AROUND = 24 * 2 + 2 + 8
   // A long question is cut short at this width (px); the ✕ beside it takes this much more.
   const LONGEST_LABEL = 240
   const DECLINE = 8 + 20
+  // The gap before the phone's badge (px), shown while Natro works on the phone.
+  const BADGE_GAP = 8
 
   let open = $state(false)
   let status = $state<Status>('listening')
   let label = $state('Listening…')
   let icon = $state<string | null>(null)
   let image = $state<string | null>(null)
+  let followUp = $state(false)
+  // Her question, or listening after a reply: the pill has a ✕.
+  let declines = $derived(status === 'asking' || followUp)
   let labelWidth = $state(0)
+  let worksOn = $state<WorksOn>({ device: 'pc', online: true })
+  let away = $derived(worksOn.device === 'phone')
+  let badgeWidth = $state(0)
+  let badge = $derived(away ? BADGE_GAP + badgeWidth : 0)
   // The dot is 8 px; the spinner and the check need a little more room, a step's picture a bit more.
   let iconWidth = $derived(status === 'step' ? 16 : status === 'thinking' || status === 'done' ? 14 : 8)
-  let shownLabel = $derived(Math.min(labelWidth, LONGEST_LABEL))
-  let width = $derived(AROUND + iconWidth + shownLabel + (status === 'asking' ? DECLINE : 0))
+  // The badge takes its room from a long label, so the pill stays within the window.
+  let shownLabel = $derived(Math.min(labelWidth, LONGEST_LABEL - badge))
+  let width = $derived(AROUND + iconWidth + shownLabel + badge + (declines ? DECLINE : 0))
   // Rust needs it to know where clicks land (while Natro asks).
   $effect(() => {
     invoke('dock_size', { width })
   })
 
-  /** While Natro asks: a click on the pill is yes, on its ✕ no. */
+  /** While Natro asks: a click on the pill is yes, on its ✕ no. Listening after a reply: its ✕ ends that. */
   function answer(yes: boolean) {
-    if (status === 'asking') invoke('dock_answer', { yes })
+    if (declines) invoke('dock_answer', { yes })
   }
 
   /** A click on the pill: yes while she asks, else her last reply comes back (the reply box). */
@@ -83,6 +96,7 @@
     label = event.label
     icon = event.icon
     image = event.image
+    followUp = event.follow_up
   }
 
   onMount(() => {
@@ -96,9 +110,11 @@
       }),
       listen<StatusEvent>('status', ({ payload }) => showStatus(payload)),
       listen<number>('level', ({ payload }) => (heard = loudness(payload))),
+      listen<WorksOn>('works_on', ({ payload }) => (worksOn = payload)),
     ]
     // The dock may have opened while this page was still loading.
     Promise.all(unlisten).then(async () => {
+      worksOn = await invoke<WorksOn>('works_on_state')
       const showing = await invoke<StatusEvent | null>('dock_state')
       if (showing && !open) {
         showStatus(showing)
@@ -144,10 +160,23 @@
           </span>
         {/key}
       </span>
-      {#if status === 'asking'}
+      {#if away}
+        <!-- Natro works on the phone for what's asked here; dimmed while it's offline (she works here then). -->
+        <span
+          class="badge"
+          class:offline={!worksOn.online}
+          title={worksOn.online ? 'Working on your phone' : "Your phone is offline: working here till it's back"}
+          bind:clientWidth={badgeWidth}
+          transition:scale={{ start: 0.5, duration: 220 }}
+        >
+          <svg viewBox="0 0 12 12" aria-hidden="true"><rect x="3.2" y="1" width="5.6" height="10" rx="1.4" /></svg>
+          Phone
+        </span>
+      {/if}
+      {#if declines}
         <button
           class="decline"
-          aria-label="No"
+          aria-label={status === 'asking' ? 'No' : 'Stop listening'}
           transition:scale={{ start: 0.5, duration: 220 }}
           onclick={(event) => {
             event.stopPropagation()
@@ -241,6 +270,33 @@
     max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  /* Natro works on the phone: a green badge after the label. */
+  .badge {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 7px 2px 5px;
+    border-radius: 999px;
+    background: var(--green);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 15px;
+    white-space: nowrap;
+    transition: opacity 200ms ease;
+  }
+  .badge.offline {
+    opacity: 0.45;
+  }
+  .badge svg {
+    width: 11px;
+    height: 11px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.4;
   }
 
   /* Natro asks: the pill is a button. Over it the dot becomes a green check (yes); the ✕ says no. */

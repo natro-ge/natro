@@ -1,9 +1,8 @@
 //! Recordings: 16 kHz mono 16-bit, what the brain's voice pipeline takes, and
 //! deciding when the speaker has finished.
 //!
-//! The same rules as the Python PC app (desktop/helper/natro_pc/audio.py), which match the
-//! brain's (server/natro_voice/speech.py): a recording judged to have speech here
-//! is judged the same way there.
+//! The same rules as the brain's (server/natro_voice/speech.py): a recording
+//! judged to have speech here is judged the same way there.
 
 pub const SAMPLE_RATE: u32 = 16_000;
 /// Loudness is judged in 100 ms chunks.
@@ -75,6 +74,11 @@ impl EndOfSpeech {
             None => self.chunks >= self.no_speech,
             Some(last) => self.chunks - 1 - last >= self.silence,
         }
+    }
+
+    /// Whether he's said anything yet.
+    pub fn heard(&self) -> bool {
+        self.first_speech.is_some()
     }
 
     /// The recording without the silence before and after the speech, keeping a little margin.
@@ -199,6 +203,28 @@ mod tests {
             end.add(100.0);
         }
         assert!(!end.done());
+        end.add(100.0);
+        assert!(end.done());
+    }
+
+    #[test]
+    fn the_time_to_start_talking_is_only_until_he_starts() {
+        // Listening after a reply: 6 s to start, and then as long as he talks.
+        let mut end = EndOfSpeech::new(3.0, 6.0);
+        for _ in 0..59 {
+            end.add(100.0);
+        }
+        assert!(!end.done() && !end.heard());
+        end.add(5_000.0); // the last moment
+        assert!(end.heard());
+        for _ in 0..40 {
+            end.add(5_000.0);
+            assert!(!end.done());
+        }
+        for _ in 0..29 {
+            end.add(100.0);
+            assert!(!end.done());
+        }
         end.add(100.0);
         assert!(end.done());
     }

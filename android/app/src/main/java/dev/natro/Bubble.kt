@@ -72,6 +72,8 @@ enum class LabelSide { Above, Right, Left }
  *   lower half of the screen, down in the upper; from its side when parked), filling in as she writes.
  *   A tap folds it back into the bubble; a short reply folds back by itself. A tap on the bubble
  *   opens her last reply again. Settings > "Show replies as text" turns this off.
+ * - While it listens for him to go on after a reply (Natro.listenForMore), her reply stays out, and says so with
+ *   a ✕ of its own to end it; folded, the bubble listens as it always does.
  *
  * Each part is its own small window, so the app underneath gets every touch outside them. The
  * label and the ✕ never take touches; they're drawn at the opacity Android requires of an overlay
@@ -99,6 +101,8 @@ object Bubble {
     internal val replyFrom = mutableStateOf(TransformOrigin(0.5f, 1f))
     /** The tallest the reply card may be, in dp; it scrolls inside. */
     internal val replyMaxHeight = mutableFloatStateOf(300f)
+    /** Listening for him to go on after a reply: the reply card says so. */
+    internal val listeningForMore = mutableStateOf(false)
 
     /** Whether the bubble is on screen (Android then lets Natro open apps from the background). */
     @Volatile var showing = false
@@ -165,7 +169,8 @@ object Bubble {
             override fun onLowMemory() {}
         })
         scope.launch {
-            merge(Natro.bubble, Natro.question, Natro.recording, Natro.onScreen, Prefs.parked, Prefs.power, Prefs.showReplies)
+            merge(Natro.bubble, Natro.question, Natro.recording, Natro.listeningForMore, Natro.onScreen, Prefs.parked,
+                Prefs.power, Prefs.showReplies, AssistantChat.open)
                 .collect { sync() }
         }
         scope.launch { Natro.level.collect { level.floatValue = it } }
@@ -177,8 +182,11 @@ object Bubble {
         if (!::app.isInitialized) return
         status.value = Natro.bubble.value
         question.value = Natro.question.value.takeUnless { Natro.recording.value }
-        // Listening again, her question, or the switch turned off: the reply card makes way.
-        if (replyOpen.value && (Natro.recording.value || question.value != null || !Prefs.showReplies.value)) {
+        listeningForMore.value = Natro.listeningForMore.value
+        // Listening again, her question, or the switch turned off: the reply card makes way. Not for listening for
+        // him to go on, as he may still be reading it.
+        val recordingAnew = Natro.recording.value && !Natro.listeningForMore.value
+        if (replyOpen.value && (recordingAnew || question.value != null || !Prefs.showReplies.value)) {
             replyTimer?.cancel()
             replyOpen.value = false
         }
@@ -197,7 +205,8 @@ object Bubble {
         }
     }
 
-    private fun wanted() = Settings.canDrawOverlays(app) && !Natro.onScreen.value &&
+    // The assistant's chat (AssistantChat) shows all of it while it's open: no bubble beside it.
+    private fun wanted() = Settings.canDrawOverlays(app) && !Natro.onScreen.value && !AssistantChat.open.value &&
         (Natro.bubble.value != null || (Prefs.parked.value != null && Prefs.power.value) || dragging.value || moving.value ||
             replyOpen.value || lingering != null)
 
@@ -375,7 +384,7 @@ object Bubble {
         if (new.text.isBlank()) return
         if (new.id != openedFor) {
             openedFor = new.id
-            if (Prefs.showReplies.value && !Natro.onScreen.value && !Natro.recording.value) unfold()
+            if (Prefs.showReplies.value && !Natro.onScreen.value && !AssistantChat.open.value && (!Natro.recording.value || Natro.listeningForMore.value)) unfold()
         } else if (replyOpen.value) {
             timeReply()
         }
@@ -664,7 +673,7 @@ object Bubble {
 }
 
 /** What a window that isn't an activity's needs for Compose: a lifecycle and a saved-state registry. */
-private class WindowOwner : LifecycleOwner, SavedStateRegistryOwner {
+internal class WindowOwner : LifecycleOwner, SavedStateRegistryOwner {
     private val registry = LifecycleRegistry(this)
     private val saved = SavedStateRegistryController.create(this)
 

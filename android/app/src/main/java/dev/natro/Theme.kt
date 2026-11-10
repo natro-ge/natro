@@ -1,12 +1,10 @@
 package dev.natro
 
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -18,7 +16,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.Dp
@@ -105,6 +102,24 @@ fun NatroTheme(content: @Composable () -> Unit) {
     }
 }
 
+/**
+ * The PC chat's glass (app.css: glass-dense, its green bubbles, white text on the dark one): the palette of what Natro
+ * draws over other apps (AssistantChat), where the cards, bubbles and field see through a little.
+ */
+@Composable
+fun GlassTheme(content: @Composable () -> Unit) {
+    val dark = isSystemInDarkTheme()
+    val base = if (dark) Dark else Light
+    val glass = if (dark) {
+        base.copy(surface = Color(0xED222224), raised = Color(0x24FFFFFF), line = Color(0x33FFFFFF), text = Color.White,
+            muted = Color(0x99FFFFFF), faint = Color(0x66FFFFFF), mine = Color(0xFF0E9C10), onMine = Color.White)
+    } else {
+        base.copy(surface = Color(0xEBFFFFFF), raised = Color(0x14000000), line = Color(0x24000000), text = Color(0xFF333333),
+            muted = Color(0x99333333), faint = Color(0x66333333), mine = Color(0xFF0E9C10), onMine = Color.White)
+    }
+    NatroTheme { CompositionLocalProvider(LocalPalette provides glass, content = content) }
+}
+
 /** The latest non-null value, kept for content that animates away after the value became null. */
 @Composable
 fun <T : Any> rememberLast(value: T?): T? {
@@ -114,13 +129,12 @@ fun <T : Any> rememberLast(value: T?): T? {
     return last[0] as T?
 }
 
-/** Natro's mark, as on her icon: the N ending in the green dot, on her dark round. */
+/** Natro's mark, as on her icon: the green dot with its glow, nothing behind it. */
 @Composable
 fun Logo(size: Dp, modifier: Modifier = Modifier) {
-    Box(modifier.size(size).clip(CircleShape).background(Color(0xFF14171B)), contentAlignment = Alignment.Center) {
-        // The icon's drawing has an adaptive icon's margins: drawn larger, the round shows its middle
-        // (up to 1.42 times, the dot's glow still fits inside).
+    Box(modifier.size(size), contentAlignment = Alignment.Center) {
+        // The icon's drawing has an adaptive icon's margins: drawn larger (108 / 70), its glow fills the box.
         Image(painterResource(R.drawable.ic_launcher_foreground), contentDescription = null,
-            modifier = Modifier.requiredSize(size * 1.34f))
+            modifier = Modifier.requiredSize(size * 1.54f))
     }
 }

@@ -8,8 +8,10 @@ import pytest
 
 from conftest import FakeClient, Owner, fallback, message, run, text, thinking, tool_use
 from natro_agent import agent as agent_module
-from natro_agent.agent import Agent, echo_content, noise, plain_question, utc_offset
+from natro_agent.agent import Agent, echo_content, utc_offset
 from natro_agent.dryrun import PC_TOOLS, DryRunDevice
+from natro_agent.routing import noise
+from natro_agent.tool_calls import plain_question
 from natro_agent.tools import ASKS_FIRST, Tool
 
 
@@ -92,7 +94,7 @@ def task_tool(added):
     async def add(args):
         added.append(args["title"])
         return "Added."
-    return Tool(name="tasks_add", description="Add a task.", run=add, source="google", personal=True, changes=True,
+    return Tool(name="tasks_add", description="Add a task.", run=add, source="google", changes=True,
                 input_schema={"type": "object", "properties": {"title": {"type": "string"}}})
 
 
@@ -320,7 +322,7 @@ def test_what_a_cancelled_request_did_is_told_to_the_next():
         started.set()
         await asyncio.sleep(3600)
 
-    slow = Tool(name="pc_screen", description="Read the screen.", run=wait, source="pc", personal=True,
+    slow = Tool(name="pc_screen", description="Read the screen.", run=wait, source="pc",
                 input_schema={"type": "object", "properties": {}})
     claude = FakeClient(message(tool_use("t1", "tasks_add", title="Milk"), stop="tool_use"),
                         message(tool_use("t2", "pc_screen"), stop="tool_use"),

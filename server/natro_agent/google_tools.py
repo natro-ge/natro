@@ -144,6 +144,13 @@ def task_due(task):
     return date.fromisoformat(task["due"][:10]) if task.get("due") else None
 
 
+def due_field(due):
+    """A task's due date as Tasks takes it: it keeps only the date."""
+    day = parse_when(due)
+    day = day.date() if isinstance(day, datetime) else day
+    return f"{day.isoformat()}T00:00:00.000Z"
+
+
 def describe_task(task):
     due = f" (due {task_due(task):%a %d %b})" if task.get("due") else ""
     done = " (done)" if task.get("status") == "completed" else ""
@@ -193,10 +200,10 @@ class Google:
         items = await self.event_items(as_moment(first), as_moment(until), query)
         return "\n".join(describe_event(event) for event in items) or "No events then."
 
-    async def event_items(self, start, end, query=None):
+    async def event_items(self, start, end, query=None, most=MAX_EVENTS):
         """Events (each day of a repeating one) from start to end (datetimes), as Google gives them."""
         params = {"timeMin": start.isoformat(), "timeMax": end.isoformat(), "singleEvents": "true",
-                  "orderBy": "startTime", "maxResults": MAX_EVENTS}
+                  "orderBy": "startTime", "maxResults": most}
         if query:
             params["q"] = query
         return (await self.api.call("GET", f"{CALENDAR}/events", params)).get("items", [])
@@ -248,17 +255,33 @@ class Google:
     async def tasks(self, show_completed=False):
         return "\n".join(describe_task(task) for task in await self.task_items(show_completed)) or "No tasks."
 
+    async def tasks_done(self, start, end):
+        """The tasks he finished from start to end (datetimes), as Google gives them: those he ticked off in Google's
+        own apps come only with showHidden."""
+        params = {"showCompleted": "true", "showHidden": "true", "completedMin": start.isoformat(),
+                  "completedMax": end.isoformat(), "maxResults": 100}
+        items = (await self.api.call("GET", f"{TASKS}/lists/@default/tasks", params)).get("items", [])
+        return [task for task in items if task.get("completed")]
+
     async def add_task(self, title, due=None, notes=None):
         body = {"title": title}
         if due:
-            day = parse_when(due)
-            day = day.date() if isinstance(day, datetime) else day
-            body["due"] = f"{day.isoformat()}T00:00:00.000Z"  # Tasks keeps only the date
+            body["due"] = due_field(due)
         if notes:
             body["notes"] = notes
         task = await self.api.call("POST", f"{TASKS}/lists/@default/tasks", body=body)
         # The first line is the reply when it's all he asked for (final); the id is for later calls.
         return f"Added the task {task.get('title', title)!r}.\n[id {task['id']}]"
+
+    async def update_task(self, task_id, title=None, due=None, notes=None):
+        body = {key: value for key, value in (("title", title), ("notes", notes)) if value is not None}
+        if due:
+            body["due"] = due_field(due)
+        if not body:
+            raise ToolError("Nothing to change.")
+        task = await self.api.call("PATCH", f"{TASKS}/lists/@default/tasks/{task_id}", body=body)
+        when = f", due {task_due(task):%a %d %b}" if task.get("due") else ""
+        return f"Changed the task {task.get('title', title)!r}{when}."
 
     async def complete_task(self, task_id):
         task = await self.api.call("PATCH", f"{TASKS}/lists/@default/tasks/{task_id}", body={"status": "completed"})
@@ -389,8 +412,8 @@ class Google:
         def tool(name, description, properties, run, required=(), confirm=False, changes=False, final=False):
             async def call(args):
                 return await run(**args)
-            return Tool(name=name, description=description, run=call, source="google", personal=True,
-                        confirm=confirm, changes=changes, final=final,
+            return Tool(name=name, description=description, run=call, source="google", confirm=confirm,
+                        changes=changes, final=final,
                         input_schema={"type": "object", "properties": properties, "required": list(required)})
 
         when = {"type": "string", "description": "2026-10-06 for a day, or 2026-10-06T15:00 for a time (his local time)."}
@@ -417,6 +440,10 @@ class Google:
                  {"show_completed": {"type": "boolean"}}, self.tasks),
             tool("tasks_add", "Add a to-do to Google Tasks, optionally due on a day.",
                  {"title": text, "due": when, "notes": text}, self.add_task, ["title"], changes=True, final=True),
+            tool("tasks_update", "Change a task (by id from tasks_list): only the fields given. To move it to another "
+                 "day, give due.",
+                 {"task_id": text, "title": text, "due": when, "notes": text}, self.update_task, ["task_id"],
+                 changes=True),
             tool("tasks_complete", "Mark a task as done.", {"task_id": text}, self.complete_task, ["task_id"],
                  changes=True, final=True),
             tool("tasks_delete", "Delete a task.", {"task_id": text}, self.delete_task, ["task_id"], confirm=True),

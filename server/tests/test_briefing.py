@@ -104,9 +104,9 @@ def test_likely_hours():
     assert likely_hours(hours, chances, day, after=datetime(2026, 10, 18, 9)) == ["around 12:00", "22:00-23:00"]
 
 
-def test_the_weather_tool_is_not_personal():
+def test_the_weather_tool_runs_at_once():
     tool, = Weather(home="Tbilisi", get=FakeOpenMeteo()).tools()
-    assert tool.name == "weather" and not tool.personal and not tool.confirm
+    assert tool.name == "weather" and not tool.confirm
     assert "(Tbilisi)" in tool.description
 
 
@@ -225,7 +225,7 @@ def test_reminders_still_to_come_today(tmp_path):
     assert "Water the plants" not in text
 
 
-def test_the_briefing_is_personal(tmp_path):
+def test_the_briefing_runs_at_once(tmp_path):
     briefing, _ = make_briefing(tmp_path)
     tool, = briefing.tools()
-    assert tool.name == "briefing" and tool.personal and not tool.confirm and not tool.changes
+    assert tool.name == "briefing" and not tool.confirm and not tool.changes

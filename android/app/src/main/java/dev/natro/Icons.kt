@@ -17,7 +17,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /** Natro's icons: rounded lines on a 24-unit grid, drawn rather than loaded, so they match at any size. */
-enum class Glyph { Send, Back, Settings, Chevron, Close, Check, Power, Mic, Picture, NewChat }
+enum class Glyph { Send, Back, Settings, Chevron, Close, Check, Power, Mic, Picture, NewChat, Pc, Phone }
 
 @Composable
 fun Icon(glyph: Glyph, color: Color, modifier: Modifier = Modifier, size: Dp = 24.dp, weight: Dp = 2.dp) {
@@ -72,6 +72,17 @@ fun Icon(glyph: Glyph, color: Color, modifier: Modifier = Modifier, size: Dp = 2
                 line(8f, 17.5f, 6.5f, 21f, 11.5f, 17.5f)
                 line(12f, 7.5f, 12f, 14f)
                 line(8.75f, 10.75f, 15.25f, 10.75f)
+            }
+            Glyph.Pc -> {
+                drawRoundRect(color, topLeft = at(3f, 4f), size = Size(18f * unit, 12f * unit),
+                    cornerRadius = CornerRadius(2.4f * unit), style = stroke)
+                line(12f, 16f, 12f, 20f)
+                line(8.5f, 20f, 15.5f, 20f)
+            }
+            Glyph.Phone -> {
+                drawRoundRect(color, topLeft = at(7f, 3f), size = Size(10f * unit, 18f * unit),
+                    cornerRadius = CornerRadius(2.4f * unit), style = stroke)
+                line(10.8f, 17.8f, 13.2f, 17.8f)
             }
         }
     }

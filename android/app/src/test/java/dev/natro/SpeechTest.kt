@@ -35,6 +35,37 @@ class SpeechTest {
     }
 
     @Test
+    fun theTimeToStartTalkingIsOnlyUntilHeStarts() {
+        val end = SpeechEnd(wait = 60)  // listening after a reply: 6 s
+        feed(end, *DoubleArray(59) { 3.0 })
+        assertFalse(end.done || end.heard)
+        feed(end, 500.0)  // the last moment
+        feed(end, *DoubleArray(40) { 500.0 })
+        assertTrue(end.heard)
+        assertFalse(end.done)  // past the 6 s, and he's talking
+        feed(end, *DoubleArray(20) { 3.0 })
+        assertTrue(end.done && end.spoke)
+    }
+
+    @Test
+    fun aSilentWindowEndsWithNothingSpoken() {
+        val end = SpeechEnd(wait = 100)  // after a long reply: 10 s
+        feed(end, *DoubleArray(99) { 3.0 })
+        assertFalse(end.done)
+        feed(end, 3.0)
+        assertTrue(end.done)
+        assertFalse(end.heard || end.spoke)
+    }
+
+    @Test
+    fun aDoorShuttingIsntSpeech() {
+        val end = SpeechEnd(wait = 60)
+        feed(end, 3.0, 3.0, 2000.0, *DoubleArray(20) { 3.0 })
+        assertTrue(end.done && end.heard)
+        assertFalse(end.spoke)  // nothing goes
+    }
+
+    @Test
     fun noisyRoomNeedsSpeechWellAboveTheNoise() {
         val noisy = SpeechEnd()
         feed(noisy, 40.0, 45.0, 120.0)  // a fan at ~40: speech must pass 160

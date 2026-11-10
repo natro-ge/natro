@@ -50,6 +50,9 @@ val unpackWakeWordModel = tasks.register<Copy>("unpackWakeWordModel") {
 }
 tasks.named("preBuild") { dependsOn(unpackWakeWordModel) }
 
+// Each commit is a higher version, so the phone takes a new build as an update (AppUpdates.kt).
+val commits = providers.exec { commandLine("git", "rev-list", "--count", "HEAD") }.standardOutput.asText.get().trim().toInt()
+
 android {
     namespace = "dev.natro"
     compileSdk = 37
@@ -58,8 +61,8 @@ android {
         applicationId = "dev.natro"
         minSdk = 34
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.2"
+        versionCode = commits
+        versionName = "0.2.$commits"
         buildConfigField("String", "NATRO_SERVER", "\"${local.getProperty("natro.server", "ws://100.101.107.5:8700")}\"")
         buildConfigField("String", "NATRO_TOKEN", "\"${local.getProperty("natro.token", "")}\"")
         // The Nothing Phone (2) is arm64; the other CPU types would only make the app bigger.

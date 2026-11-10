@@ -1,4 +1,5 @@
 """The Claude models the agent uses: request options and prices."""
+import os
 
 # Per model: USD per million tokens (input, output), and request options.
 MODELS = {
@@ -15,20 +16,30 @@ MODELS = {
     # Natro's stay under. It has no server-side fallback: when it declines,
     # Sonnet takes over (STRONGER).
     "claude-haiku-5-5": {"prices": (0.10, 0.50), "options": {"output_config": {"effort": "low"}}},
+    # The financist alone (financist.py), where thinking is the point and a question comes a few times a week: twice
+    # Sonnet's price, not worth it for every reply, and high effort, as its whole job is judgment.
+    "claude-opus-5-5": {
+        "prices": (4.0, 20.0), "cache_read": 0.05,
+        "options": {"output_config": {"effort": "high"}, "betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"},
+    },
 }
 # Personal or risky requests, and the rest of a conversation once one came up.
 DEFAULT_MODEL = "claude-sonnet-5-5"
 # Plain requests (nothing personal or risky) and those that use the PC or a screen (commands, settings,
-# clicking in apps) start here. It took the free Gemini tier's place on 2026-10-20: a request Gemini handed over
-# took a median 11 s against 4 s straight to Claude, and the free models rested 78 times in 15 days.
+# clicking in apps) start here.
 CHEAP_MODEL = "claude-haiku-5-5"
+# Answers questions about his money that take judgment (financist.py).
+FINANCIST_MODEL = "claude-opus-5-5"
 # Takes over the rest of a request when the model above gets stuck: it declines, its tools fail twice in a
 # row, or the request takes many steps. Sonnet 5.5 reads Haiku 5.5's thinking, so nothing is lost.
 STRONGER = {"claude-haiku-5-5": "claude-sonnet-5-5"}
 # Models with adaptive thinking, whose thinking blocks are tied to the exact conversation.
-ADAPTIVE_THINKING = {"claude-sonnet-5-5", "claude-haiku-5-5"}
+ADAPTIVE_THINKING = {"claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5"}
 # Used for the rest of a conversation when the model's API fails (overloaded, down).
 FALLBACK_MODEL = {"claude-sonnet-5-5": "claude-haiku-5-5", "claude-haiku-5-5": "claude-sonnet-5-5"}
+# NATRO_CHECK_HISTORY=1 makes Claude reject any edit to a past conversation (see options).
+CHECK_HISTORY = os.environ.get("NATRO_CHECK_HISTORY") == "1"
+TOKEN_KINDS = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens")
 
 # Cache writes (5-minute, 1-hour) and reads, relative to the input price.
 CACHE_WRITE = 1.25
@@ -54,8 +65,9 @@ def options(model, check_history=False):
 def cost(model, usage):
     """USD for one response, from its token usage (cache writes split by how long they're kept)."""
     price_in, price_out = MODELS[model]["prices"]
+    cache_read = MODELS[model].get("cache_read", CACHE_READ)
     written = usage.cache_creation_input_tokens or 0
     an_hour = getattr(getattr(usage, "cache_creation", None), "ephemeral_1h_input_tokens", 0) or 0
     return (usage.input_tokens * price_in + usage.output_tokens * price_out
             + ((written - an_hour) * CACHE_WRITE + an_hour * CACHE_WRITE_HOUR) * price_in
-            + (usage.cache_read_input_tokens or 0) * price_in * CACHE_READ) / 1_000_000
+            + (usage.cache_read_input_tokens or 0) * price_in * cache_read) / 1_000_000

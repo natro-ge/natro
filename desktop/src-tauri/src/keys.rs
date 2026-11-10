@@ -460,7 +460,7 @@ fn parse_env(text: &str) -> HashMap<String, String> {
     values
 }
 
-/// The key a line sets, and whether it's commented out ("# GEMINI_API_KEY=").
+/// The key a line sets, and whether it's commented out ("# TAVILY_API_KEY=").
 fn line_key(line: &str) -> Option<(&str, bool)> {
     let line = line.trim();
     let (line, commented) = match line.strip_prefix('#') {
@@ -606,7 +606,7 @@ mod tests {
         assert_eq!(parse_env(&new)["PLAYWRIGHT_MCP_EXTENSION_TOKEN"], "abc");
         assert_eq!(rewrite_env("A=1\n", &values(&[("A", "2")])), "A=2\n");
         // Prose in a comment isn't a setting.
-        assert_eq!(line_key("# Optional: Gemini's free tier (aistudio.google.com/apikey)."), None);
+        assert_eq!(line_key("# Optional: Tavily's web search (app.tavily.com, 1,000 a month free)."), None);
     }
 
     #[test]

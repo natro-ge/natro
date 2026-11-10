@@ -1,8 +1,9 @@
 //! The Settings window (Settings.svelte): the chat's + menu and the tray's "Settings…" open it.
 //!
-//! Its switches are the tray's (Speak replies, Show replies as text, Verbose): a change in
+//! Its switches are the tray's (Speak replies, Show replies as text, Keep listening after a reply, Verbose): a change in
 //! either shows in both, and they're remembered in settings.json (git-ignored) beside .env,
-//! with its own, Start with Windows (startup.rs).
+//! with its own, Start with Windows (startup.rs), and where Natro works (works_on.rs), which the
+//! chat and the tray change.
 //! So are the keybinds, the keys that work from any window (talk, chat, yes and no): a click
 //! on one, then the new keys, changes it at once (Esc keeps it). The chat also opens with a
 //! modifier tapped twice (double_tap.rs): a click on that one, then the modifier tapped twice,
@@ -30,18 +31,19 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut}
 use crate::chat::Chat;
 use crate::dock::Dock;
 use crate::double_tap::{self, Tap};
-use crate::helper::Helper;
 use crate::keys::Keys;
 use crate::reply::Reply;
 use crate::startup;
 use crate::tray;
 use crate::verbose::Verbose;
+use crate::voice::Voice;
+use crate::works_on::WorksOn;
 
 const LABEL: &str = "settings";
 /// The window (logical pixels): the card, and room for its shadow. Keep in step with Settings.svelte.
 /// It's as tall as the page says, from SHORTEST to TALLEST, and within the screen less MARGIN
 /// (then the fields scroll).
-const WIDTH: f64 = 480.0;
+const WIDTH: f64 = 760.0;
 const TALLEST: f64 = 780.0;
 const SHORTEST: f64 = 240.0;
 const MARGIN: f64 = 40.0;
@@ -49,10 +51,12 @@ const MARGIN: f64 = 40.0;
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(default)]
 pub struct Switches {
-    /// "Speak replies": the Python helper says Natro's replies.
+    /// "Speak replies": she says her replies (voice.rs).
     pub speak: bool,
     /// "Show replies as text": the reply box (reply.rs).
     pub replies: bool,
+    /// "Keep listening after a reply": a few seconds, so he can go on by just talking (dock.rs).
+    pub keep_listening: bool,
     /// "Verbose": every request is kept in logs/verbose (verbose.rs).
     pub verbose: bool,
     /// "Start with Windows": Natro starts when he signs in (startup.rs).
@@ -64,6 +68,7 @@ impl Default for Switches {
         Switches {
             speak: true,
             replies: true,
+            keep_listening: true,
             verbose: false,
             startup: false,
         }
@@ -196,16 +201,18 @@ pub struct Settings {
     path: PathBuf,
     switches: Mutex<Switches>,
     keybinds: Mutex<Keybinds>,
+    works_on: Mutex<WorksOn>,
     /// The keybinds another program holds: they couldn't be taken.
     taken: Mutex<Vec<&'static str>>,
 }
 
-/// settings.json: the switches, and the keybinds under "keybinds".
+/// settings.json: the switches, the keybinds under "keybinds", and where Natro works.
 #[derive(Serialize)]
 struct Saved {
     #[serde(flatten)]
     switches: Switches,
     keybinds: Keybinds,
+    works_on: WorksOn,
 }
 
 #[derive(Serialize, Clone)]
@@ -221,6 +228,7 @@ impl Settings {
             path,
             switches: Mutex::new(switches),
             keybinds: Mutex::new(keybinds),
+            works_on: Mutex::new(WorksOn::default()),
             taken: Mutex::new(Vec::new()),
         }
     }
@@ -234,7 +242,9 @@ impl Settings {
                     log::warn!("settings.json isn't readable ({e}): the defaults instead");
                     Value::Null
                 });
-                Settings::new(path, part(&saved, "switches"), part(&saved["keybinds"], "keybinds"))
+                let settings = Settings::new(path, part(&saved, "switches"), part(&saved["keybinds"], "keybinds"));
+                *settings.works_on.lock().unwrap() = part(&saved["works_on"], "works_on");
+                settings
             }
             Err(_) => {
                 let logs = home.join("logs");
@@ -261,6 +271,19 @@ impl Settings {
 
     pub fn keybinds(&self) -> Keybinds {
         *self.keybinds.lock().unwrap()
+    }
+
+    pub fn works_on(&self) -> WorksOn {
+        *self.works_on.lock().unwrap()
+    }
+
+    /// Where Natro works, changed (works_on.rs): remembered. False if it was so already.
+    pub fn set_works_on(&self, works_on: WorksOn) -> bool {
+        if std::mem::replace(&mut *self.works_on.lock().unwrap(), works_on) == works_on {
+            return false;
+        }
+        self.save();
+        true
     }
 
     fn shown_keybinds(&self) -> Vec<Keybind> {
@@ -303,6 +326,7 @@ impl Settings {
             match name {
                 "speak" => switches.speak = on,
                 "replies" => switches.replies = on,
+                "keep_listening" => switches.keep_listening = on,
                 "verbose" => switches.verbose = on,
                 "startup" => switches.startup = on,
                 _ => return,
@@ -310,7 +334,7 @@ impl Settings {
             *switches
         };
         match name {
-            "speak" => app.state::<Arc<Helper>>().speaking.store(on, Ordering::SeqCst),
+            "speak" => app.state::<Arc<Voice>>().speaking.store(on, Ordering::SeqCst),
             "replies" => app.state::<Reply>().set_on(app, on),
             "verbose" => app.state::<Arc<Verbose>>().set(on),
             _ => {}
@@ -324,6 +348,7 @@ impl Settings {
         let saved = Saved {
             switches: self.switches(),
             keybinds: self.keybinds(),
+            works_on: self.works_on(),
         };
         let text = serde_json::to_string_pretty(&saved).unwrap_or_default();
         match fs::write(&self.path, text + "\n") {
@@ -587,6 +612,7 @@ mod tests {
         let expected = Switches {
             speak: true,
             replies: false,
+            keep_listening: true,
             verbose: true,
             startup: false,
         };
@@ -601,6 +627,7 @@ mod tests {
     fn switches_are_remembered_and_missing_ones_take_their_default() {
         let home = temp("remembered");
         assert_eq!(Settings::load(&home).switches(), Switches::default());
+        assert!(Switches::default().keep_listening, "on from the start, and for a settings.json from before it");
         fs::write(home.join("settings.json"), r#"{"speak": false}"#).unwrap();
         let settings = Settings::load(&home);
         assert_eq!(
@@ -613,6 +640,7 @@ mod tests {
         let all_off = Switches {
             speak: false,
             replies: false,
+            keep_listening: false,
             verbose: false,
             startup: false,
         };
@@ -654,6 +682,23 @@ mod tests {
         let settings = Settings::load(&home);
         assert_eq!(settings.keybinds(), Keybinds::default());
         assert!(!settings.switches().speak);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn where_natro_works_is_remembered_beside_the_switches() {
+        let home = temp("works-on");
+        let settings = Settings::load(&home);
+        assert_eq!(settings.works_on(), WorksOn::Pc);
+        assert!(settings.set_works_on(WorksOn::Phone));
+        assert!(!settings.set_works_on(WorksOn::Phone), "so already");
+        let text = fs::read_to_string(home.join("settings.json")).unwrap();
+        assert!(text.contains(r#""works_on": "phone""#), "{text}");
+        assert_eq!(Settings::load(&home).works_on(), WorksOn::Phone);
+        fs::write(home.join("settings.json"), r#"{"speak": false, "works_on": "tablet"}"#).unwrap();
+        let settings = Settings::load(&home);
+        assert_eq!(settings.works_on(), WorksOn::Pc);
+        assert!(!settings.switches().speak, "the switches stay");
         let _ = fs::remove_dir_all(&home);
     }
 

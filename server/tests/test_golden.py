@@ -1,7 +1,7 @@
 """The golden list: what Natro must always do, checked over her real tools with scripted models.
 
 Nothing here calls a paid API. Model replies are scripted, and every tool is the real one's
-description (name, personal, confirm, changes) with a recorder in place of its run, so these fail
+description (name, confirm, changes, final) with a recorder in place of its run, so these fail
 when a tool is added, renamed or re-flagged wrongly, or when the routing or confirmation code
 changes. Four promises:
 
@@ -11,9 +11,10 @@ changes. Four promises:
 3. When a device is offline, she says so and doesn't pretend.
 4. Each plain request ends in the right tools, on the right device, with the right questions.
 
-When a new tool is added, the lists below make you decide, on purpose, whether it is personal or
-asks first.
+A tool that asks first must be in the list below, so asking is decided on purpose, and a tool whose name
+sounds risky must ask.
 """
+import asyncio
 import re
 
 import pytest
@@ -27,27 +28,16 @@ SECRET = "Tuxa's sister is Nino."
 
 # --- The decisions, written down ----------------------------------------------------------------
 
-# Tools that are neither personal nor ask first. Nothing routes on this since the free Gemini tier, which
-# got only these, went (2026-10-20); the list keeps each tool's flags deliberate.
-NOT_PERSONAL_TOOLS = {
-    "web_search", "weather", "web_page",
-    "say_out_loud",  # says what she was going to reply anyway, or what he asked her to say
-    "pc_open_app", "pc_close_app", "pc_list_open_apps", "pc_open_link",
-    "spotify_play", "spotify_control", "spotify_now_playing", "spotify_like", "spotify_add_to_playlist",
-    "spotify_create_playlist",  # makes an empty one and says only its name and URI: nothing of his is read
-    "phone_open_app", "phone_set_alarm", "phone_set_timer", "phone_next_alarm", "phone_media",
-    "phone_flashlight", "phone_volume",
-}
-
 # Tools that must ask first. Those in OWN_QUESTION ask in their own words, once they know what to ask.
 ASK_FIRST_TOOLS = {
     "pc_force_close_app", "calendar_delete_event", "tasks_delete", "gmail_send", "docs_replace",
     "forget", "notes_delete", "phone_call", "phone_send_sms", "phone_reply_message", "phone_tap_risky",
     "pc_run_command_risky", "pc_act_risky", "pc_browser_act_risky",
     "send_message",  # asks in its own words: whom, where and what, before anything opens
-    "people_forget",
+    "people_forget", "places_forget", "card_forget",
+    "place_action",  # asks in its own words, only for a message: anything else that asks first it refuses
 }
-OWN_QUESTION = {"send_message"}
+OWN_QUESTION = {"send_message", "place_action"}
 
 # A tool whose name says it deletes, sends, calls, kills or pays must be on the list above.
 RISKY_NAME = re.compile(r"delete|send|call|force|replace|risky|forget|pay|buy", re.IGNORECASE)
@@ -62,6 +52,9 @@ PERSONAL_REQUESTS = [
     "what do you know about me", "any new notifications", "remind me to call mom at 6",
     "what's in my Drive", "share the file with Nino", "what is my address", "send my last photo to the PC",
     "brief me", "what's my day like", "give me my morning briefing",
+    "plan my week", "plan next week", "make a plan for the coming week", "find time for the gym this week",
+    "fit in three runs", "am I free on Friday", "review my week", "how did my week go", "summarize this week",
+    "what slipped", "what did I get done", "do my weekly review",
     "what are you working on", "in the background, compare flights to Berlin", "cancel that job",
     "let me know when the bank texts me", "always tell me when Nino emails", "stop the meeting heads-ups",
     "what are you watching for", "convert the newest PDF in my Downloads to Word",
@@ -70,6 +63,14 @@ PERSONAL_REQUESTS = [
     "how do I get to Vake Park from here", "open it in Maps", "where am I",
     "every weekday at 8, brief me", "what routines do I have", "run my morning routine now",
     "message Nino on Instagram: running 10 min late", "DM Nino that I'm outside", "Nino's Instagram is nino.k",
+    "save where I am as the gym", "what places do you know", "forget the gym", "how long to the gym",
+    "remind me to buy milk when I get to Carrefour", "when I leave work, text Nino I'm on my way",
+    "when I arrive at the office tell me what's on today",
+    "save this as my Carrefour card", "show my voucher", "where's my train ticket",
+    "how much money do I have", "what's my balance", "how much did I spend on groceries last month",
+    "can I afford a new laptop", "should I buy this phone", "how do I save up for a car", "am I over budget",
+    "was that purchase a good idea", "rate my spending this month", "what subscriptions do I have",
+    "who owes me money", "when is my salary coming", "what's my net worth", "how much is 2500 lari of my income",
 ]
 
 # Plain requests: Haiku answers them.
@@ -109,9 +110,7 @@ def test_every_tool_is_decided(tmp):
     tools = golden.all_tools(tmp)
     names = {tool.name for tool in tools}
     assert len(names) == len(tools), "two tools share a name"
-    free = {tool.name for tool in tools if not tool.personal and not tool.confirm}
     asks = {tool.name for tool in tools if tool.confirm}
-    assert free == NOT_PERSONAL_TOOLS, f"tools that aren't personal changed: {free ^ NOT_PERSONAL_TOOLS}"
     assert asks == ASK_FIRST_TOOLS, f"ask-first tools changed: {asks ^ ASK_FIRST_TOOLS}"
 
 
@@ -126,20 +125,6 @@ def test_the_phones_tools_are_all_read(tmp):
     names = {tool.name for tool in golden.all_tools(tmp) if tool.source == "phone"}
     assert {"phone_call", "phone_send_sms", "phone_tap_risky", "phone_screen", "phone_flashlight"} <= names
     assert len(names) >= 18
-
-
-def test_screen_and_message_tools_are_personal(tmp):
-    personal = {tool.name for tool in golden.all_tools(tmp) if tool.personal}
-    assert {"phone_screen", "phone_tap", "phone_type_text", "phone_read_sms", "phone_notifications",
-            "phone_contacts", "phone_reply_message", "pc_read_file", "pc_search_files", "pc_search_file_contents", "pc_open_file",
-            "spotify_library", "remember", "gmail_read", "gmail_search", "calendar_events", "copy_to_device",
-            "phone_search_files", "pc_run_command", "pc_run_command_risky", "pc_screen", "pc_find", "pc_act",
-            "pc_act_risky", "pc_switch_window", "pc_wait_for", "pc_screenshot", "phone_screenshot",
-            "queue_for_device", "remind", "reminders_list", "reminders_cancel", "briefing", "start_job",
-            "jobs_list", "jobs_cancel", "routine_add", "routines_list", "routines_cancel", "routines_run", "watch", "watchers_list", "watchers_cancel", "convert_file", "edit_pdf", "history_search", "travel_time", "travel_routes", "travel_plan", "phone_location",
-            "phone_open_maps", "pc_browser_open",
-            "pc_browser_page", "pc_browser_act", "pc_browser_act_risky", "pc_browser_tabs", "send_message",
-            "people_save", "people_forget"} <= personal
 
 
 def test_the_devices_sending_is_never_offered(tmp):
@@ -223,6 +208,102 @@ def test_sending_a_message_asks_in_its_own_words_and_no_stops_it(tmp):
         assert len(world.calls) == answer
 
 
+def place_world(tmp):
+    """Natro with the real send_message and place_action, a saved place, and a phone that records what it's asked."""
+    from natro_agent.people import People
+    from natro_agent.place_actions import PlaceActions
+    from natro_agent.places import Places
+    from natro_agent.sending import Sending
+
+    people = People(tmp / "people.md")
+    people.seen("instagram", "Nino Kapanadze", "3402")
+    phone = golden.Recording("phone", "phone", [{"name": "send_message", "hidden": True},
+                                                *golden.phone_specs()], [])
+    places = Places(tmp / "places.json", {"phone": phone})
+    places.items.append({"id": "pl1", "name": "Work", "names": [], "lat": 41.7, "lng": 44.8, "radius": 150, "address": ""})
+    told = []
+    actions = PlaceActions(tmp / "place_actions.json", places)
+    actions.sending, actions.tell = Sending(people, {"phone": phone}), told.append
+
+    def world_for(*claude):
+        world = World(tmp, claude=[*claude, message(text("OK."))])
+        world.agent.own_tools = [tool for tool in world.agent.own_tools if tool.name != "place_action"] + actions.tools()
+        phone.all_calls = world.calls
+        phone.call_tool = lambda name, args: phone._run(name, args)
+        actions.offered = world.agent.offered_tools
+        return world
+
+    async def fire():
+        places._event(phone, {"id": "pl1", "event": "left"})
+        await asyncio.gather(*actions._tasks)
+
+    return world_for, actions, told, fire
+
+
+def set_message(words):
+    return message(tool_use("t1", "place_action", place="Work", on="leave", tool="send_message", every_time=True,
+                            args={"to": "Nino", "text": words}), stop="tool_use")
+
+
+QUESTION = 'When you leave Work, I\'ll send Nino Kapanadze on Instagram: "{}" (every time). OK?'
+
+
+def test_a_message_at_a_place_no_keeps_nothing(tmp):
+    world_for, actions, told, fire = place_world(tmp)
+    world = world_for(set_message("On my way."))
+    world.ask("when I leave work, message Nino I'm on my way", answer=False)
+    assert [question for question, _ in world.owner.questions] == [QUESTION.format("On my way.")]
+    assert actions.items == []
+    run(fire())
+    assert world.calls == [] and told == []
+
+
+def test_a_message_at_a_place_a_yes_sends_once_it_fires_asking_nothing_then(tmp):
+    world_for, actions, told, fire = place_world(tmp)
+    world = world_for(set_message("On my way."))
+    world.ask("when I leave work, message Nino I'm on my way", answer=True)
+    assert len(world.owner.questions) == 1 and world.calls == []  # nothing goes until the place fires
+    run(fire())
+    assert len(world.owner.questions) == 1  # nothing's asked then
+    (name, args), = world.calls
+    assert name == "phone_send_message" and args["text"] == "On my way." and args["name"] == "Nino Kapanadze"
+    assert told == ['Sent Nino Kapanadze "On my way.": you left Work.']
+    run(fire())  # walking in and out, within the hour
+    assert len(world.calls) == 1
+
+
+def test_a_message_at_a_place_changed_words_ask_again(tmp):
+    world_for, actions, _, _ = place_world(tmp)
+    for words in ("On my way.", "Running late."):
+        world = world_for(set_message(words))
+        world.ask(f"when I leave work, message Nino: {words}", answer=True)
+        assert [question for question, _ in world.owner.questions] == [QUESTION.format(words)]
+    assert [item["call"]["text"] for item in actions.items] == ["On my way.", "Running late."]
+
+
+@pytest.mark.parametrize("tool_name", sorted(ASK_FIRST_TOOLS - {"send_message", "place_action", "phone_send_sms"}))
+def test_nothing_else_that_asks_first_can_be_set_at_a_place(tmp, tool_name):
+    world_for, actions, told, fire = place_world(tmp)
+    world = world_for(message(tool_use("t1", "place_action", place="Work", tool=tool_name, args={}), stop="tool_use"))
+    world.ask("when I leave work, do the risky thing", answer=True)
+    assert world.owner.questions == [] and actions.items == []  # refused, with nothing asked and nothing kept
+    assert "can't do that" in world.claude.requests[1]["messages"][-1]["content"][0]["content"]
+    run(fire())
+    assert world.calls == []
+
+
+def test_a_text_at_a_place_asks_too(tmp):
+    world_for, actions, told, fire = place_world(tmp)
+    world = world_for(message(tool_use("t1", "place_action", place="Work", on="leave", tool="phone_send_sms",
+                                       args={"number": "555123", "text": "Late."}), stop="tool_use"))
+    world.ask("when I leave work, text 555123 late", answer=True)
+    assert [question for question, _ in world.owner.questions] == [
+        'When you leave Work, I\'ll text 555123: "Late." (once). OK?']
+    run(fire())
+    assert world.calls == [("phone_send_sms", {"number": "555123", "text": "Late."})]
+    assert told == ['Texted 555123 "Late.": you left Work.'] and actions.items == []  # once
+
+
 @pytest.mark.parametrize("tool_name", sorted(ASK_FIRST_TOOLS - OWN_QUESTION))
 def test_risky_tool_runs_once_after_a_yes(tmp, tool_name):
     world = World(tmp, claude=[message(text("I'll do that."), tool_use("t1", tool_name, x="1"), stop="tool_use"),
@@ -257,7 +338,8 @@ def test_a_few_changes_just_run(tmp):
 
 def test_reading_and_playing_never_ask(tmp):
     reads = [("calendar_events", {}), ("gmail_search", {"query": "x"}), ("spotify_play", {"query": "Yellow"}),
-             ("pc_open_app", {"app": "Chrome"}), ("phone_flashlight", {"on": True}), ("phone_screen", {})]
+             ("pc_open_app", {"app": "Chrome"}), ("phone_flashlight", {"on": True}), ("phone_screen", {}),
+             ("finance_now", {}), ("financist", {"question": "can I afford a laptop?"})]
     for name, args in reads:
         world = World(tmp, claude=[message(tool_use("t1", name, **args), stop="tool_use"), message(text("Done."))])
         world.ask("go on")
@@ -354,6 +436,8 @@ JOURNEYS = [
      [("phone_search_files", {"kind": "image"}), SEND_PHOTO], "haiku"),
     ("remind me in 20 minutes to check the oven", [REMIND_OVEN], [REMIND_OVEN], "sonnet"),
     ("brief me", [("briefing", {})], [("briefing", {})], "sonnet"),
+    ("plan my week", [("week_plan", {})], [("week_plan", {})], "sonnet"),
+    ("how did my week go", [("week_review", {})], [("week_review", {})], "sonnet"),
     ("in the background, find three flats under 600 dollars", [FLATS_JOB], [FLATS_JOB], "sonnet"),
     ("every weekday at 8, brief me", [MORNING_ROUTINE], [MORNING_ROUTINE], "sonnet"),
     ("always tell me when Nino emails", [WATCH_NINO], [WATCH_NINO], "sonnet"),
@@ -369,6 +453,10 @@ JOURNEYS = [
     ("say on the PC that dinner's ready", [DINNER_ON_PC], [DINNER_ON_PC], "haiku"),
     ("message Nino on Instagram: running 10 min late", [MESSAGE_NINO], [MESSAGE_NINO], "sonnet"),
     ("message Nino I'm running late", [MESSAGE_NINO_LATE], [MESSAGE_NINO_LATE], "sonnet"),
+    ("work on the phone", [], [("work_on", {"device": "phone"})], "quick"),
+    ("make the PC work on the phone", [], [("work_on", {"device": "phone", "for": "pc"})], "quick"),
+    ("from now on, do what I ask on the PC on my phone", [("work_on", {"device": "phone"})],
+     [("work_on", {"device": "phone"})], "haiku"),
 ]
 
 
@@ -386,6 +474,53 @@ def test_journey(tmp, request_text, script, expected, route):
     assert world.calls == expected
     assert world.owner.questions == []
     assert reply.model == {"quick": "none (quick)", "haiku": HAIKU, "sonnet": SONNET}[route]
+
+
+REPORT = "C:/Users/Tuxa/Documents/report.docx"
+THIS_REQUESTS = [
+    ("convert this to a PDF", ("convert_file", {"from_device": "pc", "path": REPORT, "to": "pdf"}), SONNET, 1),
+    ("send this to my phone", ("copy_to_device", {"from_device": "pc", "path": REPORT, "to_device": "phone"}), SONNET, 2),
+    ("summarize this", ("pc_read_file", {"path": REPORT}), SONNET, 2),
+    ("what's this song?", None, HAIKU, 1),
+]
+
+
+@pytest.mark.parametrize("request_text, tool, model, model_calls", THIS_REQUESTS)
+def test_this_needs_no_naming_and_no_model_call_to_find_out(tmp, request_text, tool, model, model_calls):
+    script = [] if tool is None else [message(tool_use("t1", tool[0], **tool[1]), stop="tool_use")]
+    world = World(tmp, claude=[*script, message(text("Done."))])
+    reply = run(world.agent.respond(request_text, world.agent.devices["pc"]))
+    assert world.calls == [("pc_this", {}), *([tool] if tool else [])]  # asked by the server, before any model
+    assert "[in front of him on his PC · Done (pc_this).]" in world.claude.requests[0]["messages"][0]["content"]
+    assert len(world.claude.requests) == model_calls and reply.model == model
+
+
+def test_a_quick_command_that_says_this_runs_as_it_did(tmp):
+    world = World(tmp)
+    reply = run(world.agent.respond("skip this song", world.agent.devices["pc"]))
+    assert reply.model == "none (quick)" and world.calls == [("spotify_control", {"action": "next"})]
+
+
+def test_a_request_that_doesnt_say_this_asks_the_device_nothing(tmp):
+    world = World(tmp, claude=[message(text("Paris."))])
+    run(world.agent.respond("what's the capital of France", world.agent.devices["pc"]))
+    assert world.calls == []
+
+
+def test_a_plan_is_added_on_his_yes_with_no_more_model_calls(tmp):
+    blocks = {"blocks": [{"title": f"Block {day}", "start": f"2026-11-{day}T18:00"} for day in range(9, 16)]}
+    world = World(tmp, claude=[
+        message(tool_use("t1", "week_plan"), stop="tool_use"),
+        message(text("Monday at six, the gym. Should I add them?")),
+        message(tool_use("t2", "week_plan_add", **blocks), stop="tool_use")])
+    assert world.ask("plan my week").text == "Monday at six, the gym. Should I add them?"
+    assert world.calls == [("week_plan", {})]
+    reply = world.ask("yes")
+    assert world.calls[1] == ("week_plan_add", blocks)
+    assert reply.text == "Done (week_plan_add)."  # its first line
+    assert len(world.claude.requests) == 3
+    assert reply.model == SONNET
+    assert world.owner.questions == []  # all of them, on the yes he already gave
 
 
 def test_quick_music_commands_never_need_a_model(tmp):

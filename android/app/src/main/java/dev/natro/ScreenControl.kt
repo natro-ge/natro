@@ -31,6 +31,9 @@ class ScreenControl : AccessibilityService() {
     // What each element was when the screen was read, and whose screen it was: to find it again.
     private var seen: List<Seen> = emptyList()
     private var screenApp = ""
+    // The last app in front other than Natro, for "this" asked in her own chat. Only its name is kept.
+    @Volatile var lastApp = ""
+        private set
 
     override fun onServiceConnected() {
         current = this
@@ -41,7 +44,11 @@ class ScreenControl : AccessibilityService() {
         return super.onUnbind(intent)
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+        val app = event.packageName?.toString().orEmpty()
+        if (app.isNotEmpty() && app != packageName && app != SYSTEM_UI) lastApp = app
+    }
 
     override fun onInterrupt() {}
 
@@ -74,6 +81,14 @@ class ScreenControl : AccessibilityService() {
             Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).roundToInt(), (bitmap.height * scale).roundToInt(), true)
         } else bitmap
         return ByteArrayOutputStream().also { small.compress(Bitmap.CompressFormat.JPEG, SHOT_QUALITY, it) }.toByteArray()
+    }
+
+    /** The app in front, and what its address bar says if it's a browser: nothing else of the screen. */
+    fun inFront(): Pair<String?, String?> {
+        val root = rootInActiveWindow ?: return null to null
+        val app = root.packageName?.toString()
+        val bar = InFront.ADDRESS_BARS[app]?.let { root.findAccessibilityNodeInfosByViewId(it).firstOrNull() }
+        return app to bar?.text?.toString()
     }
 
     fun describe(): String {
@@ -211,6 +226,7 @@ class ScreenControl : AccessibilityService() {
     }
 
     companion object {
+        private const val SYSTEM_UI = "com.android.systemui"
         private const val MAX_ELEMENTS = 150
         // Screenshots: the longest side at most this, as JPEG, so one is a few hundred KB.
         private const val SHOT_PIXELS = 1920

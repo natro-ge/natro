@@ -35,6 +35,8 @@ class NatroApplication : Application() {
         super.onCreate()
         Prefs.init(this)
         Natro.init(this)
+        Cards.init(this)
+        Places.init(this)
         Transfers.init(this)
         Bubble.init(this)
     }
@@ -46,6 +48,7 @@ class AppActions(
     val askMicrophone: () -> Unit,
     val setWakeWord: (Boolean) -> Unit,
     val setPower: (Boolean) -> Unit,
+    val setPlaces: (Boolean) -> Unit,
 )
 
 /**
@@ -80,6 +83,10 @@ class MainActivity : ComponentActivity() {
             }
         },
         setPower = { on -> Power.set(this, on) },
+        setPlaces = { on ->
+            Prefs.setPlaces(on)
+            if (on && !granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION)) askLocationAlways()
+        },
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -99,6 +106,7 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         Natro.onScreen.value = true
+        Natro.endListeningForMore()  // here he types, and the input would make way for listening
         // On screen, Android lets the service take the microphone: "OK Natro" starts again if it was paused.
         if (Prefs.power.value) NatroService.start(this)
     }
@@ -144,6 +152,10 @@ class MainActivity : ComponentActivity() {
                 granted(Manifest.permission.ACCESS_FINE_LOCATION), essential = false, button = "Allow") {
                 askPermissions.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
             },
+            SetupStep("Location all the time", "For your places: so Natro knows you got there or left, even after the phone restarts.",
+                granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION), essential = false, button = "Allow") {
+                askLocationAlways()
+            },
             SetupStep("Notification access", "For \"what did I miss?\".",
                 packageName in NotificationManagerCompat.getEnabledListenerPackages(this), essential = false, button = "Open") {
                 startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS).putExtra(
@@ -162,6 +174,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun granted(permission: String) = checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+
+    /** Android asks for the location first, then in a second step (its own settings page) for all the time. */
+    private fun askLocationAlways() {
+        if (granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
+            askPermissions.launch(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION))
+        } else {
+            askPermissions.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+        }
+    }
 
     companion object {
         const val LISTEN = "dev.natro.LISTEN"

@@ -1,8 +1,7 @@
 //! The talk key's presses and releases as what to do with the recording.
 //!
 //! Hold it and talk, release to send; or tap it and talk hands-free (recording
-//! stops when you stop talking), tap again to stop sooner. The same rules as
-//! the Python tray app's `PressAndHold` (desktop/helper/natro_pc/hotkey.py).
+//! stops when you stop talking), tap again to stop sooner.
 
 use std::time::{Duration, Instant};
 

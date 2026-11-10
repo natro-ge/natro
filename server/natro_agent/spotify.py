@@ -6,8 +6,7 @@ VPS, which refreshes it and saves it back. The tools are offered only when that
 file exists. Spotify ends a sign-in six months after it was made (refreshing
 doesn't extend it), so Natro mentions it in the last two weeks.
 
-Playing, controlling and liking music is not personal, nor is making a playlist
-and filling it; the list of his playlists and his listening history are. Nothing here deletes, so nothing asks first.
+Nothing here deletes, so nothing asks first.
 
 Filling a playlist never touches playback: songs are found by search (studio
 versions before live ones), many in one call, and added without playing them.
@@ -27,7 +26,10 @@ import time
 from datetime import date, datetime, timedelta
 
 from natro_agent.config import ROOT, timezone
+from natro_agent.identity import KNOWN_DEVICES
+from natro_agent.tool_calls import ASKER
 from natro_agent.tools import Tool, ToolError
+from natro_agent.works_on import works_where
 
 API = "https://api.spotify.com/v1"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -47,8 +49,12 @@ SEARCHES_AT_ONCE = 5
 # A playlist's songs read to keep from adding one twice (a page is 50).
 MAX_CHECKED = 500
 VOLUME_STEP = 10
-# A Spotify app that just started (say, opened on the PC by Natro) shows up as a device after a few seconds.
+# A Spotify app that just started (opened by Natro) shows up as a device after a few seconds.
 START_SECONDS = 10
+# For a device to say it has opened Spotify.
+OPEN_SECONDS = 15
+# His devices, by what Spotify calls their kind.
+HIS_DEVICES = {"computer": "pc", "smartphone": "phone"}
 KINDS = {"track": "track", "album": "album", "artist": "artist", "playlist": "playlist", "podcast": "show"}
 # Spotify's made-for-you playlists, which differ per listener and can't be looked up.
 MADE_FOR_YOU = re.compile(r"(my )?(on repeat|repeat rewind|discover weekly|release radar|daily mix( \d+)?|daylist|"
@@ -257,9 +263,12 @@ def studio_version(found, query):
 
 
 class Spotify:
+    """online: name -> device, while connected (the agent's, set in setup.py): where Spotify can be opened."""
+
     def __init__(self, api, start_seconds=START_SECONDS):
         self.api = api
         self.start_seconds = start_seconds
+        self.online = {}
         self._me = None
 
     async def _user_id(self):
@@ -273,13 +282,29 @@ class Spotify:
         return (await self.api.call("GET", "/me/player/devices")).get("devices", [])
 
     async def _devices_soon(self, enough):
-        """The devices, waiting up to start_seconds for enough(devices) while Spotify may be starting."""
+        """The devices, waiting up to start_seconds for enough(devices) while Spotify is starting."""
         deadline = time.monotonic() + self.start_seconds
         while True:
             devices = await self.devices()
             if enough(devices) or time.monotonic() >= deadline:
                 return devices
             await asyncio.sleep(1)
+
+    async def _open(self, name):
+        """Opens Spotify on his device called name."""
+        device = self.online.get(name)
+        if device is None:
+            raise ToolError(f"Spotify isn't open on his {KNOWN_DEVICES.get(name, name)}, which is offline.")
+        try:
+            await asyncio.wait_for(device.call_tool("open_app", {"app": "Spotify"}), OPEN_SECONDS)
+        except asyncio.TimeoutError:
+            raise ToolError(f"Spotify didn't open on his {device.label} in time.") from None
+
+    def _where_he_works(self):
+        """The device to open Spotify on when he names none: where the request works, else the first of his online."""
+        asker = ASKER.get()
+        name = works_where(asker, self.online) if asker else None
+        return name if name in self.online else next((known for known in KNOWN_DEVICES if known in self.online), None)
 
     async def _find_device(self, name):
         wanted = DEVICE_TYPES.get(plain(name))
@@ -288,18 +313,28 @@ class Spotify:
             return next((d for d in devices if (wanted and d["type"].lower() == wanted)
                          or plain(name) in plain(d["name"])), None)
 
-        devices = await self._devices_soon(match)
+        devices = await self.devices()
+        if not match(devices) and wanted in HIS_DEVICES:
+            await self._open(HIS_DEVICES[wanted])
+            devices = await self._devices_soon(match)
         if found := match(devices):
             return found
         open_on = ", ".join(f"{d['name']} ({d['type'].lower()})" for d in devices) or "no device"
         raise ToolError(f"Spotify isn't open on a device called {name!r}. Open Spotify devices: {open_on}.")
 
     async def _fallback_device(self):
-        """Where to play when nothing is playing: his computer, else any open Spotify."""
-        devices = await self._devices_soon(bool)
+        """Where to play when nothing is playing: his computer, else any open Spotify; with none open, where he works,
+        opened there first. It was all failing, opening and trying again before (2026-10-24 to 31: about 25 s)."""
+        devices = await self.devices()
         if not devices:
-            raise ToolError("Spotify isn't open on any of his devices, so there's nothing to play on. If his PC is "
-                            "online, open Spotify there first, then play.")
+            name = self._where_he_works()
+            if name is None:
+                raise ToolError("Spotify isn't open on any of his devices, and they're offline, so there's nothing to "
+                                "play on.")
+            await self._open(name)
+            devices = await self._devices_soon(bool)
+        if not devices:
+            raise ToolError("Spotify was opened but hasn't shown up yet: try once more in a few seconds.")
         return next((d for d in devices if d["type"].lower() == "computer"), devices[0])
 
     async def _player(self, method, path, params=None, body=None, device=None, start=False):
@@ -613,13 +648,12 @@ class Spotify:
         return "\n".join(lines) or "He has no playlists."
 
     def tools(self):
-        def tool(name, description, properties, run, required=(), personal=False, final=False):
+        def tool(name, description, properties, run, required=(), final=False):
             async def call(args):
                 first, _, rest = (await run(**args)).partition("\n")
                 # On the first line, which may be the whole spoken reply (final tools).
                 return first + self.api.expiry_note() + (f"\n{rest}" if rest else "")
-            return Tool(name=name, description=description, run=call, source="spotify", personal=personal,
-                        final=final,
+            return Tool(name=name, description=description, run=call, source="spotify", final=final,
                         input_schema={"type": "object", "properties": properties, "required": list(required)})
 
         uri = {"type": "string", "description": "A spotify: URI or an open.spotify.com link."}
@@ -629,7 +663,8 @@ class Spotify:
                  "kind playlist, his own playlists first) and plays the best match; the result names it and other "
                  "matches. With uri: plays exactly that. kind liked_songs plays his Liked Songs. With nothing to "
                  "play: resumes, or moves playback to device. Plays where Spotify is playing now; if it's playing "
-                 "nowhere, on his PC if Spotify is open there, else any open Spotify. queue: add a song to the "
+                 "nowhere, on his PC if Spotify is open there, else any open Spotify; if it's open nowhere, it opens "
+                 "Spotify on the device you work on and plays there. queue: add a song to the "
                  "play queue instead. Queueing is not adding to a playlist: for his playlists use "
                  "spotify_add_to_playlist, which needs nothing played or queued.",
                  {"query": {"type": "string", "description": "What to search for, e.g. \"Yellow Coldplay\"."},
@@ -665,8 +700,7 @@ class Spotify:
                   "public": {"type": "boolean", "description": "Default false."}},
                  self.create_playlist, ["name"]),
             tool("spotify_library", "List his Spotify playlists, or what he played recently.",
-                 {"what": {"type": "string", "enum": ["playlists", "recently_played"]}}, self.library,
-                 personal=True),
+                 {"what": {"type": "string", "enum": ["playlists", "recently_played"]}}, self.library),
         ]
 
 

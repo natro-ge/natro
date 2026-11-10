@@ -1,5 +1,6 @@
 """Converting his files: what converts to what, the converters' commands, pictures for real, and slow ones."""
 import asyncio
+import re
 import shutil
 from pathlib import Path
 
@@ -70,6 +71,27 @@ def test_formats_by_name():
     assert [target(name) for name in ("Word", ".PDF", "jpeg", "excel", "mp3")] == ["docx", "pdf", "jpg", "xlsx", "mp3"]
     assert [kind_of(ext) for ext in ("docx", "csv", "pptx", "pdf", "md", "heic", "m4a", "mov", "exe")] == [
         "writer", "calc", "impress", "pdf", "markdown", "picture", "sound", "video", None]
+
+
+def test_the_phones_list_of_formats_is_the_same():
+    kotlin = (Path(__file__).parents[2] / "android/app/src/main/java/dev/natro/Conversions.kt").read_text("utf-8")
+    table = {group: {key: set(re.findall(r'"(\w+)"', values)) for key, values in
+                     re.findall(r'"(\w+)" to (?:setOf|listOf)\(([^)]*)\)', re.search(rf"val {group} = mapOf\((.*?)\n    \)", kotlin, re.S).group(1))}
+             for group in ("KINDS", "TARGETS")}
+    assert table["TARGETS"] == convert.TARGETS
+    assert table["KINDS"] == {"writer": convert.WRITER, "calc": convert.CALC, "impress": convert.IMPRESS, "pdf": {"pdf"},
+                              "markdown": {"md"}, "picture": convert.PICTURES, "sound": convert.SOUNDS,
+                              "video": convert.VIDEOS}
+    assert dict(re.findall(r'"(\w+)" to "(\w+)"', re.search(r"val SAME = mapOf\((.*?)\)", kotlin).group(1))) == convert.SAME
+
+
+def test_an_old_office_file_can_become_a_new_one():
+    for name, wanted in (("a.doc", "docx"), ("a.xls", "xlsx"), ("a.ppt", "pptx")):
+        Converter.check(name, target(wanted))
+    with pytest.raises(ToolError, match="is a JPG already"):
+        Converter.check("a.jpeg", target("jpg"))
+    with pytest.raises(ToolError, match="is a DOCX already"):
+        Converter.check("a.docx", target("Word"))
 
 
 def test_what_cant_be_done_is_refused_before_the_file_comes(tmp_path):
@@ -187,10 +209,10 @@ def test_a_slow_one_goes_on_after_her_answer(tmp_path, monkeypatch):
     assert told == ["The conversion didn't work: ffmpeg took longer than 20 minutes, so it was stopped."]
 
 
-def test_the_tool_is_personal_and_its_result_is_the_reply(tmp_path):
+def test_the_tool_runs_at_once_and_its_result_is_the_reply(tmp_path):
     converter, _, _ = make(tmp_path)
     tool, = converter.tools()
-    assert tool.name == "convert_file" and tool.personal and not tool.confirm and tool.final
+    assert tool.name == "convert_file" and not tool.confirm and tool.final
 
 
 @pytest.mark.skipif(not shutil.which("soffice"), reason="LibreOffice isn't installed here (it is on the VPS)")

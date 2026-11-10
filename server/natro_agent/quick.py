@@ -9,10 +9,16 @@ like:
   email".
 - the PC's everyday commands ("lock the PC", "dark mode on", "open Downloads",
   "open Bluetooth settings"), as fixed PowerShell lines for pc_run_command
-  (each one on its harmless list). Said on the PC, or naming it ("... on my
-  PC"): on the phone, "dark mode on" may mean the phone.
+  (each one on its harmless list). Working on the PC (said there, or on the
+  phone with its switch set to the PC: works_on.py), or naming it ("... on my
+  PC"): otherwise "dark mode on" may mean the phone.
+- where Natro works ("work on the phone", "switch to the PC", "work here
+  again", "make the PC work on the phone"), for work_on. "Use the phone" counts
+  only outside a conversation, where it can't answer "on which device?".
 """
+import json
 import re
+import time
 
 MUSIC = r"(the |my )?(music|song|track|spotify|playback)"
 SONG = r"(song|track)"
@@ -65,6 +71,12 @@ PC_COMMANDS = [
 ]
 ON_THE_PC = r"( on (the |my )?(pc|computer|laptop))?"
 NAMES_THE_PC = re.compile(r"\b(pc|computer|laptop)\b")
+# The owner's words for each device, and for where Natro works from now on (work_on).
+DEVICE_WORDS = {"pc": r"(the |my |your )?(pc|computer|laptop)", "phone": r"(the |my |your )?(phone|mobile)"}
+FROM_NOW_ON = r"( (from now on|for now|instead|again))?"
+WORK_ON = r"(start )?work(ing)? (on|with|from)|switch( back| over)? to|do (things|everything) on"
+THIS = r"(start )?work(ing)? (here|on this (device|pc|computer|laptop|phone))|switch( back)? to this (device|pc|" \
+       r"computer|laptop|phone)"
 
 LEADING = re.compile(r"^((ok|okay|hey) )?natro |^(ok|okay) |^(please|can you|could you|would you) ")
 TRAILING = re.compile(r" (please|now|natro|for me)$")
@@ -78,15 +90,30 @@ def words(text):
     return text
 
 
-def command(text, in_conversation, from_pc=False):
-    """(tool name, arguments) for a quick command, or None. from_pc: the request was made on the PC."""
+def command(text, in_conversation, on_pc=False, here=""):
+    """(tool name, arguments) for a quick command, or None. on_pc: the request works on the PC (made there, or its
+    switch points there: works_on.py). here: the device it was made on ("pc", "phone")."""
     said = words(text)
     for pattern, tool, args, bare in COMMANDS:
         if re.fullmatch(pattern, said) and not (bare and in_conversation):
             return tool, dict(args)
     for pattern, line in PC_COMMANDS:
-        if re.fullmatch(f"(?:{pattern}){ON_THE_PC}", said) and (from_pc or NAMES_THE_PC.search(said)):
+        if re.fullmatch(f"(?:{pattern}){ON_THE_PC}", said) and (on_pc or NAMES_THE_PC.search(said)):
             return "pc_run_command", {"command": line}
+    return work_on(said, in_conversation, here)
+
+
+def work_on(said, in_conversation, here):
+    """work_on's arguments for the owner's words on where Natro works from now on, or None."""
+    for device, named in DEVICE_WORDS.items():
+        if re.fullmatch(f"({WORK_ON}) {named}{FROM_NOW_ON}", said) or (
+                not in_conversation and re.fullmatch(f"use {named}{FROM_NOW_ON}", said)):
+            return "work_on", {"device": device}
+        for whose, other in DEVICE_WORDS.items():
+            if re.fullmatch(f"(make|set|have|let) {other} (to )?work(ing)? on {named}{FROM_NOW_ON}", said):
+                return "work_on", {"device": device, "for": whose}
+    if here in DEVICE_WORDS and re.fullmatch(f"({THIS}){FROM_NOW_ON}", said):
+        return "work_on", {"device": here}
     return None
 
 
@@ -119,3 +146,18 @@ def simple(text):
     said = words(command)
     return len(said.split()) <= 12 and not re.search(r"\b(and|then|also|after|before|plus|but)\b", said) \
         and not re.search(r"[,;]", command) and not ANOTHER.search(content)
+
+
+def turn(request, name, args, result, said, offered):
+    """A quick command (run with no model) as Claude's conversation keeps it: the call and its result, then her
+    words. Her words alone ("Paused.", with no call before them) read to Claude as a claim she never acted on,
+    and she'd "correct" it later by doing it again (2026-10-20). offered: the tool is in the conversation's list
+    (a call to one that isn't would be refused)."""
+    if not offered:
+        return [{"role": "user", "content": request},
+                {"role": "assistant", "content": f"{said} [ran {name} {json.dumps(args)}]"}]
+    call = f"toolu_quick_{int(time.time() * 1000):x}"
+    return [{"role": "user", "content": request},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": call, "name": name, "input": args}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call, "content": result}]},
+            {"role": "assistant", "content": said}]

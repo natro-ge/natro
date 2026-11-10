@@ -102,6 +102,6 @@ def test_what_it_needs(tmp_path):
         search(history, start="last Tuesday")
 
 
-def test_the_tool_is_personal(tmp_path):
+def test_the_tool_runs_at_once(tmp_path):
     tool, = History(tmp_path).tools()
-    assert tool.name == "history_search" and tool.personal and not tool.confirm
+    assert tool.name == "history_search" and not tool.confirm

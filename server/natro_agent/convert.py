@@ -63,6 +63,8 @@ TARGETS = {
 ALIASES = {"jpeg": "jpg", "tif": "tiff", "word": "docx", "doc": "docx", "excel": "xlsx", "xls": "xlsx",
            "powerpoint": "pptx", "ppt": "pptx", "text": "txt", "htm": "html", "markdown": "md", "heif": "heic",
            "aiff": "wav", "vorbis": "ogg"}
+# Two extensions for one format, in a file's name (a .doc isn't a .docx: it can become one).
+SAME = {"jpeg": "jpg", "tif": "tiff", "htm": "html", "heif": "heic"}
 # LibreOffice's export filters where the bare extension isn't enough.
 FILTERS = {"txt": "txt:Text (encoded):UTF8", "csv": "csv:Text - txt - csv (StarCalc):44,34,76,1"}
 PILLOW_FORMATS = {"jpg": "JPEG", "png": "PNG", "webp": "WEBP", "gif": "GIF", "bmp": "BMP", "tiff": "TIFF",
@@ -170,7 +172,7 @@ class Converter:
                                                         "xlsx, jpg, png, mp3, mp4..."},
                 "to_device": {**device, "description": "Where the result goes; default the device the file is on."},
             }, "required": ["from_device", "path", "to"]},
-            self.convert, "natro", personal=True, final=True)]
+            self.convert, "natro", final=True)]
 
     async def convert(self, args):
         source = args.get("from_device")
@@ -195,10 +197,11 @@ class Converter:
         kind = kind_of(have)
         if kind is None:
             raise ToolError(f"Natro can't convert .{have or '?'} files.")
-        if wanted == target(have):
+        same = SAME.get(have, have)
+        if wanted == same:
             raise ToolError(f"{name} is a {wanted.upper()} already.")
         if wanted not in TARGETS[kind]:
-            raise ToolError(f"A .{have} file can become: {', '.join(sorted(TARGETS[kind] - {target(have)}))}.")
+            raise ToolError(f"A .{have} file can become: {', '.join(sorted(TARGETS[kind] - {same}))}.")
 
     def _later(self, task, failed):
         """A job that went on after Natro answered: he's told if it failed."""

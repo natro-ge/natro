@@ -27,9 +27,8 @@ def test_memory_remembers_and_forgets(tmp_path):
         memory.forget("dog")
 
 
-def test_memory_tools_are_personal_and_forget_asks():
+def test_only_forget_asks():
     remember, forget = Memory(None).tools()
-    assert remember.personal and forget.personal
     assert not remember.confirm and forget.confirm
 
 
@@ -64,7 +63,6 @@ def test_note_titles_stay_inside_the_folder(tmp_path):
 def test_notes_tools():
     tools = {tool.name: tool for tool in Notes(None).tools()}
     assert set(tools) == {"notes_list", "notes_read", "notes_search", "notes_write", "notes_edit", "notes_delete"}
-    assert all(tool.personal for tool in tools.values())
     assert [name for name, tool in tools.items() if tool.confirm] == ["notes_delete"]
 
 
@@ -79,7 +77,7 @@ def test_web_search_sends_a_basic_search_and_formats_results():
 
     search = WebSearch(key="tvly-test", post=fake_post)
     (tool,) = search.tools()
-    assert tool.name == "web_search" and not tool.personal and not tool.confirm
+    assert tool.name == "web_search" and not tool.confirm
     text = run(tool.run({"query": "weather in Tbilisi", "topic": "news", "time_range": "day"}))
     assert text == ("Summary: Sunny, 24°C.\n1. Tbilisi weather (https://example.com/w, 2026-10-05)\n"
                     "   Sunny all day.")

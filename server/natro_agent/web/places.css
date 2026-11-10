@@ -1,0 +1,80 @@
+/* The Places page, on top of style.css's frame and cards. */
+.places { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+.places-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.places-link { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--muted); }
+
+/* The map, with the search over its top. */
+.map-card { position: relative; padding: 0; overflow: hidden; }
+#map { width: 100%; height: min(72vh, 680px); background: var(--sunken); }
+.map-search { position: absolute; z-index: 2; top: 12px; left: 12px; right: 12px; max-width: 420px; }
+.map-search .search { display: flex; background: var(--surface); box-shadow: var(--shadow); }
+.found {
+  margin-top: 6px; max-height: 240px; overflow-y: auto; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--surface); box-shadow: var(--shadow);
+}
+.found button {
+  display: block; width: 100%; padding: 9px 12px; border: 0; border-bottom: 1px solid var(--line); background: none;
+  text-align: left; font-size: 13px; line-height: 1.35;
+}
+.found button:last-child { border-bottom: 0; }
+.found button:hover { background: var(--hover); }
+.found p { padding: 9px 12px; font-size: 13px; color: var(--muted); }
+.map-note {
+  position: absolute; z-index: 1; left: 50%; top: 50%; width: min(420px, calc(100% - 40px)); transform: translate(-50%, -50%);
+  padding: 14px 16px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); color: var(--text-2);
+  font-size: 13px; text-align: center; box-shadow: var(--shadow);
+}
+.map-label {
+  position: absolute; transform: translate(-50%, -50%); padding: 2px 9px; border-radius: 999px;
+  border: 1px solid rgba(12, 14, 16, 0.14); background: #ffffff; color: #0c0e10; font: 600 12px/1.5 var(--font);
+  white-space: nowrap; box-shadow: 0 1px 4px rgba(12, 14, 16, 0.25); cursor: pointer; user-select: none;
+}
+/* Above its circle's middle, where the handle that moves it is. */
+.map-label.editing {
+  transform: translate(-50%, calc(-100% - 12px)); background: #0a7a0d; border-color: #0a7a0d; color: #ffffff;
+  cursor: default; pointer-events: none;
+}
+
+/* The form. */
+.place-form { display: flex; flex-direction: column; gap: 12px; }
+.place-form .card-head { margin-bottom: 0; }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; color: var(--text-2); }
+.field-hint { font-weight: 400; color: var(--muted); }
+.field input {
+  width: 100%; height: 38px; padding: 0 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg);
+  color: var(--ink); font-size: 14px; font-weight: 400;
+}
+.radius { display: flex; align-items: center; gap: 8px; font-weight: 400; color: var(--muted); }
+.radius input { width: 110px; }
+.place-address { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.form-error { font-size: 13px; color: var(--bad); }
+.place-happens { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-2); }
+.place-happens p { color: var(--muted); }
+.happens-row { display: flex; align-items: flex-start; gap: 8px; }
+.happens-row span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.happens-row button { flex: none; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: var(--sunken); color: var(--bad); line-height: 1; }
+.form-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.form-buttons button { height: 36px; padding: 0 14px; border-radius: 10px; font-size: 13px; font-weight: 600; }
+.btn-primary { border: 0; background: #0a7a0d; color: #ffffff; }
+.btn-primary:disabled { opacity: 0.55; cursor: default; }
+.btn-danger { margin-left: auto; border: 1px solid var(--line); background: none; color: var(--bad); }
+
+/* The list. */
+.places-count { margin-left: auto; font-size: 13px; color: var(--muted); }
+.place-list { display: flex; flex-direction: column; gap: 2px; margin: 0 -10px -8px; }
+.place-row {
+  display: block; width: 100%; padding: 8px 10px; border: 0; border-radius: 10px; background: none; text-align: left;
+}
+.place-row:hover { background: var(--hover); }
+.place-row[aria-current='true'] { background: var(--accent-soft); }
+.place-row b { display: block; font-size: 14px; font-weight: 600; }
+.place-row span { display: block; font-size: 12px; line-height: 1.4; color: var(--muted); overflow-wrap: anywhere; }
+
+@media (max-width: 1180px) {
+  .places { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 760px) {
+  #map { height: 56vh; }
+  .map-search { max-width: none; }
+  .place-form { scroll-margin-bottom: 96px; }  /* clear of the tabs */
+}

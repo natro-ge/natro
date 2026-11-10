@@ -1,5 +1,6 @@
 package dev.natro
 
+import android.app.KeyguardManager
 import android.app.role.RoleManager
 import android.content.Context
 import android.media.AudioManager
@@ -54,6 +55,9 @@ data class ReplyText(val id: String, val text: String, val done: Boolean)
  *
  * One for the whole app. NatroService starts and stops the connection, so it stays open with the
  * screen off and the brain can use the phone's tools even for a request made on the PC.
+ *
+ * Here: its state, and what the owner does. The connection is NatroConnection.kt's, the messages from the brain
+ * NatroMessages.kt's, and recording him NatroRecording.kt's.
  */
 object Natro {
     sealed interface Status {
@@ -73,10 +77,16 @@ object Natro {
     val status = MutableStateFlow<Status>(Status.Off)
     val turns = MutableStateFlow<List<Turn>>(emptyList())
     val question = MutableStateFlow<Question?>(null)
+    /** Whether the PC is online, as the brain last said (false while the phone isn't connected): WorksOn. */
+    val pcOnline = MutableStateFlow(false)
     /** Whether a request is being recorded: the mic button, the assistant gesture or "OK Natro". */
     val recording = MutableStateFlow(false)
     /** Whether the recording ends by itself when the owner stops talking, rather than when he lets go of the button. */
     val handsFree = MutableStateFlow(false)
+    /** The recording is listening for him to go on after a reply: if he says nothing it ends quietly, with nothing sent. */
+    val listeningForMore = MutableStateFlow(false)
+    /** The service keeps the microphone between recordings: Android wouldn't hand it back in the background. */
+    val keepMic = MutableStateFlow(false)
     /** How loud the owner is while recorded, 0 to 1. */
     val level = MutableStateFlow(0f)
     /** What the bubble says, or null when it has nothing to say. */
@@ -100,35 +110,38 @@ object Natro {
     fun canOpenScreens(context: Context) = onScreen.value || ScreenControl.current != null || Bubble.showing ||
         context.getSystemService(RoleManager::class.java).isRoleHeld(RoleManager.ROLE_ASSISTANT)
 
-    private val client = OkHttpClient.Builder().pingInterval(30, TimeUnit.SECONDS).build()
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    internal val client = OkHttpClient.Builder().pingInterval(30, TimeUnit.SECONDS).build()
+    internal val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val sequence = AtomicLong()
-    private val recorder = Recorder()
-    private var app: Context? = null
-    private var tools: PhoneTools? = null
-    private var cacheDir: File? = null
+    internal val recorder = Recorder()
+    internal var app: Context? = null
+    internal var tools: PhoneTools? = null
+    internal var cacheDir: File? = null
     /** A chat_picture's message, until its bytes come next. */
-    @Volatile private var picture: JSONObject? = null
-    @Volatile private var speaker: Speaker? = null
-    @Volatile private var socket: WebSocket? = null
-    @Volatile private var running = false
-    @Volatile private var refused = false
-    private var retryMillis = RETRY_FIRST_MILLIS
+    @Volatile internal var picture: JSONObject? = null
+    @Volatile internal var cardComing: JSONObject? = null
+    @Volatile internal var speaker: Speaker? = null
+    @Volatile internal var socket: WebSocket? = null
+    @Volatile internal var running = false
+    @Volatile internal var refused = false
+    internal var retryMillis = RETRY_FIRST_MILLIS
 
     /** The phone's requests the brain is still working on, oldest first. Tool calls and questions are for the first. */
-    private val pending = CopyOnWriteArrayList<String>()
+    internal val pending = CopyOnWriteArrayList<String>()
     /** A spoken answer's request id -> the request whose question it answers. */
-    private val answers = ConcurrentHashMap<String, String>()
+    internal val answers = ConcurrentHashMap<String, String>()
     /** A cancelled request, until the brain says it stopped: tool calls until then were still for it, and are refused. */
-    @Volatile private var cancelling: String? = null
-    @Volatile private var cancelledAt = 0L
+    @Volatile internal var cancelling: String? = null
+    @Volatile internal var cancelledAt = 0L
     /** Decides when a hands-free recording is over; null while the button is held. */
-    @Volatile private var speechEnd: SpeechEnd? = null
+    @Volatile internal var speechEnd: SpeechEnd? = null
     /** Counts recordings, so the "OK Natro" listener can tell that its own was cancelled. */
-    private val recordings = AtomicInteger()
-    @Volatile private var wakeRecording = false
-    @Volatile private var finishWake = false
-    private val bubbleTurn = AtomicInteger()
+    internal val recordings = AtomicInteger()
+    @Volatile internal var wakeRecording = false
+    @Volatile internal var finishWake = false
+    internal val bubbleTurn = AtomicInteger()
+    /** Moves on with each reply it may listen after, and when he stops or starts something: what was waiting stops. */
+    internal val moreDue = AtomicInteger()
 
     fun init(context: Context) {
         if (app != null) return
@@ -162,405 +175,31 @@ object Natro {
         status.value = Status.Off
     }
 
-    // The connection
-
-    private fun connect() {
-        status.value = Status.Connecting
-        socket = client.newWebSocket(Request.Builder().url(BuildConfig.NATRO_SERVER).build(), Listener())
-    }
-
-    private class Listener : WebSocketListener() {
-        override fun onOpen(webSocket: WebSocket, response: Response) {
-            webSocket.send(JSONObject().put("type", "hello").put("device", "phone").put("label", "phone")
-                .put("token", BuildConfig.NATRO_TOKEN).put("tools", tools?.specs()).put("files", true)
-                .put("chat", true).put("queue", true).put("reminders", true).put("jobs", true).put("alerts", true)
-                .put("watch_notifications", true).put("questions", true).put("say", true).toString())
-        }
-
-        override fun onMessage(webSocket: WebSocket, text: String) {
-            if (webSocket === socket) handle(JSONObject(text))
-        }
-
-        override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-            if (webSocket !== socket) return
-            val shown = picture
-            if (shown != null) {
-                picture = null
-                gotPicture(shown.optString("id"), bytes.toByteArray())
-            } else {
-                Transfers.piece(bytes)
-            }
-        }
-
-        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-            if (code == 1008) refused = true  // a wrong device token
-            webSocket.close(1000, null)
-        }
-
-        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = lost(webSocket, "closed")
-
-        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) =
-            lost(webSocket, t.message ?: t.javaClass.simpleName)
-    }
-
-    private fun lost(webSocket: WebSocket, reason: String) {
-        if (webSocket !== socket) return
-        socket = null
-        dropAll("Lost the connection to Natro.")
-        Transfers.lost()
-        if (!running) return
-        if (refused) {
-            status.value = Status.Offline("Natro refused this phone: check natro.token in local.properties")
-            return
-        }
-        status.value = Status.Offline(reason)
-        val wait = retryMillis
-        retryMillis = minOf(retryMillis * 2, RETRY_MAX_MILLIS)
-        scope.launch {
-            delay(wait)
-            if (socket == null && running) connect()
-        }
-    }
-
-    /** Try again now (the status line, tapped). */
-    fun reconnect() {
-        if (!running || status.value == Status.Online) return
-        refused = false
-        retryMillis = RETRY_FIRST_MILLIS
-        val old = socket
-        socket = null
-        old?.cancel()
-        connect()
-    }
-
-    private fun send(message: JSONObject): Boolean = socket?.send(message.toString()) ?: false
-
-    /** For Transfers: a message, and a piece of a file right after its file_part. False when offline. */
-    fun sendMessage(message: JSONObject): Boolean = send(message)
-
-    fun sendBytes(bytes: ByteString): Boolean = socket?.send(bytes) ?: false
-
-    /** The brain won't answer these any more: the connection went, or Natro was turned off. */
-    private fun dropAll(problem: String) {
-        val dropped = pending.toList()
-        pending.clear()
-        question.value = null
-        app?.let { QuestionNotices.cancelAll(it) }
-        if (dropped.isEmpty()) return
-        turns.update { all -> dropped.fold(all) { list, id -> Chat.failed(list, id, problem) } }
-        if (running) bubbleEnds(BubbleKind.Problem, "Natro is offline", PROBLEM_MILLIS)
-    }
-
-    // Messages from Natro
-
-    private fun handle(data: JSONObject) {
-        val id = data.optString("id")
-        when (data.optString("type")) {
-            "welcome" -> {
-                status.value = Status.Online
-                retryMillis = RETRY_FIRST_MILLIS
-                spent(data)
-                Transfers.online()
-            }
-            "english" -> if (!answers.containsKey(id)) turns.update { Chat.english(it, id, data.optString("text")) }
-            "heard" -> {
-                val answering = answers.remove(id)
-                if (answering != null) {
-                    turns.update { Chat.answered(it, answering, data.optString("english").ifBlank { "(not heard)" }) }
-                } else {
-                    turns.update { Chat.heard(it, id, data.optString("georgian"), data.optString("english")) }
-                }
-            }
-            "step" -> {
-                val text = data.optString("text").ifBlank { "Working…" }
-                turns.update { Chat.step(it, id, text) }
-                if (id in pending && question.value == null) bubbleShows(BubbleKind.Step, text)
-            }
-            "reply_text" -> {
-                val piece = data.optString("text")
-                turns.update { Chat.replyText(it, id, piece) }
-                if (id in pending) reply.update { if (it?.id == id) it.copy(text = it.text + piece) else ReplyText(id, piece, false) }
-            }
-            "reply" -> {
-                spent(data)
-                val text = data.optString("text")
-                turns.update {
-                    Chat.replied(it, id, text, data.optString("model"), data.number("cost"), data.number("seconds"),
-                        toolRuns(data.optJSONArray("tools")))
-                }
-                if (pending.remove(id)) {
-                    reply.update { ReplyText(id, text.ifBlank { it?.takeIf { old -> old.id == id }?.text.orEmpty() }, true) }
-                    // One he asked to have said out loud was ("say", below).
-                    if (Prefs.speakReplies.value && !data.optBoolean("said")) {
-                        // How long its first sound took, for the dashboard.
-                        val came = SystemClock.elapsedRealtime()
-                        speaker?.say(text) {
-                            send(JSONObject().put("type", "spoken").put("id", id)
-                                .put("seconds", (SystemClock.elapsedRealtime() - came) / 1000.0))
-                        }
-                    }
-                    if (pending.isEmpty()) bubbleEnds(BubbleKind.Done, "Done", DONE_MILLIS)
-                }
-            }
-            "confirm" -> {
-                val text = data.optString("question")
-                val details = data.optString("details")
-                // A background job's question isn't about one of the phone's requests: its own entry shows it.
-                val turn = if (data.optString("request").startsWith("natro:")) null else pending.firstOrNull()
-                question.value = Question(id, turn, text, details)
-                turn?.let { asking -> turns.update { Chat.asking(it, asking, text, details) } }
-                bubbleShows(BubbleKind.Asking, Text.short(text, 90))
-                if (Prefs.speakReplies.value) speaker?.say(text)
-            }
-            // Something he asked to have said out loud (server/natro_agent/aloud.py): said even with Speak replies
-            // off, here or asked for on the PC.
-            "say" -> speaker?.say(data.optString("text"))
-            "tool_call" -> scope.launch {
-                runTool(id, data.optString("name"), data.optJSONObject("args") ?: JSONObject(),
-                    if (data.isNull("request")) "" else data.optString("request"))
-            }
-            "error" -> {
-                turns.update { Chat.failed(it, id, data.optString("message")) }
-                if (pending.remove(id) && pending.isEmpty()) bubbleEnds(BubbleKind.Problem, "Something went wrong", PROBLEM_MILLIS)
-            }
-            "cancelled" -> if (cancelling == id) cancelling = null
-            // The shared chat (server/natro_agent/chats.py).
-            "chat_entry" -> data.optJSONObject("entry")?.let { entry -> turns.update { Chat.entry(it, entry) } }
-            "chat_all" -> turns.update { Chat.all(it, data.optJSONArray("entries")) }
-            "chat_picture" -> picture = data
-            "chat_cleared" -> {
-                turns.update { Chat.cleared(it) }
-                pictures.value = emptyMap()
-            }
-            // The phone's question, answered on the PC.
-            "answered" -> {
-                val asked = question.value
-                if (asked?.id == id) {
-                    question.value = null
-                    val answer = if (data.optBoolean("yes")) "Yes" else "No"
-                    asked.turn?.let { turn -> turns.update { Chat.answered(it, turn, answer) } }
-                    afterAnswer(data.optBoolean("yes"))
-                }
-            }
-            // Natro asks on the PC: a notification asks here too, until the question is over (answered anywhere).
-            "question_elsewhere" -> app?.let {
-                QuestionNotices.show(it, data.optString("device"), id, data.optString("label").ifBlank { "PC" },
-                    data.optString("question"))
-            }
-            "question_done" -> app?.let { QuestionNotices.cancel(it, data.optString("device"), id) }
-            "queued" -> keptCame(data.optJSONArray("items"))
-            // A reminder going off: always a notification; spoken only if the brain picked the phone to say it.
-            "reminder" -> {
-                val text = data.optString("text")
-                app?.let { ReminderNotices.show(it, id, text) }
-                if (data.optBoolean("speak") && Prefs.speakReplies.value) speaker?.say(text)
-            }
-            "reminder_snoozed" -> app?.let { ReminderNotices.snoozed(it, id, data.optString("text")) }
-            // Something a watcher saw: a notification; spoken only if it's urgent and the brain picked the phone.
-            "alert" -> {
-                val text = data.optString("text")
-                app?.let { AlertNotices.show(it, id, text, data.optBoolean("urgent")) }
-                if (data.optBoolean("speak") && Prefs.speakReplies.value) speaker?.say(text)
-            }
-            // What to watch for in the phone's notifications (NotificationReader matches them).
-            "watch_rules" -> NotificationWatch.rules = NotificationWatch.rulesFrom(data.optJSONArray("rules"))
-            // A background job is done: a notification, as a reminder is; spoken only if the brain picked the phone.
-            "job_done" -> {
-                val text = data.optString("text")
-                app?.let { JobNotices.show(it, id, text, data.optBoolean("ok", true), data.optString("title")) }
-                // Its first paragraph is said: the answer. The rest is for reading.
-                if (data.optBoolean("speak") && Prefs.speakReplies.value) speaker?.say(data.optString("say").ifBlank { text })
-            }
-            else -> if (data.optString("type").startsWith("file_")) Transfers.handle(data)
-        }
-    }
-
-    private fun gotPicture(id: String, bytes: ByteArray) {
-        pictures.update { all -> (all - id + (id to bytes)).entries.toList().takeLast(MAX_PICTURES).associate { it.toPair() } }
-    }
-
-    private fun keptCame(items: JSONArray?) {
-        val came = List(items?.length() ?: 0) { i ->
-            val item = items!!.getJSONObject(i)
-            val from = item.optString("from")
-            Kept(item.optString("id"), item.optString("text"), if (from == "pc") "PC" else from, item.optLong("time"))
-        }.filter { it.id.isNotBlank() }
-        kept.value = came
-        app?.let { context -> came.forEach { KeptNotices.show(context, it) } }
-    }
-
-    /** request: the shared chat's turn it's for, for one made on the PC. */
-    private suspend fun runTool(id: String, name: String, args: JSONObject, request: String) {
-        val phone = tools ?: return
-        val cancelled = cancelling != null && System.currentTimeMillis() - cancelledAt < CANCEL_WAIT_MILLIS
-        val (ok, output) = if (cancelled) false to "The owner cancelled this request." else try {
-            true to withContext(Dispatchers.IO) { phone.run(name, args) }
-        } catch (e: ToolFailure) {
-            false to (e.message ?: "$name failed.")
-        } catch (e: Exception) {
-            false to "$name failed on the phone: ${e.javaClass.simpleName}: ${e.message}"
-        }
-        val message = JSONObject().put("type", "tool_result").put("id", id).put("ok", ok)
-        val result = if (output is ToolPicture) {
-            message.put("picture", JSONObject().put("mime", output.mime).put("name", output.name)
-                .put("data", Base64.encodeToString(output.data, Base64.NO_WRAP)))
-            output.text
-        } else output.toString()
-        send(message.put("result", result))
-        if (cancelled) return
-        val shown = if (result.length > TOOL_RESULT_CHARS) result.take(TOOL_RESULT_CHARS - 1) + "…" else result
-        val run = ToolRun("phone_$name", args.toString(), ok, false, shown)
-        turns.update { Chat.toolRan(it, pending.firstOrNull(), run, now(), request.ifBlank { null }) }
-    }
-
-    private fun spent(data: JSONObject) {
-        val spent = data.number("spent") ?: return
-        spend.value = Spend(spent, data.number("budget") ?: 0.0)
-    }
-
     // What the owner does
 
-    fun sendText(text: String) {
+    /** A typed request. files: on this phone, attached for Natro; the chat shows their names after his words, as the
+     * brain's does (server/natro_agent/server.py). */
+    fun sendText(text: String, files: List<File> = emptyList()) {
         val id = newId()
-        turns.update { Chat.asked(it, id, Turn.From.Typed, text, now()) }
-        request(id, JSONObject().put("type", "text").put("id", id).put("text", text))
+        val shown = if (files.isEmpty()) text else "$text (${files.joinToString { it.name }})"
+        turns.update { Chat.asked(it, id, Turn.From.Typed, shown, now()) }
+        val message = JSONObject().put("type", "text").put("id", id).put("text", text)
+        if (files.isNotEmpty()) message.put("files", JSONArray(files.map { it.path }))
+        request(id, message)
     }
 
-    private fun request(id: String, message: JSONObject, recording: ByteArray? = null) {
+    internal fun request(id: String, message: JSONObject, recording: ByteArray? = null) {
+        // Anyone can say "OK Natro" to a phone on a table: what only he should see is kept for when it's unlocked.
+        if (app?.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == true) message.put("locked", true)
         if (!send(message)) {
             turns.update { Chat.failed(it, id, "Not sent: Natro is offline.") }
+            keepMic.value = false
             bubbleEnds(BubbleKind.Problem, "Natro is offline", PROBLEM_MILLIS)
             return
         }
         recording?.let { socket?.send(it.toByteString()) }
         pending += id
         bubbleShows(BubbleKind.Thinking, "Thinking…")
-    }
-
-    /** Record a request: until stopRecording (the mic button is let go) or, handsFree, until the owner stops talking. */
-    fun startRecording(handsFree: Boolean = false) {
-        if (recording.value) return
-        speaker?.stop()  // don't record Natro herself
-        recordings.incrementAndGet()
-        speechEnd = if (handsFree) SpeechEnd() else null
-        try {
-            recorder.start { loudness ->
-                hear(loudness)
-                val end = speechEnd ?: return@start
-                end.add(loudness)
-                if (end.done) {
-                    speechEnd = null
-                    scope.launch { if (end.heard) stopRecording() else nothingHeard() }
-                }
-            }
-        } catch (e: Exception) {  // the microphone is someone else's right now (a call, another app)
-            speechEnd = null
-            notice.value = "Couldn't use the microphone: ${e.message ?: e.javaClass.simpleName}"
-            bubbleEnds(BubbleKind.Problem, "Microphone busy", PROBLEM_MILLIS)
-            return
-        }
-        this.handsFree.value = handsFree
-        recording.value = true
-        bubbleShows(BubbleKind.Listening, "Listening…")
-    }
-
-    /** The mic button was only tapped, not held: keep listening until the owner stops talking. */
-    fun keepListening() {
-        if (!recording.value || speechEnd != null || wakeRecording) return
-        speechEnd = SpeechEnd()
-        handsFree.value = true
-    }
-
-    /** The assistant gesture: a beep, then record until the owner stops talking. */
-    fun listen() {
-        if (recording.value) return
-        beep()
-        startRecording(handsFree = true)
-    }
-
-    /** Stop recording and send it: as the answer to her question if she's asking, else as a request. */
-    fun stopRecording() {
-        if (wakeRecording) {
-            finishWake = true  // the "OK Natro" listener sends its recording
-            return
-        }
-        val raw = recorder.stop()
-        if (!recording.value) return
-        if (raw.size < Recorder.BYTES_PER_SECOND / 2) nothingHeard() else sendRecording(raw)
-    }
-
-    /** Stop recording and throw it away. */
-    fun dropRecording() {
-        recorder.stop()
-        endRecording()
-        bubble.value = null
-    }
-
-    /** The recording had nothing in it. */
-    fun nothingHeard() {
-        recorder.stop()
-        endRecording()
-        bubbleEnds(BubbleKind.Problem, "Didn't hear anything", PROBLEM_MILLIS)
-    }
-
-    private fun endRecording() {
-        recording.value = false
-        handsFree.value = false
-        speechEnd = null
-        wakeRecording = false
-        level.value = 0f
-    }
-
-    /** Send a recording (raw phone levels; made louder here): a spoken request, or the answer to her question. */
-    fun sendRecording(raw: ByteArray) {
-        endRecording()
-        val pcm = Recorder.louder(raw)
-        // Debug builds keep the last recording, to check the microphone's levels: adb exec-out run-as dev.natro cat cache/last.pcm
-        if (BuildConfig.DEBUG) cacheDir?.let { File(it, "last.pcm").writeBytes(raw) }
-        val id = newId()
-        val message = JSONObject().put("type", "audio").put("id", id)
-        val asked = question.value
-        if (asked == null) {
-            turns.update { Chat.asked(it, id, Turn.From.Spoken, "", now()) }
-            request(id, message, pcm)
-            return
-        }
-        message.put("answer_to", asked.id)
-        question.value = null
-        asked.turn?.let { answers[id] = it }
-        if (send(message)) {
-            socket?.send(pcm.toByteString())
-            bubbleShows(BubbleKind.Thinking, "Thinking…")
-        } else {
-            bubbleEnds(BubbleKind.Problem, "Natro is offline", PROBLEM_MILLIS)
-        }
-    }
-
-    /** "OK Natro" was heard. The listener records the request itself; this returns its recording's number. */
-    fun wakeHeard(): Int {
-        speaker?.stop()
-        beep()
-        wakeRecording = true
-        finishWake = false
-        handsFree.value = true
-        recording.value = true
-        bubbleShows(BubbleKind.Listening, "Listening…")
-        return recordings.incrementAndGet()
-    }
-
-    /** Whether recording number `which` is still on (not cancelled). */
-    fun stillRecording(which: Int) = recording.value && recordings.get() == which
-
-    /** Whether the owner asked to end the "OK Natro" recording now (the mic button). Asking clears it. */
-    fun finishWakeAsked(): Boolean {
-        if (!finishWake) return false
-        finishWake = false
-        return true
-    }
-
-    /** The loudness of the latest 100 ms of the owner's voice (raw phone levels). */
-    fun hear(loudness: Double) {
-        level.value = SpeechEnd.level(loudness)
     }
 
     /** A question about the PC's request, answered here. */
@@ -621,6 +260,16 @@ object Natro {
         }
     }
 
+    /** Nothing's under way, so the app can restart for an update. */
+    fun idle() = pending.isEmpty() && !recording.value
+
+    /** His answer to an alert ("On my way"): the brain answers with alert_answered. */
+    fun answerAlert(context: Context, id: String, answer: String) {
+        if (!send(JSONObject().put("type", "alert_answer").put("id", id).put("answer", answer))) {
+            AlertNotices.answered(context, id, "Natro is offline, so it can't be told.")
+        }
+    }
+
     /** Run (or skip) a request he made on the PC while the phone was offline: run, it becomes the phone's request. */
     fun runKept(id: String, run: Boolean) {
         val item = kept.value.firstOrNull { it.id == id } ?: return
@@ -645,13 +294,15 @@ object Natro {
     }
 
     /** After his answer: she goes on with the phone's request; a background job's goes on out of sight. */
-    private fun afterAnswer(yes: Boolean) {
+    internal fun afterAnswer(yes: Boolean) {
         if (pending.isEmpty()) bubbleEnds(BubbleKind.Done, if (yes) "Going ahead" else "Not doing it", DONE_MILLIS)
         else bubbleShows(BubbleKind.Thinking, "Thinking…")
     }
 
     /** Stop everything the phone asked for: the recording, and the requests she's working on (on the VPS too). */
     fun cancel() {
+        moreDue.incrementAndGet()
+        keepMic.value = false
         speaker?.stop()
         if (recording.value) {
             recorder.stop()
@@ -691,13 +342,13 @@ object Natro {
 
     // The bubble
 
-    private fun bubbleShows(kind: BubbleKind, label: String) {
+    internal fun bubbleShows(kind: BubbleKind, label: String) {
         bubbleTurn.incrementAndGet()
         bubble.value = BubbleStatus(kind, label)
     }
 
     /** A last word ("Done", a problem), which the bubble lets go of after a moment. */
-    private fun bubbleEnds(kind: BubbleKind, label: String, millis: Long) {
+    internal fun bubbleEnds(kind: BubbleKind, label: String, millis: Long) {
         bubbleShows(kind, label)
         val turn = bubbleTurn.get()
         scope.launch {
@@ -709,28 +360,20 @@ object Natro {
     // Helpers
 
     /** Request ids are unique across restarts, as the chat outlives the app's process. */
-    private fun newId() = "r${now().toString(36)}${sequence.incrementAndGet()}"
+    internal fun newId() = "r${now().toString(36)}${sequence.incrementAndGet()}"
 
-    private fun now() = System.currentTimeMillis()
+    internal fun now() = System.currentTimeMillis()
 
-    private fun JSONObject.number(key: String): Double? = if (has(key) && !isNull(key)) optDouble(key) else null
-
-    /** The tools a reply says ran: {"tool", "args", "ok", "declined", "result"}. */
-    private fun toolRuns(array: JSONArray?): List<ToolRun>? = array?.let { all ->
-        List(all.length()) { i ->
-            val run = all.getJSONObject(i)
-            ToolRun(run.optString("tool"), run.opt("args")?.toString().orEmpty(), run.optBoolean("ok"),
-                run.optBoolean("declined"), run.optString("result"))
-        }
-    }
-
-    private const val DONE_MILLIS = 1_400L
-    private const val PROBLEM_MILLIS = 2_200L
-    private const val RETRY_FIRST_MILLIS = 2_000L
-    private const val RETRY_MAX_MILLIS = 60_000L
+    internal const val DONE_MILLIS = 1_400L
+    /** How long "Done" shows before it listens for him to go on. */
+    internal const val DONE_BEFORE_LISTENING_MILLIS = 700L
+    internal const val BLOCKS_A_SECOND = 10
+    internal const val PROBLEM_MILLIS = 2_200L
+    internal const val RETRY_FIRST_MILLIS = 2_000L
+    internal const val RETRY_MAX_MILLIS = 60_000L
     /** The pictures kept (the brain keeps as many: older ones are gone from the chat). */
-    private const val MAX_PICTURES = 24
+    internal const val MAX_PICTURES = 24
     /** The longest to wait for the brain to say a cancelled request stopped. */
-    private const val CANCEL_WAIT_MILLIS = 5_000L
-    private const val TOOL_RESULT_CHARS = 600
+    internal const val CANCEL_WAIT_MILLIS = 5_000L
+    internal const val TOOL_RESULT_CHARS = 600
 }

@@ -108,10 +108,10 @@ def test_only_the_first_paragraph_is_said():
     assert len(lead("word " * 200)) == 400
 
 
-def test_the_tools_are_personal_and_start_job_is_a_reply_by_itself():
+def test_no_tool_asks_and_start_job_is_a_reply_by_itself():
     tools = {tool.name: tool for tool in Jobs().tools()}
     assert set(tools) == {"start_job", "jobs_list", "jobs_cancel"}
-    assert all(tool.personal and not tool.confirm for tool in tools.values())
+    assert not any(tool.confirm for tool in tools.values())
     assert tools["start_job"].final
 
 

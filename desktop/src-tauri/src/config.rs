@@ -1,18 +1,18 @@
 //! Where Natro's files are, and its settings from .env.
 //!
-//! As the Python helper (desktop/helper/natro_pc/config.py): `.env`, `models/`, `tokens/`,
-//! `logs/` and `settings.json` are in %LOCALAPPDATA%\Natro, or NATRO_HOME. The
-//! helper's `.venv/` is in the repository, found above the program.
+//! `.env`, `models/`, `tokens/`, `logs/` and `settings.json` are in %LOCALAPPDATA%\Natro, or
+//! NATRO_HOME.
 
 use std::collections::HashMap;
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub struct Config {
     pub home: PathBuf,
-    /// The repository: the folder with the helper's `.venv`.
-    pub repo: PathBuf,
     values: HashMap<String, String>,
+    /// Why Natro's files couldn't be read ("no folder at ..."), if they couldn't: the app then
+    /// runs on its defaults, with no brain to reach and no voice (lib.rs and the tray say so).
+    pub problem: Option<String>,
 }
 
 impl Config {
@@ -23,12 +23,20 @@ impl Config {
                 .map(|dir| PathBuf::from(dir).join("Natro"))
                 .unwrap_or_else(|| PathBuf::from(".")),
         };
-        let repo = find_repo().unwrap_or_else(|| home.clone());
-        let text = std::fs::read_to_string(home.join(".env")).unwrap_or_default();
+        Config::at(home)
+    }
+
+    fn at(home: PathBuf) -> Config {
+        let env_file = home.join(".env");
+        let (text, problem) = match std::fs::read_to_string(&env_file) {
+            Ok(text) => (text, None),
+            Err(_) if !home.is_dir() => (String::new(), Some(format!("no folder at {}", home.display()))),
+            Err(e) => (String::new(), Some(format!("{} isn't readable ({e})", env_file.display()))),
+        };
         Config {
             home,
-            repo,
             values: parse_env(&text),
+            problem,
         }
     }
 
@@ -39,17 +47,6 @@ impl Config {
             .or_else(|| self.values.get(key).cloned())
             .filter(|v| !v.is_empty())
     }
-}
-
-/// The nearest folder with a .venv, above the program or the current folder.
-fn find_repo() -> Option<PathBuf> {
-    let starts = [env::current_exe().ok(), env::current_dir().ok()];
-    starts.into_iter().flatten().find_map(|start| {
-        start
-            .ancestors()
-            .find(|dir| dir.join(".venv").is_dir())
-            .map(Path::to_path_buf)
-    })
 }
 
 fn parse_env(text: &str) -> HashMap<String, String> {
@@ -72,5 +69,25 @@ mod tests {
         assert_eq!(values["A"], "b=c");
         assert_eq!(values["EMPTY"], "");
         assert_eq!(values.len(), 3);
+    }
+
+    #[test]
+    fn missing_files_are_a_problem() {
+        let dir = env::temp_dir().join(format!("natro-config-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = Config::at(dir.clone());
+        assert_eq!(config.problem, Some(format!("no folder at {}", dir.display())));
+        assert_eq!(config.get("NATRO_CONFIG_TEST"), None);
+
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config::at(dir.clone());
+        let problem = config.problem.unwrap();
+        assert!(problem.starts_with(&format!("{} isn't readable", dir.join(".env").display())), "{problem}");
+
+        std::fs::write(dir.join(".env"), "NATRO_CONFIG_TEST=abc\n").unwrap();
+        let config = Config::at(dir.clone());
+        assert_eq!(config.problem, None);
+        assert_eq!(config.get("NATRO_CONFIG_TEST").as_deref(), Some("abc"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

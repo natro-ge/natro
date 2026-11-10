@@ -1,4 +1,8 @@
 """Short commands: run without a model, or with one model call instead of two."""
+import json
+import os
+from pathlib import Path
+
 import pytest
 
 from conftest import FakeClient, Owner, message, run, text, tool_use
@@ -46,12 +50,12 @@ DARK = ("pc_run_command", {"command": quick._theme(light=False)})
 LIGHT = ("pc_run_command", {"command": quick._theme(light=True)})
 
 
-@pytest.mark.parametrize("said, from_pc, expected", [
+@pytest.mark.parametrize("said, on_pc, expected", [
     ("Lock the PC.", False, LOCK),
     ("OK Natro, lock my computer please", False, LOCK),
     ("Turn on dark mode.", True, DARK),
     ("Dark mode on my PC.", False, DARK),
-    ("dark mode on", False, None),  # said on the phone, it may mean the phone
+    ("dark mode on", False, None),  # working on the phone, it may mean the phone
     ("Turn off dark mode.", True, LIGHT),
     ("Switch to light mode", True, LIGHT),
     ("Open Downloads.", True, ("pc_run_command", {"command": "Start-Process shell:Downloads"})),
@@ -62,9 +66,46 @@ LIGHT = ("pc_run_command", {"command": quick._theme(light=True)})
     ("open the invoice in downloads", True, None),
     ("lock", True, None),
 ])
-def test_quick_pc_commands(said, from_pc, expected):
-    # The lines themselves are checked against the PC's harmless list in desktop/helper/tests/test_commands.py.
-    assert quick.command(said, in_conversation=False, from_pc=from_pc) == expected
+def test_quick_pc_commands(said, on_pc, expected):
+    # The lines themselves are checked against the PC's harmless list (desktop/quick-commands.json, below).
+    assert quick.command(said, in_conversation=False, on_pc=on_pc) == expected
+
+
+QUICK_COMMANDS_JSON = Path(__file__).resolve().parents[2] / "desktop" / "quick-commands.json"
+
+
+def test_quick_commands_json_is_the_pc_commands():
+    # desktop/quick-commands.json: the lines the quick PC commands run, which the desktop app's tests check are all
+    # harmless (src-tauri/src/tools/commands.rs), so they're never refused. NATRO_WRITE_TOOLS=1 rewrites it.
+    lines = [line for _, line in quick.PC_COMMANDS]
+    if os.environ.get("NATRO_WRITE_TOOLS"):
+        QUICK_COMMANDS_JSON.write_text(json.dumps(lines, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    assert json.loads(QUICK_COMMANDS_JSON.read_text(encoding="utf-8")) == lines
+
+
+@pytest.mark.parametrize("said, here, expected", [
+    ("Work on the phone.", "pc", {"device": "phone"}),
+    ("OK Natro, switch to the PC please", "phone", {"device": "pc"}),
+    ("switch back to the computer", "phone", {"device": "pc"}),
+    ("Start working on my laptop from now on.", "phone", {"device": "pc"}),
+    ("use my phone", "pc", {"device": "phone"}),
+    ("work here again", "phone", {"device": "phone"}),
+    ("Work on this PC.", "pc", {"device": "pc"}),
+    ("make the PC work on the phone", "phone", {"device": "phone", "for": "pc"}),
+    ("set the phone to work on the PC", "pc", {"device": "pc", "for": "phone"}),
+    ("work here", "", None),  # a request made on no device (a background job's)
+    ("do it on the phone", "pc", None),  # one thing on the phone: a model does it there
+    ("switch the music to the phone", "pc", None),
+    ("work on the phone's screen", "pc", None),
+])
+def test_where_natro_works(said, here, expected):
+    assert quick.command(said, in_conversation=False, here=here) == (expected and ("work_on", expected))
+
+
+def test_use_the_phone_only_outside_a_conversation():
+    # "Use the phone" may answer her "on which device?"; "work on the phone" can't.
+    assert quick.command("use the phone", in_conversation=True, here="pc") is None
+    assert quick.command("work on the phone", in_conversation=True, here="pc") == ("work_on", {"device": "phone"})
 
 
 def test_bare_words_only_outside_a_conversation():

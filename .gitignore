@@ -21,7 +21,7 @@ transfers/
 testset/
 results/
 
-# Downloaded models (see desktop/helper/natro_pc/wakeword.py for the source).
+# Downloaded models (desktop/setup-pc.ps1 fetches them).
 models/
 # Requests kept for a device that is offline (server/natro_agent/pending.py).
 pending.json
@@ -37,5 +37,11 @@ briefing.json
 routines.json
 # What he asked Natro to watch for, and what she told him (watchers.py).
 watchers.json
+# His places (server/natro_agent/places.py), what's done by itself at them (place_actions.py), and his cards (cards.py).
+places.json
+place_actions.json
+/cards/
+# The phone's app, as published for it to update itself (scripts/publish-phone.py).
+/app/
 # The tools his devices offered when last connected (server/natro_agent/tools.py, KnownTools).
 devices.json

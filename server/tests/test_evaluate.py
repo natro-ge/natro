@@ -8,7 +8,7 @@ from natro_agent.server import tools_used
 def kept(folder, name, time="20261008T100000Z", **fields):
     record = {"id": "r1", "time": time, "kind": "audio", "clip": f"{name}.wav",
               "heard": {"georgian": "გამარჯობა", "english": "open Spotify"}, "events": [],
-              "reply": {"text": "Opened Spotify.", "model": "gemini", "cost": 0.0, "tools": []}, "total_ms": 2000,
+              "reply": {"text": "Opened Spotify.", "model": "claude-haiku-5-5", "cost": 0.0, "tools": []}, "total_ms": 2000,
               **fields}
     (folder / f"{name}.json").write_text(json.dumps(record), encoding="utf-8")
     (folder / f"{name}.wav").write_bytes(b"RIFFxxxx")

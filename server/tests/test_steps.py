@@ -54,6 +54,13 @@ def test_messaging_names_whom_and_the_app():
     assert describe("send_message", {"to": "Andria", "app": "messenger"})["app"] == "Messenger"
 
 
+def test_planning_steps():
+    assert describe("week_plan", {}) == {"text": "Looking at your week", "icon": "calendar"}
+    assert describe("week_plan_add", {"blocks": []})["text"] == "Adding to your calendar"
+    assert describe("week_review", {})["text"] == "Looking back on your week"
+    assert describe("tasks_update", {"task_id": "t1"}) == {"text": "Changing a task", "icon": "tasks"}
+
+
 def test_unknown_tools_still_say_something():
     assert describe("github_create_issue", {}) == {"text": "Github create issue", "icon": "work"}
     assert describe("phone_new_tool", {}) == {"text": "New tool", "icon": "work"}

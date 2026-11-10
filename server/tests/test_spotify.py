@@ -6,6 +6,7 @@ import pytest
 
 from conftest import run
 from natro_agent.spotify import API, MAX_ADD, SIGN_IN_AGAIN, TOKEN_URL, Spotify, SpotifyAPI, spotify_uri, studio_version
+from natro_agent.tool_calls import ASKER
 from natro_agent.tools import ToolError
 
 PC = {"id": "d-pc", "name": "TUXA-ASUS", "type": "Computer", "is_active": False, "volume_percent": 50}
@@ -155,10 +156,117 @@ def test_nothing_playing_starts_on_the_pc():
     assert fake.sent("PUT", "/me/player/play")[1]["params"] == {"device_id": "d-pc"}
 
 
-def test_nothing_open_anywhere():
-    s, _ = spotify({("PUT", "/me/player/play"): no_active_device(), ("GET", "/me/player/devices"): (200, {"devices": []})})
+def test_nothing_open_and_no_device_online_says_so_at_once():
+    s, fake = spotify({("PUT", "/me/player/play"): no_active_device(), ("GET", "/me/player/devices"): (200, {"devices": []})})
+    s.start_seconds = 10
     with pytest.raises(ToolError, match="isn't open on any"):
-        run(s.control("resume"))
+        run(asyncio.wait_for(s.control("resume"), 1))
+    assert len(fake.sent("GET", "/me/player/devices")) == 1
+
+
+class HisDevice:
+    def __init__(self, name, label, works_on=None, opens="Opened Spotify."):
+        self.name, self.label, self.works_on, self.opens = name, label, works_on, opens
+        self.opened = []
+
+    async def call_tool(self, name, args):
+        self.opened.append((name, args))
+        if isinstance(self.opens, Exception):
+            raise self.opens
+        return self.opens
+
+
+def closed_spotify(monkeypatch, *online, shows=PC):
+    """Spotify open nowhere, until it's asked for a third time."""
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(asyncio, "sleep", lambda seconds: real_sleep(0))
+    s, fake = spotify({("PUT", "/me/player/play"): [no_active_device(), (204, None)],
+                       ("GET", "/me/player/devices"): [(200, {"devices": []}), (200, {"devices": []}),
+                                                       (200, {"devices": [shows]})]})
+    s.start_seconds = 10
+    s.online = {device.name: device for device in online}
+    return s, fake
+
+
+async def asked_on(asker, s, **play):
+    ASKER.set(asker)
+    return await s.play(uri="spotify:track:y1", **play)
+
+
+OPEN = [("open_app", {"app": "Spotify"})]
+
+
+def test_closed_spotify_is_opened_on_the_device_he_asked_on_and_plays(monkeypatch):
+    pc, phone = HisDevice("pc", "PC"), HisDevice("phone", "phone")
+    s, fake = closed_spotify(monkeypatch, pc, phone, shows=PHONE)
+    assert run(asked_on(phone, s)) == "Playing that on Nothing Phone (2)."
+    assert phone.opened == OPEN and pc.opened == []
+    assert fake.sent("PUT", "/me/player/play")[1]["params"] == {"device_id": "d-phone"}
+
+
+def test_its_switch_says_where_spotify_is_opened(monkeypatch):
+    pc, phone = HisDevice("pc", "PC", works_on="phone"), HisDevice("phone", "phone")
+    s, _ = closed_spotify(monkeypatch, pc, phone, shows=PHONE)
+    run(asked_on(pc, s))
+    assert phone.opened == OPEN and pc.opened == []
+
+
+def test_with_the_switched_to_device_offline_it_opens_where_he_asked(monkeypatch):
+    pc = HisDevice("pc", "PC", works_on="phone")
+    s, _ = closed_spotify(monkeypatch, pc)
+    assert run(asked_on(pc, s)) == "Playing that on TUXA-ASUS."
+    assert pc.opened == OPEN
+
+
+def test_a_job_opens_spotify_on_the_pc_else_the_phone(monkeypatch):
+    pc, phone = HisDevice("pc", "PC"), HisDevice("phone", "phone")
+    job = HisDevice("job", "background job")
+    s, _ = closed_spotify(monkeypatch, pc, phone)
+    run(asked_on(job, s))
+    assert pc.opened == OPEN and phone.opened == []
+    s, _ = closed_spotify(monkeypatch, phone, shows=PHONE)
+    run(asked_on(job, s))
+    assert phone.opened == OPEN
+
+
+def test_named_device_closed_is_opened_there(monkeypatch):
+    pc, phone = HisDevice("pc", "PC"), HisDevice("phone", "phone")
+    s, fake = closed_spotify(monkeypatch, pc, phone, shows=PHONE)
+    fake.answers["PUT", "/me/player/play"] = (204, None)
+    assert run(asked_on(pc, s, device="phone")) == "Playing that on Nothing Phone (2)."
+    assert phone.opened == OPEN and pc.opened == []
+    assert fake.sent("PUT", "/me/player/play")[0]["params"] == {"device_id": "d-phone"}
+
+
+def test_named_device_offline_says_so_at_once(monkeypatch):
+    s, _ = closed_spotify(monkeypatch, HisDevice("pc", "PC"))
+    with pytest.raises(ToolError, match="isn't open on his phone, which is offline"):
+        run(asyncio.wait_for(s.play(uri="spotify:track:y1", device="phone"), 1))
+
+
+def test_open_elsewhere_nothing_is_opened(monkeypatch):
+    pc = HisDevice("pc", "PC")
+    s, _ = spotify({("PUT", "/me/player/play"): [no_active_device(), (204, None)],
+                    ("GET", "/me/player/devices"): (200, {"devices": [PHONE]})})
+    s.online = {"pc": pc}
+    assert run(asked_on(pc, s)) == "Playing that on Nothing Phone (2)."
+    assert pc.opened == []
+
+
+def test_a_device_that_cant_open_it_says_why(monkeypatch):
+    pc = HisDevice("pc", "PC", opens=ToolError("No app called Spotify."))
+    s, _ = closed_spotify(monkeypatch, pc)
+    with pytest.raises(ToolError, match="No app called Spotify"):
+        run(asked_on(pc, s))
+
+
+def test_opened_but_not_showing_up_says_so(monkeypatch):
+    pc = HisDevice("pc", "PC")
+    s, _ = spotify({("PUT", "/me/player/play"): no_active_device(), ("GET", "/me/player/devices"): (200, {"devices": []})})
+    s.online = {"pc": pc}
+    with pytest.raises(ToolError, match="hasn't shown up"):
+        run(asked_on(pc, s))
+    assert pc.opened == OPEN
 
 
 def test_pausing_when_nothing_plays_doesnt_start_a_device():
@@ -166,16 +274,6 @@ def test_pausing_when_nothing_plays_doesnt_start_a_device():
     with pytest.raises(ToolError, match="isn't playing"):
         run(s.control("pause"))
     assert fake.sent("GET", "/me/player/devices") == []
-
-
-def test_waits_for_spotify_that_just_started(monkeypatch):
-    real_sleep = asyncio.sleep
-    monkeypatch.setattr(asyncio, "sleep", lambda seconds: real_sleep(0))
-    s, fake = spotify({("PUT", "/me/player/play"): [no_active_device(), (204, None)],
-                       ("GET", "/me/player/devices"): [(200, {"devices": []}), (200, {"devices": [PC]})]})
-    s.start_seconds = 10
-    assert run(s.play(uri="spotify:track:y1")) == "Playing that on TUXA-ASUS."
-    assert len(fake.sent("GET", "/me/player/devices")) == 2
 
 
 def test_play_on_a_named_device_and_move_playback():
@@ -357,11 +455,9 @@ def test_library():
     assert run(s.library("recently_played")) == "- Tue 09:41: Yellow by Coldplay [spotify:track:y1]"
 
 
-def test_tools_routing_and_sign_in_reminder():
+def test_the_tools_and_the_sign_in_reminder():
     s, _ = spotify({}, signed_in=(date.today() - timedelta(days=175)).isoformat())
     tools = {tool.name: tool for tool in s.tools()}
-    # Playing and controlling music may go to the free tier; his playlists and history may not.
-    assert {name for name, tool in tools.items() if tool.personal} == {"spotify_library"}
     assert not any(tool.confirm for tool in tools.values())
     # Filling a playlist is its own tool, which says it needs no playing; queueing points to it.
     assert "never play" in tools["spotify_add_to_playlist"].description

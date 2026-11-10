@@ -4,7 +4,7 @@ and put them in a note").
 start_job gives a task, written out complete, to a job: a conversation of its own with Claude
 (Agent.worker), up to MAX_STEPS model steps, running beside his requests; at most MOST_AT_ONCE at once.
 Natro starts one for long work on her own judgment, and whenever he asks for something "in the background".
-The server runs it (Server._job): it shows in the shared chat as it works (its steps, any question), a step
+background.py runs it: it shows in the shared chat as it works (its steps, any question), a step
 that needs his yes asks on the device he used last, and when it's done the result goes to his devices
 (job_done: shown on every device that said "jobs" in its hello, its first paragraph spoken on one), and the
 next request is answered by Claude, who is told it. jobs_list ("what are you working on?") and jobs_cancel ("cancel that")
@@ -76,8 +76,8 @@ def routine_of(job):
 
 
 class Jobs:
-    """The server sets run(job) -> the asyncio task running it, and asking() -> the device the request being
-    handled came from."""
+    """background.Background sets run(job) -> the asyncio task running it, and the server asking() -> the device
+    the request being handled came from."""
 
     def __init__(self):
         self.items = []  # oldest first
@@ -98,15 +98,15 @@ class Jobs:
                  "(where, how many, the price, and where he wants the result if he said), and nothing he didn't "
                  "ask for. He hears the result when it's done.",
                  {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]},
-                 self.start, "natro", personal=True, final=True),
+                 self.start, "natro", final=True),
             Tool("jobs_list",
                  "What you're working on in the background (with ids and what each is doing now), and the jobs "
                  "that finished in the last day with what they found.",
-                 {"type": "object", "properties": {}}, self.list, "natro", personal=True),
+                 {"type": "object", "properties": {}}, self.list, "natro"),
             Tool("jobs_cancel",
                  "Stop a background job by its id (from jobs_list).",
                  {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
-                 self.cancel, "natro", personal=True),
+                 self.cancel, "natro"),
         ]
 
     # Tools

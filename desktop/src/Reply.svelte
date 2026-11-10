@@ -38,6 +38,8 @@
   }
   const ICONS = {
     send: '<path d="M10 15.5V5M5.6 9.2 10 4.8l4.4 4.4"/>',
+    // A bell with a slash: mute this conversation.
+    mute: '<path d="M10 2.8c-2.6 0-4.4 1.9-4.4 4.5 0 2.6-.9 3.7-1.9 4.7h12.6c-1-1-1.9-2.1-1.9-4.7 0-2.6-1.8-4.5-4.4-4.5zM8.2 15.2a1.9 1.9 0 0 0 3.6 0M3 3l14 14"/>',
     chat: '<path d="M10 3.5c-4 0-7 2.6-7 5.8 0 1.8.9 3.3 2.4 4.4-.2.9-.7 1.8-1.4 2.4 1.5 0 2.9-.5 3.9-1.3.7.2 1.4.3 2.1.3 4 0 7-2.6 7-5.8s-3-5.8-7-5.8z"/>',
   }
 
@@ -271,6 +273,14 @@
           ></textarea>
           <button
             class="tool"
+            title="Mute this conversation for 8 hours"
+            aria-label="Mute this conversation"
+            onclick={() => message && invoke('reply_mute', { id: message.id })}
+          >
+            <svg class="line" viewBox="0 0 20 20" aria-hidden="true">{@html ICONS.mute}</svg>
+          </button>
+          <button
+            class="tool"
             title="Answer in the chat"
             aria-label="Answer in the chat"
             onclick={() => message && invoke('reply_open', { url: `natro:reply/${message.id}` })}
@@ -465,8 +475,9 @@
     opacity: 1;
   }
   .answer .send {
-    background: var(--green);
-    color: #fff;
+    background: #fff;
+    color: #1c1c1e;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
   }
   .answer .send:hover:not(:disabled) {
     filter: brightness(1.1);
@@ -484,6 +495,13 @@
   }
   .answer .tool svg {
     fill: currentColor;
+  }
+  .answer .tool svg.line {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
   .answer .send svg {
     fill: none;

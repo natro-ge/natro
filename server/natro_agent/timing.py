@@ -1,4 +1,4 @@
-"""How long each part of a request took, for the dashboard's breakdown (dashboard.py).
+"""How long each part of a request took, for the dashboard's breakdown (dashboard/speed.py).
 
 The server starts a Timing when a request comes in and logs it as one "timing" entry once the reply has gone out:
 the voice pipeline's parts (recognizing the speech, the Georgian-only retry, translating), waiting for the request

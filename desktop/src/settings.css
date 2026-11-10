@@ -1,0 +1,537 @@
+/* The Settings window's look, for Settings.svelte and its parts (SettingsKeybinds.svelte, SettingsKeys.svelte).
+   Only the Settings page loads it (settings.ts). */
+
+/* The dock's look (app.css), as a solid card with room for its shadow: unlike the chat it sits
+   over other windows for a while, with fields to read. Keep in step with settings.rs: the
+   window is 760 wide (within a 1366 screen at 125%) and as tall as the card (ROOM: its margins
+   and border). It opens from the middle of the screen: settings.rs moves the window there
+   before it shows. */
+#app {
+  height: 100%;
+}
+input,
+select,
+button {
+  font: inherit;
+}
+
+.card {
+  --panel: #fafafa;
+  --red: #e5484d;
+  --field: rgba(0, 0, 0, 0.05);
+  --field-line: rgba(0, 0, 0, 0.1);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: calc(100% - 24px);
+  margin: 12px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--panel);
+  box-shadow:
+    inset 0 1px 0 0 var(--highlight),
+    0 6px 20px rgba(0, 0, 0, 0.16);
+  overflow: hidden;
+  font-size: 13.5px;
+  opacity: 0;
+  transform: scale(0.82);
+}
+/* Opening: grows out of its middle with a little spring. */
+.card.opened {
+  opacity: 1;
+  transform: none;
+  transition:
+    transform 480ms cubic-bezier(0.18, 1.25, 0.4, 1),
+    opacity 200ms ease-out;
+}
+/* Closing (Esc or the ✕): back into its middle, quickly (CLOSING_MILLIS in Settings.svelte). */
+.card.opened.closing {
+  opacity: 0;
+  transform: scale(0.9);
+  transition:
+    transform 160ms cubic-bezier(0.55, 0, 0.75, 0.2),
+    opacity 140ms ease-in;
+}
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .card.opened.closing {
+    transform: none;
+  }
+}
+@media (prefers-color-scheme: dark) {
+  .card {
+    --panel: #222224;
+    --field: rgba(255, 255, 255, 0.07);
+    --field-line: rgba(255, 255, 255, 0.12);
+  }
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 12px 10px 20px;
+}
+h1 {
+  flex: 1;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--green-glow) 60%, transparent);
+  transition: background 200ms ease;
+}
+.dot.off {
+  background: var(--text-dim);
+  box-shadow: none;
+}
+
+.scroll {
+  flex: 1;
+  min-height: 0;
+  padding: 0 20px 20px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--field-line) transparent;
+}
+
+/* Measured for the window's height: its sections' margins count too. The switches side by side
+   (Replies, then Startup over Testing), the keybinds and the keys across. */
+.content {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 32px;
+}
+section {
+  min-width: 0;
+  margin-top: 14px;
+}
+.replies {
+  grid-row: span 2;
+}
+.wide {
+  grid-column: 1 / -1;
+}
+h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.padlock {
+  width: 13px;
+  height: 13px;
+  fill: currentColor;
+}
+.padlock.unlocked {
+  fill: var(--green-glow);
+}
+.links {
+  display: flex;
+  gap: 12px;
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--field-line);
+  cursor: pointer;
+}
+section > .row:last-child {
+  border-bottom: none;
+}
+.words {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.label {
+  font-weight: 500;
+}
+.detail {
+  font-size: 12px;
+  color: var(--text-dim);
+  text-wrap: pretty;
+}
+
+/* A switch: the dock's green when on. */
+.switch {
+  appearance: none;
+  flex: none;
+  position: relative;
+  width: 38px;
+  height: 22px;
+  margin: 0;
+  border-radius: 11px;
+  background: var(--decline);
+  cursor: pointer;
+  transition: background 180ms ease;
+}
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform 220ms cubic-bezier(0.18, 1.25, 0.4, 1);
+}
+.switch:checked {
+  background: var(--green);
+}
+.switch:checked::after {
+  transform: translateX(16px);
+}
+.switch:focus-visible,
+.text:focus-visible,
+.pin:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--green-glow) 60%, transparent);
+  outline-offset: 1px;
+}
+
+.unlock {
+  margin-top: 8px;
+}
+.pin-row {
+  display: flex;
+  gap: 8px;
+}
+.pin-row.change {
+  margin: 2px 0 12px;
+}
+.pin,
+.text {
+  box-sizing: border-box;
+  min-width: 0;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--field-line);
+  border-radius: 10px;
+  background: var(--field);
+  color: var(--text);
+  outline: none;
+  user-select: text;
+}
+.pin {
+  flex: 1;
+  letter-spacing: 0.2em;
+}
+.pin::placeholder,
+.text::placeholder {
+  letter-spacing: normal;
+  color: var(--text-dim);
+}
+.text {
+  width: 100%;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 12.5px;
+}
+select.text {
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+select.text option {
+  background: var(--panel);
+  color: var(--text);
+}
+
+button {
+  border: none;
+  cursor: pointer;
+}
+.primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  height: 34px;
+  padding: 0 18px;
+  border-radius: 17px;
+  background: var(--green);
+  color: #fff;
+  font-weight: 600;
+  transition:
+    filter 150ms ease,
+    opacity 150ms ease,
+    scale 120ms ease;
+}
+.primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.primary:active:not(:disabled) {
+  scale: 0.96;
+}
+.primary:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.small {
+  flex: none;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 14px;
+  background: var(--decline);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.small:hover {
+  background: color-mix(in srgb, var(--decline) 100%, var(--text) 8%);
+}
+.link {
+  padding: 0;
+  background: none;
+  color: var(--link);
+  font-size: 12px;
+  font-weight: 500;
+}
+.link:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.icon-button {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text);
+  opacity: 0.7;
+  transition:
+    background 150ms ease,
+    opacity 150ms ease;
+}
+.icon-button:hover,
+.icon-button.on {
+  background: var(--decline);
+  opacity: 1;
+}
+.icon-button svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+.icon-button svg .line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+.message,
+.note,
+.error {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--red);
+}
+.message.good,
+.note.good {
+  color: var(--link);
+}
+.note {
+  flex: 1;
+  margin: 0;
+  color: var(--text-dim);
+}
+.note.bad {
+  color: var(--red);
+}
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  margin: 6px 0 4px;
+  padding: 3px;
+  border-radius: 12px;
+  background: var(--field);
+}
+.tabs button {
+  flex: 1;
+  height: 28px;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-dim);
+  font-weight: 500;
+  transition:
+    background 150ms ease,
+    color 150ms ease;
+}
+.tabs button.on {
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+
+/* Two to a row. */
+.fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 28px;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--field-line);
+}
+.field.wrong .text {
+  border-color: var(--red);
+}
+.current {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.hint {
+  flex: 1;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+}
+.hint.unset {
+  font-family: inherit;
+  letter-spacing: normal;
+  color: var(--text-dim);
+}
+.error {
+  margin: 0;
+}
+
+.save {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+}
+
+/* A keybind: its keys as keycaps; a click waits for new ones, in the dock's green. */
+.keybind {
+  cursor: default;
+}
+.detail.bad {
+  color: var(--red);
+}
+.keycaps {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  outline: none;
+  transition:
+    background 150ms ease,
+    box-shadow 150ms ease;
+}
+.keycaps:hover,
+.keycaps:focus-visible {
+  background: var(--field);
+}
+.keycaps:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--green-glow) 60%, transparent);
+}
+.keycaps.taken kbd {
+  border-color: color-mix(in srgb, var(--red) 55%, transparent);
+  color: var(--red);
+}
+.keycaps.waiting {
+  min-width: 116px;
+  justify-content: center;
+  background: color-mix(in srgb, var(--green) 10%, transparent);
+  box-shadow: 0 0 0 1.5px var(--green-glow);
+  animation: waiting 1.4s ease-in-out infinite;
+}
+kbd {
+  display: inline-grid;
+  place-items: center;
+  box-sizing: border-box;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid var(--field-line);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  background: var(--field);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  animation: key-in 220ms cubic-bezier(0.18, 1.25, 0.4, 1) both;
+}
+.prompt {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-dim);
+}
+/* The double tap: its key, then how many times. */
+.times {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.fixed {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes waiting {
+  50% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--green-glow) 35%, transparent);
+  }
+}
+@keyframes key-in {
+  from {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .keycaps.waiting,
+  kbd {
+    animation: none;
+  }
+}

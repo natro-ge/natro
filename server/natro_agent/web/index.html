@@ -10,7 +10,7 @@
   <link rel="icon" href="/dashboard/icon.svg" type="image/svg+xml">
   <link rel="preload" href="/dashboard/fonts/noto-sans.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/dashboard/style.css">
-  <script src="/dashboard/app.js" defer></script>
+  <script src="/dashboard/app.js" type="module"></script>
 </head>
 <body>
 <div class="app">
@@ -19,6 +19,7 @@
     <nav class="nav" aria-label="Sections">
       <a href="#home" data-view="home"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5V20h-5.5v-6h-5v6H4z"/></svg>Home</a>
       <a href="#activity" data-view="activity"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h9"/></svg>Activity</a>
+      <a href="/dashboard/places"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s7-6.2 7-11.5a7 7 0 1 0-14 0C5 14.8 12 21 12 21zM12 7.5a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/></svg>Places</a>
       <a href="#billing" data-view="billing"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6M9 16h3"/></svg>Billing</a>
       <a href="#speed" data-view="speed"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.6 17a8.5 8.5 0 1 1 14.8 0M12 13l4-4"/></svg>Speed</a>
       <a href="#system" data-view="system"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v7H4zM4 13h16v7H4zM8 7.5h.01M8 16.5h.01"/></svg>System</a>
@@ -242,6 +243,7 @@
   <nav class="tabs" aria-label="Sections">
     <a href="#home" data-view="home"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5V20h-5.5v-6h-5v6H4z"/></svg>Home</a>
     <a href="#activity" data-view="activity"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h9"/></svg>Activity</a>
+    <a href="/dashboard/places"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s7-6.2 7-11.5a7 7 0 1 0-14 0C5 14.8 12 21 12 21zM12 7.5a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/></svg>Places</a>
     <a href="#billing" data-view="billing"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6M9 16h3"/></svg>Billing</a>
     <a href="#speed" data-view="speed"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.6 17a8.5 8.5 0 1 1 14.8 0M12 13l4-4"/></svg>Speed</a>
     <a href="#system" data-view="system"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v7H4zM4 13h16v7H4zM8 7.5h.01M8 16.5h.01"/></svg>System</a>

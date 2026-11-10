@@ -87,6 +87,7 @@ class NatroSession(private val app: Context) : VoiceInteractionSession(app) {
                 Natro.listen()
                 NatroService.start(app)  // starts it if needed; either way it takes the microphone now
                 NatroService.instance?.refresh()
+                AssistantChat.show(app)  // her chat, in the PC's glass: he can type instead (typing stops the listening)
                 hideWhenTheMicrophoneIsNatros()
             }
         }

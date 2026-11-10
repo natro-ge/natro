@@ -4,7 +4,6 @@ One note per file, named after its title ("Shopping list.md"). Natro can list,
 read, search, write (new note or add to one) and edit notes right away; deleting
 a note needs the owner's yes. The PC keeps old versions of changed and deleted
 notes (Syncthing's file versioning), so an edit can be undone there.
-Notes are personal.
 """
 import os
 import re
@@ -120,7 +119,7 @@ class Notes:
         def tool(name, description, properties, run, required=(), confirm=False, changes=False, final=False):
             async def call(args):
                 return run(**args)
-            return Tool(name=name, description=description, run=call, source="natro", personal=True, confirm=confirm,
+            return Tool(name=name, description=description, run=call, source="natro", confirm=confirm,
                         changes=changes, final=final,
                         input_schema={"type": "object", "properties": properties, "required": list(required)})
 

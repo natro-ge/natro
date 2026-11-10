@@ -30,6 +30,7 @@ pub struct Recorder {
     stop: mpsc::Sender<()>,
     recording: mpsc::Receiver<Vec<i16>>,
     hands_free: Arc<AtomicBool>,
+    heard: Arc<AtomicBool>,
 }
 
 impl Recorder {
@@ -42,16 +43,42 @@ impl Recorder {
         page: &'static str,
         finished: impl FnOnce() + Send + 'static,
     ) -> Recorder {
+        Recorder::begin(app, test_clip, page, NO_SPEECH_SECONDS, false, finished)
+    }
+
+    /// Listening for him to go on after a reply (dock.rs): hands-free from the start, and with no speech for
+    /// `seconds` it stops by itself.
+    pub fn follow_up(
+        app: AppHandle,
+        page: &'static str,
+        seconds: f64,
+        finished: impl FnOnce() + Send + 'static,
+    ) -> Recorder {
+        Recorder::begin(app, None, page, seconds, true, finished)
+    }
+
+    fn begin(
+        app: AppHandle,
+        test_clip: Option<PathBuf>,
+        page: &'static str,
+        no_speech_seconds: f64,
+        hands_free: bool,
+        finished: impl FnOnce() + Send + 'static,
+    ) -> Recorder {
         let (stop, stopped) = mpsc::channel();
         let (send_recording, recording) = mpsc::channel();
-        let hands_free = Arc::new(AtomicBool::new(false));
-        let flag = hands_free.clone();
+        let hands_free = Arc::new(AtomicBool::new(hands_free));
+        let heard = Arc::new(AtomicBool::new(false));
+        let (flag, speech) = (hands_free.clone(), heard.clone());
         thread::spawn(move || {
             let mut take = Take {
-                app: Some(app),
-                page,
+                level: Some(Box::new(move |rms| {
+                    let _ = app.emit_to(page, "level", rms);
+                })),
                 hands_free: flag,
+                heard: speech,
                 finished: Some(Box::new(finished)),
+                end: EndOfSpeech::new(SILENCE_SECONDS, no_speech_seconds),
                 ..Take::default()
             };
             let result = match test_clip {
@@ -72,7 +99,13 @@ impl Recorder {
             stop,
             recording,
             hands_free,
+            heard,
         }
+    }
+
+    /// Whether it has heard him say anything.
+    pub fn heard(&self) -> bool {
+        self.heard.load(Ordering::SeqCst)
     }
 
     /// From now on, stop by itself once the speaker has finished.
@@ -98,10 +131,10 @@ impl Drop for Recorder {
 
 /// What the recording thread keeps.
 struct Take {
-    app: Option<AppHandle>,
     /// Where the loudness goes.
-    page: &'static str,
+    level: Option<Box<dyn Fn(f32) + Send>>,
     hands_free: Arc<AtomicBool>,
+    heard: Arc<AtomicBool>,
     finished: Option<Box<dyn FnOnce() + Send>>,
     pcm: Vec<i16>,
     /// How much of `pcm` has been judged, in whole chunks.
@@ -115,9 +148,9 @@ struct Take {
 impl Default for Take {
     fn default() -> Take {
         Take {
-            app: None,
-            page: "dock",
+            level: None,
             hands_free: Arc::default(),
+            heard: Arc::default(),
             finished: None,
             pcm: Vec::new(),
             judged: 0,
@@ -200,8 +233,8 @@ impl Take {
             && self.energy.1 > 0
         {
             let rms = (self.energy.0 / self.energy.1 as f64).sqrt() as f32;
-            if let Some(app) = &self.app {
-                let _ = app.emit_to(self.page, "level", rms);
+            if let Some(level) = &self.level {
+                level(rms);
             }
             self.energy = (0.0, 0);
             self.level_sent = Some(Instant::now());
@@ -211,6 +244,9 @@ impl Take {
                 &self.pcm[self.judged * CHUNK..(self.judged + 1) * CHUNK],
             ));
             self.judged += 1;
+        }
+        if self.end.heard() {
+            self.heard.store(true, Ordering::SeqCst);
         }
         let too_long = self.judged >= MAX_SECONDS * 10;
         let ended = (self.hands_free.load(Ordering::SeqCst) && self.end.done()) || too_long;
@@ -240,4 +276,47 @@ fn build<T: cpal::SizedSample + Send + 'static>(
             None,
         )
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A take that listens for him to go on for `seconds`, with what it hears, and whether it finished.
+    fn listened(seconds: f64, pcm: Vec<i16>) -> (Take, Arc<AtomicBool>) {
+        let finished = Arc::new(AtomicBool::new(false));
+        let telling = finished.clone();
+        let mut take = Take {
+            hands_free: Arc::new(AtomicBool::new(true)),
+            finished: Some(Box::new(move || telling.store(true, Ordering::SeqCst))),
+            end: EndOfSpeech::new(SILENCE_SECONDS, seconds),
+            pcm,
+            ..Take::default()
+        };
+        take.judge();
+        (take, finished)
+    }
+
+    fn seconds(of: f64, loudness: i16) -> Vec<i16> {
+        vec![loudness; (of * 16_000.0) as usize]
+    }
+
+    #[test]
+    fn listening_after_a_reply_ends_by_itself_if_he_says_nothing() {
+        let (take, finished) = listened(6.0, seconds(5.9, 40));
+        assert!(!finished.load(Ordering::SeqCst), "still time");
+        assert!(!take.heard.load(Ordering::SeqCst));
+        let (take, finished) = listened(6.0, seconds(6.0, 40));
+        assert!(finished.load(Ordering::SeqCst));
+        assert!(!take.heard.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn listening_after_a_reply_goes_on_once_he_talks() {
+        let mut pcm = seconds(5.0, 40);
+        pcm.extend(seconds(4.0, 8_000));
+        let (take, finished) = listened(6.0, pcm);
+        assert!(take.heard.load(Ordering::SeqCst));
+        assert!(!finished.load(Ordering::SeqCst), "past the 6 s, and he's talking");
+    }
 }

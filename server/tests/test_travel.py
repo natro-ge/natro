@@ -11,6 +11,8 @@ from natro_agent.config import timezone
 from natro_agent.google_tools import CALENDAR
 from natro_agent.tools import Tool, ToolError
 from natro_agent.travel import URL, Travel, minutes_words
+from natro_agent.places import Places
+from natro_agent.watchers import Watchers, mode_of
 from test_watchers import Shown, event, make as make_watchers
 
 NOW = datetime(2026, 10, 18, 15, 0, tzinfo=timezone())
@@ -103,7 +105,7 @@ def test_offered_only_with_a_key():
     assert Travel(key="", home=HOME).tools() == []
     tools = make(DRIVE)[0].tools()
     assert [tool.name for tool in tools] == ["travel_time", "travel_routes", "travel_plan"]
-    assert all(tool.personal and not tool.confirm for tool in tools)
+    assert not any(tool.confirm for tool in tools)
     assert all("(by default from his home)" in tool.description for tool in tools[:2])
 
 
@@ -339,9 +341,15 @@ def test_a_meeting_further_away_gives_the_heads_up_before_he_has_to_leave(tmp_pa
     assert alert["text"] == ("Leave in 10 minutes for Dentist at City clinic: about 25 minutes by car from home; it "
                              "starts at 16:00.")
     assert alert["urgent"]
-    watchers.now = lambda: NOW + timedelta(minutes=51)  # 9 minutes before: no heads-up as well
     run(watchers.check())
-    assert len(watchers.deliver.alerts) == 1
+    assert len(watchers.deliver.alerts) == 1  # once
+    watchers.now = lambda: NOW + timedelta(minutes=30)  # the time to leave
+    run(watchers.check())
+    assert [alert["text"] for alert in watchers.deliver.alerts[1:]] == [
+        "Time to leave for Dentist at City clinic: about 25 minutes by car from home; it starts at 16:00."]
+    watchers.now = lambda: NOW + timedelta(minutes=51)
+    run(watchers.check())
+    assert len(watchers.deliver.alerts) == 2  # none repeats
     assert len(routes.requests) == 1  # looked up once (again only after a while)
 
 
@@ -368,7 +376,7 @@ class Phone:
             if isinstance(self.where, Exception):
                 raise self.where
             return self.where
-        return [Tool("phone_location", "Where the phone is.", {"type": "object"}, location, "phone", personal=True)]
+        return [Tool("phone_location", "Where the phone is.", {"type": "object"}, location, "phone")]
 
 
 def test_the_trip_starts_where_his_phone_is(tmp_path):
@@ -417,6 +425,376 @@ def test_without_a_home_address_only_the_heads_up(tmp_path):
     run(watchers.check())
     assert [alert["text"] for alert in watchers.deliver.alerts] == ["Dentist at City clinic in 9 minutes."]
     assert routes.requests == []
+
+
+# Leaving on time
+
+BUS = {"routes": [{"duration": "2700s", "distanceMeters": 9000, "legs": [{"steps": [
+    {"travelMode": "WALK", "staticDuration": "300s"},
+    {"travelMode": "TRANSIT", "staticDuration": "1800s", "transitDetails": {
+        "stopDetails": {"departureStop": {"name": "Rustaveli"}, "arrivalStop": {"name": "Vake"},
+                        "departureTime": (NOW + timedelta(minutes=35)).astimezone(UTC).isoformat(),
+                        "arrivalTime": (NOW + timedelta(minutes=65)).astimezone(UTC).isoformat()},
+        "transitLine": {"nameShort": "23", "vehicle": {"type": "BUS"}}}},
+    {"travelMode": "WALK", "staticDuration": "120s"},
+]}]}]}
+
+
+def again_soon(watchers):
+    """As if every trip was looked up long ago."""
+    watchers._trips = {key: (trip, at - 100000) for key, (trip, at) in watchers._trips.items()}
+
+
+def test_by_public_transport_the_leave_time_is_from_the_timetable(tmp_path):
+    start = NOW + timedelta(minutes=80)
+    travel, routes = make(BUS)
+    travel.mode = "transit"
+    watchers = watching(tmp_path, [event("e1", start, location="City clinic")], travel)
+    run(watchers.check())
+    # The route that arrives by 5 minutes before it starts, not one leaving now.
+    body = routes.requests[0][1]
+    assert body["arrivalTime"] == (start - timedelta(minutes=5)).isoformat() and "departureTime" not in body
+    assert watchers.deliver.alerts == []
+    watchers.now = lambda: NOW + timedelta(minutes=21)  # 9 minutes before the walk to the stop starts (at +30)
+    run(watchers.check())
+    alert, = watchers.deliver.alerts
+    assert alert["text"] == ("Leave in 9 minutes for Dentist at City clinic: about 37 minutes by public transport from "
+                             "home, Bus 23 from Rustaveli at 15:35 to Vake; it starts at 16:20.")
+
+
+def test_by_car_the_traffic_is_the_one_expected_when_he_leaves(tmp_path):
+    start = NOW + timedelta(hours=3)
+    travel, routes = make(DRIVE)
+    watchers = watching(tmp_path, [event("e1", start, location="City clinic")], travel)
+    run(watchers.check())
+    assert "departureTime" not in routes.requests[0][1]  # first: it's not known yet when he'd leave
+    again_soon(watchers)
+    run(watchers.check())
+    assert routes.requests[1][1]["departureTime"] == (start - timedelta(minutes=30)).isoformat()
+
+
+def test_a_long_trip_is_warned_about_in_time_and_meetings_are_looked_at_a_day_ahead(tmp_path):
+    start = NOW + timedelta(hours=7)
+    batumi = {"routes": [{"duration": "21600s", "distanceMeters": 380000}]}  # 6 hours
+    travel, _ = make(batumi)
+    answers = {("GET", f"{CALENDAR}/events"): (200, {"items": [event("e1", start, location="Batumi")]})}
+    watchers, fake = make_watchers(tmp_path, answers, now=NOW)
+    watchers.travel = travel
+    run(watchers.check())
+    assert watchers.deliver.alerts == []  # to leave at 15:55: 55 minutes from now
+    watchers.now = lambda: NOW + timedelta(minutes=46)
+    run(watchers.check())
+    assert watchers.deliver.alerts[0]["text"].startswith("Leave in 9 minutes for Dentist at Batumi: about 6 hours by car")
+    (_, _, params, _), = [call for call in fake.requests if call[1] == f"{CALENDAR}/events"][:1]
+    assert params["timeMax"].startswith((NOW + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M"))
+
+
+def test_a_trip_is_first_looked_up_within_12_hours(tmp_path):
+    travel, routes = make(DRIVE)
+    watchers = watching(tmp_path, [event("e1", NOW + timedelta(hours=13), location="City clinic")], travel)
+    run(watchers.check())
+    assert routes.requests == []
+    watchers.now = lambda: NOW + timedelta(hours=1, minutes=1)
+    run(watchers.check())
+    assert len(routes.requests) == 1
+
+
+def test_near_is_counted_from_the_leave_time(tmp_path):
+    start = NOW + timedelta(hours=6, minutes=40)
+    batumi = {"routes": [{"duration": "21600s", "distanceMeters": 380000}]}
+    travel, routes = make(batumi)
+    watchers = watching(tmp_path, [event("e1", start, location="Batumi")], travel)
+    run(watchers.check())  # to leave at 15:35: near, though it starts in over 6 hours
+    (key, (trip, at)), = watchers._trips.items()
+    watchers._trips[key] = (trip, at - 601)
+    run(watchers.check())
+    assert len(routes.requests) == 2  # every 10 minutes, not every 30
+
+
+def test_a_word_when_the_leave_time_moves_earlier_once(tmp_path):
+    start = NOW + timedelta(minutes=40)
+    worse = {"routes": [{"duration": "2040s", "staticDuration": "1100s", "distanceMeters": 18350}]}  # 34 minutes
+    travel, routes = make(DRIVE, worse)
+    routes.answers = [DRIVE, worse, worse]
+    watchers = watching(tmp_path, [event("e1", start, location="City clinic")], travel)
+    run(watchers.check())
+    assert watchers.deliver.alerts[0]["text"].startswith("Leave in 10 minutes for Dentist")
+    # Leave at 15:10 before; now at 15:01, 9 minutes earlier.
+    watchers.now = lambda: NOW
+    again_soon(watchers)
+    run(watchers.check())
+    assert [alert["text"] for alert in watchers.deliver.alerts[1:]] == [
+        "Traffic: leave at 15:01, 9 minutes earlier, for Dentist at City clinic."]
+    again_soon(watchers)
+    run(watchers.check())
+    assert len(watchers.deliver.alerts) == 2  # once
+
+
+def test_a_small_change_says_nothing(tmp_path):
+    start = NOW + timedelta(minutes=40)
+    slightly = {"routes": [{"duration": "1740s", "distanceMeters": 18350}]}  # 29 minutes
+    travel, routes = make(DRIVE, slightly)
+    routes.answers = [DRIVE, slightly]
+    watchers = watching(tmp_path, [event("e1", start, location="City clinic")], travel)
+    run(watchers.check())
+    again_soon(watchers)
+    run(watchers.check())
+    assert len(watchers.deliver.alerts) == 1
+
+
+def test_nothing_about_leaving_when_his_phone_is_already_there(tmp_path):
+    there = {"routes": [{"duration": "120s", "distanceMeters": 200}]}
+    travel, _ = make(there, home="")
+    watchers = watching(tmp_path, [event("e1", NOW + timedelta(minutes=7), location="City clinic")], travel)
+    watchers.items[0]["minutes"] = 1
+    watchers.devices["phone"] = Phone()
+    run(watchers.check())
+    assert watchers.deliver.alerts == []
+
+
+def test_from_home_a_short_trip_isnt_being_there(tmp_path):
+    there = {"routes": [{"duration": "120s", "distanceMeters": 200}]}
+    travel, _ = make(there)
+    watchers = watching(tmp_path, [event("e1", NOW + timedelta(minutes=7), location="City clinic")], travel)
+    watchers.items[0]["minutes"] = 1
+    run(watchers.check())
+    assert watchers.deliver.alerts[0]["text"].startswith("Time to leave for Dentist")
+
+
+class Answering:
+    def __init__(self):
+        self.posted = []
+
+    def post(self, **message):
+        self.posted.append(message)
+
+
+def test_on_my_way_stops_the_rest_of_that_meetings_alerts(tmp_path):
+    travel, _ = make(DRIVE)
+    events = [event("e1", NOW + timedelta(minutes=40), location="City clinic"),
+              event("e2", NOW + timedelta(minutes=40), summary="Padel", location="Vake")]
+    watchers = watching(tmp_path, events, travel)
+    run(watchers.check())
+    alert, _ = watchers.deliver.alerts
+    assert alert["answers"] == [{"id": "going", "text": "On my way"}]
+    device = Answering()
+    watchers.messages()["alert_answer"](device, {"id": alert["id"], "answer": "going"})
+    assert device.posted == [{"type": "alert_answered", "id": alert["id"], "ok": True,
+                              "text": "OK, no more alerts for that one."}]
+    watchers.now = lambda: NOW + timedelta(minutes=15)
+    run(watchers.check())
+    # The other meeting's Time to leave comes; its own doesn't.
+    assert [each["text"][:30] for each in watchers.deliver.alerts[2:]] == ["Time to leave for Padel at Vake"[:30]]
+    # And it's remembered across a restart.
+    kept, _ = make_watchers(tmp_path, {("GET", f"{CALENDAR}/events"): (200, {"items": events})},
+                            now=NOW + timedelta(minutes=15))
+    kept.travel = make(DRIVE)[0]
+    run(kept.check())
+    assert kept.deliver.alerts == []
+
+
+@pytest.mark.parametrize("data", [{"id": "nope", "answer": "going"}, {"answer": "going"}])
+def test_an_answer_to_nothing_says_so(tmp_path, data):
+    watchers = watching(tmp_path, [], make(DRIVE)[0])
+    device = Answering()
+    watchers.messages()["alert_answer"](device, data)
+    assert device.posted[0]["ok"] is False
+
+
+def test_an_answer_only_means_on_my_way(tmp_path):
+    watchers = watching(tmp_path, [event("e1", NOW + timedelta(minutes=30), location="City clinic")], make(DRIVE)[0])
+    run(watchers.check())
+    alert = watchers.deliver.alerts[0]
+    device = Answering()
+    watchers.messages()["alert_answer"](device, {"id": alert["id"], "answer": "something"})
+    assert device.posted[0]["ok"] is False and not alert.get("going")
+
+
+@pytest.mark.parametrize("fields, mode", [
+    ({"summary": "Dentist by car"}, "drive"), ({"location": "Clinic, by taxi"}, "drive"),
+    ({"description": "We're going by bus"}, "transit"), ({"summary": "Lunch, by metro"}, "transit"),
+    ({"description": "on foot"}, "walk"), ({"summary": "Meet, by bike"}, "bicycle"),
+    ({"summary": "Metro City Mall", "location": "Bus station"}, None), ({"summary": "Walk-in clinic"}, None),
+    ({"summary": "Dentist"}, None),
+])
+def test_how_he_goes_is_what_the_event_says(fields, mode):
+    assert mode_of(fields) == mode
+
+
+def test_the_event_says_how_over_his_usual_way(tmp_path):
+    travel, routes = make(DRIVE)
+    travel.mode = "transit"
+    watchers = watching(tmp_path, [event("e1", NOW + timedelta(minutes=40), summary="Dentist by car", location="City")],
+                        travel)
+    run(watchers.check())
+    assert routes.requests[0][1]["travelMode"] == "DRIVE"
+
+
+def test_the_briefing_says_when_to_leave_for_the_first_meeting_at_a_place(tmp_path):
+    events = [event("e0", NOW - timedelta(minutes=30), summary="Under way", location="There"),
+              event("e1", NOW + timedelta(minutes=30), summary="Standup", location="https://meet.google.com/x"),
+              event("e2", NOW + timedelta(hours=2), location="City clinic"),
+              event("e3", NOW + timedelta(hours=3), summary="Padel", location="Vake")]
+    travel, _ = make(DRIVE)
+    watchers = watching(tmp_path, events, travel)
+    assert run(watchers.first_leaving(NOW)) == ("Leave at 16:30 for Dentist at City clinic: about 25 minutes by car from "
+                                                "home; it starts at 17:00.")
+
+
+def test_the_briefing_has_nothing_to_say_with_no_place_or_no_google(tmp_path):
+    travel, _ = make(DRIVE)
+    assert run(watching(tmp_path, [event("e1", NOW + timedelta(hours=2))], travel).first_leaving(NOW)) == ""
+    assert run(Watchers(tmp_path / "other.json", {}).first_leaving(NOW)) == ""
+
+
+# His places
+
+GYM = {"id": "pl1", "name": "Gym", "names": ["the club"], "lat": 41.7152, "lng": 44.7690, "radius": 300, "address": "Vake"}
+HOME_PLACE = {"id": "pl2", "name": "Home", "names": [], "lat": 41.5, "lng": 45.0, "radius": 150, "address": "Rustavi"}
+
+
+def with_places(tmp_path, *answers, saved=(GYM, HOME_PLACE)):
+    places = Places(tmp_path / "places.json", {})
+    places.items += [dict(item) for item in saved]
+    routes = Routes(*answers)
+    travel = Travel(key="maps-key", home=HOME, post=routes, places=places)
+    return travel, routes, places
+
+
+def watching_with(tmp_path, events, travel):
+    watchers = Watchers(tmp_path / "watchers.json", {}, google_with(events), travel)
+    watchers.now = lambda: NOW
+    watchers.deliver = Shown()
+    return watchers
+
+
+def google_with(events):
+    from test_google import google
+
+    return google({("GET", f"{CALENDAR}/events"): (200, {"items": events})})[0]
+
+
+def test_a_meeting_at_one_of_his_places_goes_to_its_point(tmp_path):
+    travel, routes, _ = with_places(tmp_path, DRIVE)
+    watchers = watching_with(tmp_path, [event("e1", NOW + timedelta(minutes=40), summary="Lift", location="the club")],
+                             travel)
+    run(watchers.check())
+    assert routes.requests[0][1]["destination"] == {"location": {"latLng": {"latitude": 41.7152, "longitude": 44.769}}}
+    assert watchers.deliver.alerts[0]["text"].startswith("Leave in 10 minutes for Lift at the club: about 25 minutes")
+
+
+def test_within_its_radius_he_is_there_however_long_the_road_says(tmp_path):
+    travel, _, _ = with_places(tmp_path, DRIVE)  # the route says 18 km: Google goes round
+    watchers = watching_with(tmp_path, [event("e1", NOW + timedelta(minutes=30), location="Gym")], travel)
+    watchers.devices["phone"] = Phone("41.71520,44.76900 (within 12 m, just now)")  # at its point
+    run(watchers.check())
+    assert watchers.deliver.alerts == []
+
+
+def test_outside_its_radius_he_isnt_however_short_the_road_says(tmp_path):
+    near = {"routes": [{"duration": "120s", "distanceMeters": 200}]}
+    small = {**GYM, "radius": 100}
+    travel, _, _ = with_places(tmp_path, near, saved=(small,))
+    watchers = watching_with(tmp_path, [event("e1", NOW + timedelta(minutes=7), location="Gym")], travel)
+    watchers.items[0]["minutes"] = 1
+    watchers.devices["phone"] = Phone("41.71700,44.76900 (within 12 m, just now)")  # about 200 m north
+    run(watchers.check())
+    assert watchers.deliver.alerts[0]["text"].startswith("Time to leave for Dentist at Gym")
+
+
+def test_a_place_thats_not_his_still_goes_by_the_short_trip(tmp_path):
+    near = {"routes": [{"duration": "120s", "distanceMeters": 200}]}
+    travel, _, _ = with_places(tmp_path, near)
+    watchers = watching_with(tmp_path, [event("e1", NOW + timedelta(minutes=7), location="Corner cafe")], travel)
+    watchers.items[0]["minutes"] = 1
+    watchers.devices["phone"] = Phone()
+    run(watchers.check())
+    assert watchers.deliver.alerts == []
+
+
+def left_home(places, at):
+    places._event(Phone(), {"id": "pl2", "event": "left", "at": int(at.timestamp() * 1000)})
+
+
+@pytest.fixture
+def real_now():
+    """The clock where it is, for an event's time: one to come counts as now (places.py)."""
+    return datetime.now(timezone()).replace(microsecond=0)
+
+
+def test_leaving_home_for_a_meeting_stops_its_alerts(tmp_path, log_dir, real_now):
+    travel, _, places = with_places(tmp_path, DRIVE)
+    start = real_now + timedelta(minutes=40)  # leave by real_now + 10
+    other = real_now + timedelta(hours=5)
+    watchers = watching_with(tmp_path, [event("e1", start, location="City clinic"),
+                                        event("e2", other, summary="Padel", location="Vake")], travel)
+    watchers.now = lambda: real_now - timedelta(minutes=5)
+    run(watchers.check())
+    assert watchers.deliver.alerts == []  # the heads-up isn't due yet
+    left_home(places, real_now)  # before the leave time
+    watchers.now = lambda: real_now + timedelta(minutes=12)
+    run(watchers.check())
+    assert watchers.deliver.alerts == []  # no heads-up, no Time to leave
+    watchers.now = lambda: other - timedelta(minutes=30)
+    run(watchers.check())
+    assert watchers.deliver.alerts[0]["text"].startswith("Time to leave for Padel")  # the next one's stand
+    assert "going" not in watchers.deliver.alerts[0]
+
+
+@pytest.mark.parametrize("hours_before, stops", [(3, False), (0.4, True)])
+def test_leaving_home_hours_before_isnt_for_the_meeting(tmp_path, log_dir, real_now, hours_before, stops):
+    travel, _, places = with_places(tmp_path, DRIVE)
+    start = real_now + timedelta(hours=4)
+    leaves = start - timedelta(minutes=30)
+    watchers = watching_with(tmp_path, [event("e1", start, location="City clinic")], travel)
+    watchers.now = lambda: real_now
+    run(watchers.check())
+    watchers.place_event(HOME_PLACE, "left", int((leaves - timedelta(hours=hours_before)).timestamp() * 1000), False)
+    watchers.now = lambda: leaves
+    run(watchers.check())
+    assert (watchers.deliver.alerts == []) is stops
+
+
+def test_leaving_elsewhere_or_getting_home_isnt_leaving_home(tmp_path, log_dir, real_now):
+    travel, _, places = with_places(tmp_path, DRIVE)
+    start = real_now + timedelta(minutes=35)
+    watchers = watching_with(tmp_path, [event("e1", start, location="City clinic")], travel)
+    watchers.now = lambda: real_now - timedelta(minutes=30)
+    run(watchers.check())
+    at = int(real_now.timestamp() * 1000)
+    watchers.place_event(GYM, "left", at, False)
+    watchers.place_event(HOME_PLACE, "arrived", at, False)
+    watchers.now = lambda: real_now + timedelta(minutes=6)
+    run(watchers.check())
+    assert watchers.deliver.alerts[0]["text"].startswith("Time to leave for Dentist")
+
+
+def test_with_no_home_saved_nothing_counts(tmp_path, log_dir, real_now):
+    travel, _, places = with_places(tmp_path, DRIVE, saved=(GYM,))
+    watchers = watching_with(tmp_path, [event("e1", real_now + timedelta(minutes=35), location="City clinic")], travel)
+    watchers.now = lambda: real_now
+    run(watchers.check())
+    watchers.place_event(HOME_PLACE, "left", int(real_now.timestamp() * 1000), False)
+    assert not any(alert.get("going") for alert in watchers.told)
+
+
+def test_what_stops_a_meeting_doesnt_show_among_what_she_told_him(tmp_path, log_dir, real_now):
+    travel, _, places = with_places(tmp_path, DRIVE)
+    watchers = watching_with(tmp_path, [event("e1", real_now + timedelta(minutes=45), location="City clinic")], travel)
+    watchers.now = lambda: real_now
+    run(watchers.check())
+    watchers.place_event(HOME_PLACE, "left", int(real_now.timestamp() * 1000), False)
+    assert any(alert.get("going") for alert in watchers.told)
+    run(watchers.list({}))  # has no words to show, and doesn't stumble on it
+    assert "City clinic" not in run(watchers.list({}))
+
+
+def test_the_watcher_hears_of_his_leaving_from_the_places_and_without_places_nothing_changes(tmp_path):
+    travel, _, places = with_places(tmp_path, DRIVE)
+    watchers = watching_with(tmp_path, [], travel)
+    assert watchers.place_event in places.listeners
+    plain = Watchers(tmp_path / "other.json", {}, None, make(DRIVE)[0])
+    plain.place_event(HOME_PLACE, "left", 1000, False)
 
 
 def test_home_is_his_home_address():

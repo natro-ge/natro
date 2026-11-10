@@ -23,6 +23,7 @@ import urllib.parse
 from dataclasses import dataclass, replace
 from datetime import date
 
+from natro_agent import log
 from natro_agent.tools import Tool, ToolError
 
 APPS = {"instagram": "Instagram", "messenger": "Messenger"}
@@ -139,6 +140,16 @@ class People:
         partial.write_text("\n".join(kept + [""] + [person.line() for person in people]) + "\n", encoding="utf-8")
         os.replace(partial, self.path)
 
+    def messages(self):
+        return {"person": self._person}
+
+    def _person(self, device, data):
+        try:
+            self.seen(data.get("app"), data.get("name"), data.get("chat"), data.get("facebook"),
+                      bool(data.get("group")))
+        except OSError as e:  # the address book can't be written: the phone stays connected
+            log.write("error", step="people", error=repr(e))
+
     def seen(self, app, name, chat="", facebook="", group=False, today=None):
         """A chat wrote to him (the phone's "person"): its line added, or brought up to date. Returns whether the
         file changed."""
@@ -235,11 +246,11 @@ class People:
                      "username": {"type": "string", "description": "As he gave it: nino.k, @nino.k or a profile "
                                                                    "link."},
                      "app": app}, "required": ["name", "username"]},
-                 save, "natro", personal=True),
+                 save, "natro"),
             Tool("people_forget",
                  "Take someone out of the address book Natro messages people from, when he asks.",
                  {"type": "object", "properties": {
                      "name": {"type": "string", "description": "Who, as he says it."}, "app": app},
                   "required": ["name"]},
-                 forget, "natro", personal=True, confirm=True),
+                 forget, "natro", confirm=True),
         ]

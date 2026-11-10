@@ -230,11 +230,11 @@ def test_sender_names():
     assert sender("") == "Someone"
 
 
-def test_the_tools_are_personal(tmp_path):
+def test_no_tool_asks(tmp_path):
     watchers, _ = make(tmp_path)
     tools = {tool.name: tool for tool in watchers.tools()}
     assert set(tools) == {"watch", "watchers_list", "watchers_cancel"}
-    assert all(tool.personal and not tool.confirm for tool in tools.values())
+    assert not any(tool.confirm for tool in tools.values())
     assert tools["watch"].final
 
 

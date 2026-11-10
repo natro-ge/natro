@@ -288,7 +288,7 @@ def test_the_tool_is_offered_only_with_the_server(tmp_path):
     assert "copy_to_device" not in [tool.name for tool in Agent(client=FakeClient()).offered_tools()]
     server, _ = world(tmp_path)
     tool = next(tool for tool in server.agent.offered_tools() if tool.name == "copy_to_device")
-    assert tool.personal and not tool.confirm and tool.source == "natro"
+    assert not tool.confirm and tool.source == "natro"
 
 
 # --- The server's own files (convert.py) --------------------------------------------------------

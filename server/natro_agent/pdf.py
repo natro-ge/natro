@@ -112,7 +112,7 @@ class PdfTools:
                                              f"with + (default {DEFAULT_LANGUAGES})."},
                 "to_device": {**device, "description": "Where the result goes; default the device the files are on."},
             }, "required": ["action", "from_device", "paths"]},
-            self.edit, "natro", personal=True, final=True)]
+            self.edit, "natro", final=True)]
 
     async def edit(self, args):
         action = str(args.get("action") or "").strip().lower()

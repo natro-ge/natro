@@ -31,4 +31,4 @@ def timezone():
 
 def monthly_budget():
     """USD per month for Claude and Google together (voice + agent)."""
-    return float(os.environ.get("NATRO_MONTHLY_BUDGET", "15"))
+    return float(os.environ.get("NATRO_MONTHLY_BUDGET", "20"))

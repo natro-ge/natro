@@ -1,7 +1,7 @@
 """Files sent between the owner's devices (PC and phone), passed along by the server.
 
 A device sends a file up in parts (file_offer, then file_part + its bytes again and again, then
-file_end; see server.py). The server writes it to transfers/ and sends it down to the other device
+file_end; see shared/PROTOCOL.md). The server writes it to transfers/ and sends it down to the other device
 the same way as soon as that device is connected, and deletes it once the device says it saved it.
 A device that's offline gets it when it next connects; a file still undelivered after KEEP_DAYS is
 deleted. An upload that stops partway (the sender disconnected or gave up) is deleted at once.
@@ -127,7 +127,7 @@ class Transfers:
                 "path": {"type": "string", "description": "The file's full path on that device."},
                 "to_device": device,
             }, "required": ["from_device", "path", "to_device"]},
-            self.copy, source="natro", personal=True)]
+            self.copy, source="natro")]
 
     # Natro, asked to send a file
 
@@ -238,8 +238,12 @@ class Transfers:
 
     # Messages from devices
 
+    def messages(self):
+        return {"file_part": self.part, **dict.fromkeys(("file_offer", "file_end", "file_got", "file_saved",
+                                                         "file_failed"), self.received)}
+
     def received(self, device, data):
-        """A file_* message other than file_part (see server.py)."""
+        """A file_* message other than file_part."""
         kind, id = data.get("type"), str(data.get("id", ""))
         if kind == "file_offer":
             self._offer(device, id, data)
@@ -254,8 +258,9 @@ class Transfers:
         elif kind == "file_failed":
             self._failed(device, id, str(data.get("message") or "It didn't work."))
 
-    def part(self, device, id, chunk):
+    def part(self, device, data, chunk):
         """The next piece of a file the device is sending."""
+        id = str(data.get("id", ""))
         upload = self._uploads.get(id)
         if upload is None or upload.device is not device:
             return  # refused, or given up

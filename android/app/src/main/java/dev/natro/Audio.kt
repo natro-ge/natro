@@ -102,13 +102,22 @@ class Speaker(context: Context) : TextToSpeech.OnInitListener {
     private val waiting = mutableListOf<Pair<String, (() -> Unit)?>>()
     /** What to call when an utterance starts playing, by its id. */
     private val starting = ConcurrentHashMap<String, () -> Unit>()
+    /** What's been handed to the speech engine and isn't over yet, by its id. */
+    private val saying = ConcurrentHashMap.newKeySet<String>()
+    /** What to call once all that was queued before it has been said, by the silence that marks the place. */
+    private val ending = ConcurrentHashMap<String, () -> Unit>()
+    /** The same, from before the speech engine was ready. */
+    private val quietLater = mutableListOf<() -> Unit>()
     @Volatile private var ready = false
 
     /** Whether it's speaking (the wake word doesn't listen meanwhile, or Natro could wake herself). */
     val speaking get() = ready && tts.isSpeaking
 
     override fun onInit(status: Int) {
-        if (status != TextToSpeech.SUCCESS) return
+        if (status != TextToSpeech.SUCCESS) {  // nothing will be said
+            synchronized(waiting) { quietLater.toList().also { quietLater.clear() } }.forEach { it() }
+            return
+        }
         tts.language = Locale.US
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String) {
@@ -117,19 +126,30 @@ class Speaker(context: Context) : TextToSpeech.OnInitListener {
 
             override fun onDone(utteranceId: String) {
                 starting.remove(utteranceId)
+                saying.remove(utteranceId)
+                ending.remove(utteranceId)?.invoke()
             }
 
             override fun onStop(utteranceId: String, interrupted: Boolean) {
                 starting.remove(utteranceId)
+                saying.remove(utteranceId)
+                ending.remove(utteranceId)
             }
 
             @Deprecated("Deprecated in Java")
             override fun onError(utteranceId: String) {
                 starting.remove(utteranceId)
+                saying.remove(utteranceId)
+                ending.remove(utteranceId)?.invoke()
             }
         })
         ready = true
-        synchronized(waiting) { waiting.forEach { (text, onStart) -> say(text, onStart) }; waiting.clear() }
+        synchronized(waiting) {
+            waiting.forEach { (text, onStart) -> say(text, onStart) }
+            waiting.clear()
+            quietLater.forEach(::whenQuiet)
+            quietLater.clear()
+        }
     }
 
     /** onStart is called once it starts playing (on the speech engine's thread), not at all if it doesn't. */
@@ -138,11 +158,32 @@ class Speaker(context: Context) : TextToSpeech.OnInitListener {
         if (!ready) synchronized(waiting) { waiting += text to onStart } else {
             val id = UUID.randomUUID().toString()
             onStart?.let { starting[id] = it }
+            saying += id
             tts.speak(text, TextToSpeech.QUEUE_ADD, null, id)
         }
     }
 
+    /**
+     * then is called once all that's queued has been said, at once if nothing is (on the speech engine's thread, or
+     * this one), and not at all if it's stopped first. The wait is a silence in the queue, as Android says when each
+     * thing ends but not when it's all over: isSpeaking is false until a reply has started. With nothing to wait for,
+     * as with Speak replies off, the speech engine has no part in it.
+     */
+    fun whenQuiet(then: () -> Unit) {
+        if (!ready) {
+            val later = synchronized(waiting) { waiting.isNotEmpty().also { if (it) quietLater += then } }
+            if (!later) then()
+            return
+        }
+        if (saying.isEmpty()) return then()
+        val id = UUID.randomUUID().toString()
+        ending[id] = then
+        if (tts.playSilentUtterance(1, TextToSpeech.QUEUE_ADD, id) != TextToSpeech.SUCCESS) ending.remove(id)?.invoke()
+    }
+
     fun stop() {
+        saying.clear()
+        ending.clear()
         tts.stop()
     }
 

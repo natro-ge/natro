@@ -15,7 +15,7 @@ from natro_agent.agent import PICTURE_MINUTES, Agent
 from natro_agent.pending import PendingRequests
 from natro_agent.server import Server, health
 
-SCREENSHOT = {"name": "screenshot", "description": "A picture of the screen.", "personal": True,
+SCREENSHOT = {"name": "screenshot", "description": "A picture of the screen.",
               "input_schema": {"type": "object", "properties": {}, "required": []}}
 CLOSE = {"name": "force_close_app", "description": "Kill an app.", "confirm": True,
          "input_schema": {"type": "object", "properties": {"app": {"type": "string"}}, "required": ["app"]}}
@@ -284,8 +284,8 @@ def test_a_device_that_connects_while_natro_asks_is_asked_too_and_told_when_its_
 
 
 def test_an_unanswered_question_is_given_up_on_everywhere_and_a_late_answer_does_nothing(monkeypatch):
-    from natro_agent import agent as agent_module
-    monkeypatch.setattr(agent_module, "CONFIRM_SECONDS", 0.2)
+    from natro_agent import tool_calls
+    monkeypatch.setattr(tool_calls, "CONFIRM_SECONDS", 0.2)
     server = Server(Agent(client=risky_close()))
 
     async def play(pc, phone):
@@ -367,3 +367,65 @@ def test_nothing_is_kept_for_a_device_that_is_online(tmp_path):
         assert "online" in str(e)
     else:
         raise AssertionError("kept a request for a device that's online")
+
+
+# --- Files he attaches to a request ------------------------------------------------------------
+
+REPORT = r"C:\Users\Tuxa\Downloads\report.pdf"
+
+
+def test_files_he_attached_reach_her_by_their_paths_and_show_by_their_names():
+    client = FakeClient(message(text("Done.")))
+    server = Server(Agent(client=client))
+
+    async def play(pc, phone):
+        await pc.send(type="text", id="r1", text="merge these", files=[REPORT, " ", 7, "C:/Scans/b.pdf"])
+        await pc.next("reply")
+        while not any(e["done"] for e in phone.entries()):
+            await phone.next("chat_entry")
+        return phone.entries()
+
+    entries = run(devices(server, hello("pc", "PC"), hello("phone", "phone"), play=play))
+    assert entries[0]["asked"] == "merge these (report.pdf, b.pdf)"
+    lines = client.requests[0]["messages"][-1]["content"].splitlines()
+    assert lines[1:] == [rf"[attached to this request, on his PC: {REPORT}; C:/Scans/b.pdf]", "merge these"]
+    assert "attached" not in lines[0]
+
+
+class Voice:
+    """Hears the same thing in any recording."""
+
+    def process(self, pcm, on_english, timing=None):
+        return "ვორდად", "As Word.", 0.001
+
+
+def test_a_spoken_request_can_carry_files_too():
+    client = FakeClient(message(text("Done.")))
+    server = Server(Agent(client=client), voice=Voice())
+
+    async def play(pc):
+        await pc.send(type="audio", id="r1", files=[REPORT])
+        await pc.ws.send(b"\x01\x00" * 1600)
+        await pc.next("reply")
+        return pc.entries()
+
+    entries = run(devices(server, hello("pc", "PC"), play=play))
+    assert entries[0]["asked"] == "As Word. (report.pdf)" and entries[0]["heard"] == "ვორდად"
+    assert client.requests[0]["messages"][-1]["content"].endswith(
+        rf"[attached to this request, on his PC: {REPORT}]" + "\nAs Word.")
+
+
+def test_a_request_without_files_is_as_it_was():
+    client = FakeClient(message(text("Hi.")), message(text("Hi.")))
+    server = Server(Agent(client=client))
+
+    async def play(pc):
+        await pc.send(type="text", id="r1", text="hi there", files="not a list")
+        await pc.next("reply")
+        await pc.send(type="text", id="r2", text="hi again", files=[])
+        await pc.next("reply")
+        return pc.entries()
+
+    entries = run(devices(server, hello("pc", "PC"), play=play))
+    assert {e["asked"] for e in entries} == {"hi there", "hi again"}
+    assert not any("[attached" in request["messages"][-1]["content"] for request in client.requests)
